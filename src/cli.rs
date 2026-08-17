@@ -18,7 +18,7 @@ pub struct Cli {
 pub enum Commands {
     /// Start tracking a new task
     Start {
-        /// Description of the task
+        /// Description of the task, where any #word becomes a tag
         #[arg(required = true)]
         description: Vec<String>,
     },
@@ -26,7 +26,7 @@ pub enum Commands {
     Stop,
     /// Log a completed task with a specific duration
     Log {
-        /// Description of the task
+        /// Description of the task, where any #word becomes a tag
         description: String,
         /// Duration in format like "1h30m", "45m", "2h"
         time: String,
