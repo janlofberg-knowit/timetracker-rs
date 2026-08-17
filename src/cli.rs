@@ -27,9 +27,14 @@ pub enum Commands {
     /// Log a completed task with a specific duration
     Log {
         /// Description of the task
+        #[arg(short = 'd', long)]
         description: String,
         /// Duration in format like "1h30m", "45m", "2h"
+        #[arg(short = 't', long)]
         time: String,
+        /// Comma-separated tags (e.g. tagA,tagB,tagC)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
     },
     /// Show all entries for today
     Today,
@@ -97,13 +102,18 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-pub fn log(description: String, time_str: String) -> Result<()> {
+pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Result<()> {
     let mut data = load_data()?;
     let dur = duration::parse(&time_str);
     let end_time = Local::now();
     let start_time = end_time - dur;
 
-    let (desc, tags) = parse_tags(&description);
+    let (desc, mut tags) = parse_tags(&description);
+    for tag in extra_tags {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
     data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
     save_data(&data)?;
 
