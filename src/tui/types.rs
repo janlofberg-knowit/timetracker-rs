@@ -27,6 +27,7 @@ pub enum InputMode {
 #[derive(Clone, Copy, PartialEq)]
 pub enum InputField {
     Description,
+    Project,
     Tags,
     StartTime,
     EndTime,

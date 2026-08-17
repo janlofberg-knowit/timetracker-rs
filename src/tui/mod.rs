@@ -28,6 +28,7 @@ pub(crate) struct App {
     pub(crate) input_mode: InputMode,
     pub(crate) input_field: InputField,
     pub(crate) input_description: String,
+    pub(crate) input_project: String,
     pub(crate) input_tags: String,
     pub(crate) input_start_time: String,
     pub(crate) input_end_time: String,
@@ -57,6 +58,7 @@ impl App {
             input_mode: InputMode::Normal,
             input_field: InputField::Description,
             input_description: String::new(),
+            input_project: String::new(),
             input_tags: String::new(),
             input_start_time: String::new(),
             input_end_time: String::new(),
@@ -534,5 +536,74 @@ mod tests {
         let data = on_disk();
         assert_eq!(descriptions(&data), vec!["after", "probe"]);
         assert_eq!(descriptions(&app.data), vec!["after", "probe"]);
+    }
+
+    /// The form's Project field is optional: whitespace-only means "no project",
+    /// which must land as JSON `null` rather than an empty string.
+    #[test]
+    fn the_form_writes_the_project_and_leaves_a_blank_one_null() {
+        let _guard = env_guard();
+        sandbox("project-form");
+        seed(Vec::new(), 0);
+
+        let mut app = App::new().unwrap();
+        app.start_adding();
+        app.input_description = "with a project".to_string();
+        app.input_project = "  acme  ".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        app.start_adding();
+        app.input_description = "without one".to_string();
+        app.input_project = "   ".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        let data = on_disk();
+        let project = |desc: &str| {
+            data.entries
+                .iter()
+                .find(|e| e.description == desc)
+                .unwrap()
+                .project
+                .clone()
+        };
+        assert_eq!(project("with a project"), Some("acme".to_string()));
+        assert_eq!(project("without one"), None);
+
+        let raw = std::fs::read_to_string(storage::get_data_path().unwrap()).unwrap();
+        assert!(
+            raw.contains("\"project\": null"),
+            "blank project not null: {raw}"
+        );
+        assert!(
+            !raw.contains("\"project\": \"\""),
+            "blank project stored as \"\": {raw}"
+        );
+    }
+
+    /// `e` pre-fills the Project field, and clearing it drops the project.
+    #[test]
+    fn editing_round_trips_the_project_field() {
+        let _guard = env_guard();
+        sandbox("project-edit");
+        let mut seeded = entry(0, "has a project");
+        seeded.project = Some("acme".to_string());
+        seed(vec![seeded], 1);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "has a project");
+        app.start_editing();
+        assert_eq!(app.input_project, "acme");
+
+        app.input_project = "beta".to_string();
+        app.submit_edit().unwrap();
+        assert_eq!(on_disk().entries[0].project, Some("beta".to_string()));
+
+        select(&mut app, "has a project");
+        app.start_editing();
+        app.input_project.clear();
+        app.submit_edit().unwrap();
+        assert_eq!(on_disk().entries[0].project, None);
     }
 }

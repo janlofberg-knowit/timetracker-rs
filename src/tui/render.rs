@@ -304,6 +304,7 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
         .margin(2)
         .constraints([
             Constraint::Length(3), // Description
+            Constraint::Length(3), // Project
             Constraint::Length(3), // Tags
             Constraint::Length(3), // Duration
             Constraint::Length(3), // Start Time
@@ -340,28 +341,37 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
         chunks[0],
     );
     f.render_widget(
+        Paragraph::new(app.input_project.as_str())
+            .style(Style::default().fg(Color::White))
+            .block(field_block(
+                " Project (optional: single name, e.g. acme) ",
+                active == InputField::Project,
+            )),
+        chunks[1],
+    );
+    f.render_widget(
         Paragraph::new(app.input_tags.as_str())
             .style(Style::default().fg(Color::White))
             .block(field_block(" Tags (space-separated, e.g., work meeting) ", active == InputField::Tags)),
-        chunks[1],
+        chunks[2],
     );
     f.render_widget(
         Paragraph::new(app.input_duration.as_str())
             .style(Style::default().fg(Color::White))
             .block(field_block(" Duration (optional: 1h30m, 45m, 2h) ", active == InputField::Duration)),
-        chunks[2],
+        chunks[3],
     );
     f.render_widget(
         Paragraph::new(app.input_start_time.as_str())
             .style(Style::default().fg(Color::White))
             .block(field_block(" Start Time (e.g. 9am, 14:30, 25/03 9.30am) ", active == InputField::StartTime)),
-        chunks[3],
+        chunks[4],
     );
     f.render_widget(
         Paragraph::new(app.input_end_time.as_str())
             .style(Style::default().fg(Color::White))
             .block(field_block(" End Time (optional: e.g. 9am, 14:30, 25/03 9.30am) ", active == InputField::EndTime)),
-        chunks[4],
+        chunks[5],
     );
 
     let help = Paragraph::new(Line::from(vec![
@@ -379,7 +389,7 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(theme::BORDER))
             .title(Span::styled(form_title, Style::default().fg(theme::HIGHLIGHT))),
     );
-    f.render_widget(help, chunks[5]);
+    f.render_widget(help, chunks[6]);
 
     // Cursor: use cursor_pos for correct mid-text cursor placement
     let cursor_text_width = |text: &str, pos: usize| -> u16 {
@@ -391,21 +401,25 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
             chunks[0].x + cursor_text_width(&app.input_description, app.cursor_pos) + 1,
             chunks[0].y + 1,
         ),
-        InputField::Tags => (
-            chunks[1].x + cursor_text_width(&app.input_tags, app.cursor_pos) + 1,
+        InputField::Project => (
+            chunks[1].x + cursor_text_width(&app.input_project, app.cursor_pos) + 1,
             chunks[1].y + 1,
         ),
-        InputField::Duration => (
-            chunks[2].x + cursor_text_width(&app.input_duration, app.cursor_pos) + 1,
+        InputField::Tags => (
+            chunks[2].x + cursor_text_width(&app.input_tags, app.cursor_pos) + 1,
             chunks[2].y + 1,
         ),
-        InputField::StartTime => (
-            chunks[3].x + cursor_text_width(&app.input_start_time, app.cursor_pos) + 1,
+        InputField::Duration => (
+            chunks[3].x + cursor_text_width(&app.input_duration, app.cursor_pos) + 1,
             chunks[3].y + 1,
         ),
-        InputField::EndTime => (
-            chunks[4].x + cursor_text_width(&app.input_end_time, app.cursor_pos) + 1,
+        InputField::StartTime => (
+            chunks[4].x + cursor_text_width(&app.input_start_time, app.cursor_pos) + 1,
             chunks[4].y + 1,
+        ),
+        InputField::EndTime => (
+            chunks[5].x + cursor_text_width(&app.input_end_time, app.cursor_pos) + 1,
+            chunks[5].y + 1,
         ),
     };
     f.set_cursor_position((cursor_x, cursor_y));
