@@ -18,9 +18,6 @@ mod navigation;
 mod entry_form;
 mod marks_surface;
 mod panes;
-// Per-project totals for the Summary surface. Nothing consumes them yet — the
-// rendering, the `Shift-S` toggle and the help line are #23.
-#[allow(dead_code)]
 mod summary;
 mod render;
 
@@ -77,6 +74,10 @@ pub(crate) struct App {
     /// Whether the Marks surface is open. Off by default like the panes, so its
     /// row is absent from the layout plan and first-run layout is unchanged.
     pub(crate) show_marks: bool,
+    /// Whether the Summary surface at the bottom is open. Off by default for the
+    /// same reason as the others: hidden, its row is left out of the layout plan
+    /// entirely, so the collapsed screen is byte-for-byte the old one.
+    pub(crate) show_summary: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -113,6 +114,7 @@ impl App {
             show_projects: false,
             show_tags: false,
             show_marks: false,
+            show_summary: false,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -214,6 +216,10 @@ pub fn run_tui() -> Result<()> {
                             // surface is display-only, so opening it cannot
                             // move `j`/`k` or `Enter` anywhere.
                             KeyCode::Char('M') => app.toggle_marks(),
+                            // Display-only like the marks surface, so no focus
+                            // argument here either. Capital `S` only: lowercase
+                            // `s` stops the active entry.
+                            KeyCode::Char('S') => app.toggle_summary(),
                             KeyCode::Tab => app.cycle_focus(),
                             // crossterm reports Shift-Tab as its own code, not Tab
                             // with a SHIFT modifier.
@@ -1728,6 +1734,142 @@ mod tests {
         app.view_mode = ViewMode::Day;
         // Nothing separates them by total, so the name tie-break decides.
         assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
+    }
+
+    /// Hidden, the surface has no height at all, so `ui` leaves its row out of the
+    /// layout plan rather than reserving a zero-height one — that omission is what
+    /// keeps the collapsed screen identical to the one before it existed.
+    #[test]
+    fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
+        let _guard = env_guard();
+        sandbox("summary-height");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Day;
+
+        assert!(!app.show_summary);
+        assert_eq!(app.summary_surface_height(), 0, "hidden: no row at all");
+
+        // Two borders plus one row per project: the day has three.
+        app.toggle_summary();
+        assert_eq!(app.summary_surface_height(), 5);
+        // Re-scoping re-sizes it: the week has four projects, all entries too.
+        app.view_mode = ViewMode::Week;
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // An empty scope still gets one row, so the box can say it is empty.
+        app.view_mode = ViewMode::Day;
+        app.selected_date = Local::now().date_naive() - chrono::Duration::days(400);
+        assert!(app.project_summary().is_empty());
+        assert_eq!(app.summary_surface_height(), 3);
+
+        app.toggle_summary();
+        assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
+    }
+
+    /// Toggling the surface is display-only: it moves no focus and touches no
+    /// selection, unlike `toggle_pane`.
+    #[test]
+    fn toggling_the_summary_surface_leaves_focus_and_the_table_alone() {
+        let _guard = env_guard();
+        sandbox("summary-focus");
+        let mut app = seed_summary();
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.table_state.select(Some(1));
+
+        app.toggle_summary();
+        assert!(app.show_summary);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        app.toggle_summary();
+        assert!(!app.show_summary);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    /// The title marker names the scope in words, tracks `1`/`2`/`3`, and always
+    /// carries the `all projects` statement — in both filter states, because it
+    /// describes what the surface covers rather than warning about a filter.
+    #[test]
+    fn the_title_marker_names_the_scope_and_always_says_all_projects() {
+        let _guard = env_guard();
+        sandbox("summary-marker");
+        let mut app = seed_summary();
+        app.toggle_summary();
+
+        for (mode, word) in scopes() {
+            app.set_view_mode(mode);
+            assert_eq!(app.summary_marker(6), format!("{word} · all projects"));
+        }
+
+        // A filter changes the emphasis, never the words.
+        app.set_view_mode(ViewMode::Day);
+        assert!(!app.total_is_filtered());
+        let unfiltered = app.summary_marker(6);
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(app.total_is_filtered(), "the footer total is now narrowed");
+        assert_eq!(app.summary_marker(6), unfiltered);
+    }
+
+    /// Overflow says `shown/total` on the same title, driven off the height the
+    /// frame really has — and says nothing at all while every project fits, since
+    /// the title already reads `all projects`.
+    #[test]
+    fn more_projects_than_fit_are_counted_on_the_title() {
+        let _guard = env_guard();
+        sandbox("summary-overflow");
+        let today = Local::now().date_naive();
+        let entries: Vec<TimeEntry> = (0..9)
+            .map(|n| logged(n, "x", &format!("p{n}"), &[], today, 30 + n as i64))
+            .collect();
+        seed(entries, 9);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
+        assert_eq!(app.summary_surface_height(), 8);
+        assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
+        assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
+        assert_eq!(app.visible_project_summary(6).len(), 6);
+
+        // A shorter box counts what *it* left out, not what the cap would have.
+        assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
+        assert_eq!(app.visible_project_summary(2).len(), 2);
+
+        // Room for all nine: no count, because the rows already say it.
+        assert_eq!(app.summary_count(9), None);
+        assert_eq!(app.summary_marker(9), "day · all projects");
+    }
+
+    /// The summary and the footer total are one statement: with nothing filtered
+    /// the rows sum to the footer's figure, and with a filter on the rows stay put
+    /// while the footer drops — which is precisely when the marker is emphasised.
+    #[test]
+    fn the_rows_sum_to_the_footer_total_until_a_filter_narrows_it() {
+        let _guard = env_guard();
+        sandbox("summary-vs-footer");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+
+        let rows = app.project_summary();
+        let summed: chrono::Duration = rows
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, row| acc + row.total);
+        // Unfiltered, the footer prints the scope total for the week.
+        let week_start = TimeData::week_start(app.selected_date);
+        assert!(!app.total_is_filtered());
+        assert_eq!(summed, app.data.total_for_week(week_start));
+
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(app.total_is_filtered(), "the marker is now emphasised");
+        assert!(
+            app.filtered_total() < summed,
+            "the footer total should have dropped below the summary's"
+        );
+        assert_eq!(app.project_summary(), rows, "the summary must not move");
     }
 
     /// `/` must reach every field a row shows: the owner asked to "search on

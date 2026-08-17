@@ -13,6 +13,21 @@ impl ViewMode {
             ViewMode::Week => "Weekly View",
         }
     }
+
+    /// The one-word scope name, for places that name the period inline rather
+    /// than heading a panel with it — the Summary surface's `day · all projects`.
+    ///
+    /// A real mapping rather than a derived `Debug`: the words are user-facing
+    /// copy that happens to coincide with the variant names today, and deriving
+    /// `Debug` here would quietly tie the two together, so renaming a variant
+    /// would change what the screen says.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ViewMode::All => "all",
+            ViewMode::Day => "day",
+            ViewMode::Week => "week",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

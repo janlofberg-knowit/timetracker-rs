@@ -1,6 +1,11 @@
-//! Per-project totals for the current view scope — the computation half of the
-//! Summary surface (#21). The rendering, the `Shift-S` toggle and the help line
-//! are #23; nothing consumes this module yet.
+//! Per-project totals for the current view scope, and the state behind the
+//! collapsible `Summary` surface that shows them.
+//!
+//! The surface is **display-only**: not on the `Tab` focus ring, no cursor, no
+//! `Enter` behaviour, because the Projects pane already owns project filtering
+//! and a second entry point for it would be one gesture too many. `render.rs`
+//! draws it; everything it needs to draw — height, row set, title marker — is
+//! decided here.
 //!
 //! **This folds the scope, not the view.** [`App::project_summary`] reads
 //! `scope_entries()` and never `filtered_entries()`, because the question the
@@ -17,6 +22,20 @@ use std::collections::HashMap;
 use chrono::Duration;
 
 use super::App;
+use super::panes::surface_count;
+
+/// Most project rows the surface shows before the rest live in the border count.
+/// Six is the panes' cap (`MAX_VISIBLE_VALUES`), and a summary that grows past
+/// the entries table it sits under has stopped being a footnote about the day.
+const MAX_VISIBLE_PROJECTS: usize = 6;
+
+/// The standing statement on the surface's title bar, after the scope word.
+///
+/// It is here rather than inlined in the renderer because it is the cue that
+/// makes the whole surface honest: the summary is unfiltered while the footer
+/// total is filtered, so the two disagree whenever a filter is on, and these
+/// three words are what say that is intended rather than broken.
+const ALL_PROJECTS: &str = "all projects";
 
 /// The label a row carries when its entries have no project at all.
 ///
@@ -90,6 +109,72 @@ impl App {
                 .then_with(|| a.project.cmp(&b.project))
         });
         rows
+    }
+
+    /// Height of the summary surface including borders, or 0 while it is hidden —
+    /// the layout then drops the row entirely rather than reserving a zero-height
+    /// one, which is exactly what makes the collapsed screen identical to the one
+    /// before this surface existed.
+    ///
+    /// The shape is `pane_surface_height`': a box sized to its content up to the
+    /// cap, and one empty row when the scope has no entries at all so the box can
+    /// say so rather than collapsing to two touching borders.
+    pub(crate) fn summary_surface_height(&self) -> u16 {
+        if !self.show_summary {
+            return 0;
+        }
+        2 + self.project_summary().len().clamp(1, MAX_VISIBLE_PROJECTS) as u16
+    }
+
+    /// The rows that fit in `visible_rows` of inner height, largest first.
+    ///
+    /// Driven off the height the frame really has rather than the cap, so a
+    /// terminal too short for the full box still shows a truthful count of what
+    /// it left out.
+    pub(crate) fn visible_project_summary(&self, visible_rows: usize) -> Vec<ProjectTotal> {
+        let mut rows = self.project_summary();
+        rows.truncate(visible_rows);
+        rows
+    }
+
+    /// `shown/total` once more projects exist than fit, and `None` while they all
+    /// fit — the panes' and the marks box's own [`surface_count`], in its
+    /// cursorless "there are more of these than you can see" reading.
+    ///
+    /// The one difference from the marks box is that the all-fit case stays
+    /// silent instead of printing a bare total: this count is appended to a title
+    /// that already reads `day · all projects`, and a `· 3` after that says
+    /// nothing the three visible rows do not.
+    pub(crate) fn summary_count(&self, visible_rows: usize) -> Option<String> {
+        let total = self.project_summary().len();
+        if total <= visible_rows {
+            return None;
+        }
+        surface_count(None, total, visible_rows)
+    }
+
+    /// The right-aligned half of the title bar: `day · all projects`, plus
+    /// `· 6/9` when rows are off screen.
+    ///
+    /// Present in **both** filter states — it describes what the surface covers,
+    /// which is equally true when nothing is filtered — and the renderer changes
+    /// only its colour, never its words, when
+    /// [`total_is_filtered`](Self::total_is_filtered) makes it load-bearing.
+    pub(crate) fn summary_marker(&self, visible_rows: usize) -> String {
+        let mut marker = format!("{} · {}", self.view_mode.label(), ALL_PROJECTS);
+        if let Some(count) = self.summary_count(visible_rows) {
+            marker.push_str(" · ");
+            marker.push_str(&count);
+        }
+        marker
+    }
+
+    /// `Shift-S`: show or hide the surface.
+    ///
+    /// Touches no focus, like `toggle_marks` and unlike `toggle_pane`: the
+    /// surface never holds any, so there is nothing to repair when it closes.
+    pub(crate) fn toggle_summary(&mut self) {
+        self.show_summary = !self.show_summary;
     }
 }
 

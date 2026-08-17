@@ -34,6 +34,7 @@ enum LayoutRow {
     Tabs,
     Search,
     Content,
+    Summary,
     Footer,
 }
 
@@ -87,6 +88,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         plan.push((LayoutRow::Search, Constraint::Length(3)));
     }
     plan.push((LayoutRow::Content, Constraint::Min(10)));
+    // The summary goes under the table and over the footer, per "place at the
+    // bottom": it is about the whole period the table is showing, so it reads as
+    // that table's total rather than as another header above it.
+    let summary_height = app.summary_surface_height();
+    if summary_height > 0 {
+        plan.push((LayoutRow::Summary, Constraint::Length(summary_height)));
+    }
     plan.push((LayoutRow::Footer, Constraint::Length(3)));
     let rows = LayoutRows::split(f.area(), plan);
 
@@ -177,9 +185,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_entries_table(f, app, content);
     }
 
+    if let Some(area) = rows.get(LayoutRow::Summary) {
+        render_summary_surface(f, app, area);
+    }
+
     // Footer: left = hints (clips), right = "? : help" (always visible)
-    let searching = app.is_searching() && !app.search_term.is_empty();
-    let (total, total_label) = if searching || app.is_filtering() {
+    let (total, total_label) = if app.total_is_filtered() {
         (app.filtered_total(), "Filtered: ")
     } else {
         let t = match app.view_mode {
@@ -373,6 +384,9 @@ pub fn render_help_popup(f: &mut Frame) {
         // Not under Search & Filter with the P/T panes: this surface filters
         // nothing and takes no focus, it only shows what `tt-safe` has open.
         Line::from(vec![key("  Shift-M"), sep("  open marks on / off")]),
+        // Help-only, and deliberately not in the footer legend: the hint zone
+        // clips from the right at 80 columns and has no room left.
+        Line::from(vec![key("  Shift-S"), sep("  project summary on / off")]),
         Line::from(vec![key("  o"), sep("        toggle sort order")]),
         Line::from(vec![key("  r"), sep("        reload data from disk")]),
         Line::from(vec![key("  ?"), sep("        toggle this help")]),
@@ -602,6 +616,96 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         format!("   ({})", mark.elapsed()),
                         Style::default().fg(theme::HIGHLIGHT),
+                    ),
+                ])
+            })
+            .collect()
+    };
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The `Summary` surface: how the current scope split across projects.
+///
+/// Display-only — no cursor, no focus border, nothing to select — so the whole
+/// surface is a `Paragraph` in a block. Totals go through `duration::format`, so
+/// a row reads exactly as the footer and the CLI would print the same span.
+///
+/// **The title bar is the substance.** `Summary (S)` on the left, and right
+/// aligned opposite it the scope and the standing `all projects` marker. The
+/// marker's words never change; its colour does, moving from `TITLE` to
+/// `HIGHLIGHT` at the moment a filtered footer total starts disagreeing with
+/// these unfiltered rows. That is the whole mechanism by which the disagreement
+/// reads as intentional, so the two must stay driven off the one predicate the
+/// footer uses.
+fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
+    /// Narrowest the project column gets, so a box of short names still lines its
+    /// totals up where the owner's approved shape puts them.
+    const LABEL_WIDTH: usize = 14;
+    /// Widths of the three right-flushed number columns: total, entry count,
+    /// share. Fixed rather than content-derived, so the columns do not shift
+    /// under a re-scope that happens to widen one figure.
+    const TOTAL_WIDTH: usize = 8;
+    const COUNT_WIDTH: usize = 5;
+    const SHARE_WIDTH: usize = 6;
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BORDER))
+        .title(Span::styled(
+            " Summary (S) ",
+            Style::default().fg(theme::TITLE),
+        ));
+    let inner = block.inner(area);
+
+    let marker_style = Style::default().fg(if app.total_is_filtered() {
+        theme::HIGHLIGHT
+    } else {
+        theme::TITLE
+    });
+    block = block.title_top(
+        Line::from(Span::styled(
+            format!(" {} ", app.summary_marker(inner.height as usize)),
+            marker_style,
+        ))
+        .right_aligned(),
+    );
+
+    let rows = app.visible_project_summary(inner.height as usize);
+    // One project column for the whole box, widened only by a name that overflows
+    // it, so the numbers read as columns instead of trailing each name.
+    let label_width = rows
+        .iter()
+        .map(|row| row.project.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(LABEL_WIDTH);
+
+    let lines: Vec<Line> = if rows.is_empty() {
+        vec![Line::from(Span::styled(
+            " nothing in scope",
+            Style::default().fg(theme::INACTIVE).italic(),
+        ))]
+    } else {
+        rows.iter()
+            .map(|row| {
+                let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}{}", row.project, pad),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!("{:>TOTAL_WIDTH$}", crate::duration::format(row.total)),
+                        Style::default().fg(theme::HIGHLIGHT),
+                    ),
+                    Span::styled(
+                        format!("{:>COUNT_WIDTH$}", row.entries),
+                        Style::default().fg(theme::INACTIVE),
+                    ),
+                    Span::styled(
+                        format!("{:>SHARE_WIDTH$}", format!("{}%", row.share)),
+                        Style::default().fg(theme::ACCENT),
                     ),
                 ])
             })
