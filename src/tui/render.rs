@@ -12,6 +12,12 @@ use crate::tracker::TimeData;
 use super::{theme, App};
 use super::types::{InputField, InputMode, Pane, ViewMode};
 
+/// What marks the row a cursor is on, in every list that has a cursor: the entries
+/// table and both P/T panes. One string so the lists stay recognisably the same
+/// mechanism, and so the width a list has to reserve for it is never out of step
+/// with what gets drawn.
+const CURSOR_MARKER: &str = ">> ";
+
 /// A named vertical row of the main layout.
 ///
 /// Some rows are conditional — the search bar only while searching, the P/T pane
@@ -551,7 +557,11 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         );
     }
 
-    let width = inner.width as usize;
+    // The cursor marker is the entries table's, so the two lists read as one
+    // system. It is a gutter the List reserves on *every* row, so it comes off the
+    // width the rows lay themselves out in — otherwise the right-flushed counts
+    // would be pushed off the end.
+    let width = (inner.width as usize).saturating_sub(CURSOR_MARKER.len());
     let items: Vec<ListItem> = if values.is_empty() {
         vec![ListItem::new(Span::styled(
             " nothing in view",
@@ -583,9 +593,14 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
             .collect()
     };
 
+    // Shown whether or not the pane has focus: the border accent is what says
+    // "keys land here", while the marker says where this pane's cursor will resume,
+    // which is worth knowing from the other side of the surface. The entries table
+    // shows its own marker unconditionally for the same reason.
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().bg(theme::SELECTED_BG));
+        .highlight_style(Style::default().bg(theme::SELECTED_BG))
+        .highlight_symbol(CURSOR_MARKER);
     let mut state = ListState::default();
     if !values.is_empty() {
         state.select(Some(app.pane_cursor(pane)));
@@ -1006,7 +1021,7 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
             .title(Span::styled(title, Style::default().fg(theme::TITLE))),
     )
     .row_highlight_style(Style::default().bg(theme::SELECTED_BG))
-    .highlight_symbol(">> ");
+    .highlight_symbol(CURSOR_MARKER);
 
     let mut render_state = TableState::default().with_selected(visual_selected);
     f.render_stateful_widget(table, area, &mut render_state);
