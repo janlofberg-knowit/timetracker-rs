@@ -7,7 +7,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::TableState};
-use crate::storage::{StoreStamp, load_data};
+use crate::marks::Mark;
+use crate::storage::{PathStamp, load_data};
 use crate::tracker::TimeData;
 
 pub mod theme;
@@ -45,7 +46,25 @@ pub(crate) struct App {
     pub(crate) cursor_pos: usize,
     /// Fingerprint of the store as of the last load, so the event loop can spot
     /// writes made outside the TUI without reading the file every tick.
-    pub(crate) store_stamp: Option<StoreStamp>,
+    pub(crate) store_stamp: Option<PathStamp>,
+    /// `tt-safe`'s open phase marks as of the last read, newest first, kept so a
+    /// frame never reads the directory.
+    pub(crate) marks: Vec<Mark>,
+    /// Fingerprint of the *mark directory*, so the event loop can spot marks
+    /// begun or dropped outside the TUI without listing it every tick.
+    ///
+    /// **The blind spot, deliberately:** creating or deleting a mark file changes
+    /// the directory's mtime, but `tt-safe touch` rewriting `<mark>.last` in
+    /// place does not — an in-place write to a file inside a directory leaves the
+    /// directory itself untouched. So this stamp catches `begin`, `end` and
+    /// `cancel`, i.e. every event that changes *which* marks are open, and is
+    /// blind to heartbeats. That is exactly why the surface shows only
+    /// start-derived data (`Mark::start`, and elapsed derived from it at render
+    /// time). Anything heartbeat-derived — a last-beat column, a staleness cue —
+    /// would appear to work while the mark list happened to be changing and then
+    /// silently go stale, so do not add one on top of this stamp: it would need a
+    /// stamp per mark file, or the append-only `<mark>.beats` file, or both.
+    pub(crate) marks_stamp: Option<PathStamp>,
     /// Whether the Projects / Tags panes are open. Both default to off, so the
     /// pane surface has zero height and first-run layout is unchanged.
     pub(crate) show_projects: bool,
@@ -59,10 +78,12 @@ pub(crate) struct App {
 impl App {
     fn new() -> Result<Self> {
         // Stamp before loading — see `App::reload`.
-        let store_stamp = StoreStamp::read();
-        Ok(Self {
+        let store_stamp = crate::storage::store_stamp();
+        let mut app = Self {
             data: load_data()?,
             store_stamp,
+            marks: Vec::new(),
+            marks_stamp: None,
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
             view_mode: ViewMode::Day,
@@ -86,7 +107,11 @@ impl App {
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
-        })
+        };
+        // The first tick is 250 ms away; reading now means the first frame is as
+        // current as every frame after it.
+        app.sync_from_marks();
+        Ok(app)
     }
 
     /// Apply `edit` to the store under its exclusive lock, then refresh the
@@ -105,7 +130,7 @@ impl App {
         self.data = fresh;
         // Our own write moved the file on; stamping it here keeps the next tick
         // from reloading what we already hold.
-        self.store_stamp = StoreStamp::read();
+        self.store_stamp = crate::storage::store_stamp();
         Ok(result)
     }
 }
@@ -306,8 +331,11 @@ pub fn run_tui() -> Result<()> {
         }
 
         // The 250 ms poll above is the loop's clock: whether it returned a key or
-        // timed out, this is where we notice a store written from outside.
+        // timed out, this is where we notice a store written from outside — and,
+        // on the same tick and with no second timer, a mark begun or dropped
+        // outside too.
         app.sync_from_store()?;
+        app.sync_from_marks();
 
         if app.should_quit {
             break;
@@ -322,31 +350,49 @@ pub fn run_tui() -> Result<()> {
 mod tests {
     use super::*;
     use crate::storage;
+    /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`, since env is
+    /// process-wide — and shares its lock with `marks`' own env test, which would
+    /// otherwise repoint `TT_MARK_DIR` underneath these.
+    use crate::storage::env_guard;
     use crate::tracker::TimeEntry;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    /// Serialises the tests that repoint `HOME`, since it is process-wide.
-    fn env_guard() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     /// Point `HOME` at a fresh scratch dir so `ProjectDirs` resolves the store
-    /// inside it. Tests must never touch the user's real store.
+    /// inside it, and `TT_MARK_DIR` at a mark directory inside the same dir.
+    /// Tests must never touch the user's real store or their real marks — live
+    /// agent sessions write both continuously.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-store-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         unsafe { std::env::set_var("HOME", &dir) };
+        unsafe { std::env::set_var("TT_MARK_DIR", dir.join("marks")) };
         let path = storage::get_data_path().unwrap();
         assert!(
             path.starts_with(&dir),
             "sandbox HOME not in effect: {path:?}"
         );
+        let marks = crate::marks::mark_dir().expect("a mark dir");
+        assert!(
+            marks.starts_with(&dir),
+            "sandbox TT_MARK_DIR not in effect: {marks:?}"
+        );
         dir
+    }
+
+    /// The sandbox's mark directory, created on demand.
+    fn mark_sandbox() -> PathBuf {
+        let dir = crate::marks::mark_dir().expect("a mark dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a mark file the way `tt-safe begin` does: the name is the phase key,
+    /// the content is a unix-seconds start timestamp. Never shells out to
+    /// `tt-safe` — the real mark directory has live marks in it.
+    fn begin_mark(dir: &std::path::Path, key: &str, minutes_ago: i64) {
+        let start = Local::now() - chrono::Duration::minutes(minutes_ago);
+        std::fs::write(dir.join(key), format!("{}\n", start.timestamp())).unwrap();
     }
 
     fn entry(id: u64, description: &str) -> TimeEntry {
@@ -545,6 +591,76 @@ mod tests {
         assert!(descriptions(&app.data).contains(&"probe"));
     }
 
+    /// The phase keys of the marks the app currently holds, newest first.
+    fn mark_keys(app: &App) -> Vec<String> {
+        app.marks
+            .iter()
+            .map(|m| match &m.issue {
+                Some(issue) => format!("{}.{}.{}", m.project, issue, m.phase),
+                None => format!("{}.-.{}", m.project, m.phase),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_mark_begun_outside_the_tui_appears_on_the_next_tick_and_cancelling_removes_it() {
+        let _guard = env_guard();
+        sandbox("marks-tick");
+        seed(vec![entry(0, "first")], 1);
+        let marks = mark_sandbox();
+
+        // Nothing open: an empty mark directory is an empty list, not an error.
+        let mut app = App::new().unwrap();
+        assert!(app.marks.is_empty());
+
+        begin_mark(&marks, "tt.14.impl", 2);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
+
+        // A second mark, begun while the first is still open.
+        begin_mark(&marks, "vinge.-.plan", 126);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl", "vinge.-.plan"]);
+
+        // `tt-safe cancel` / `tt-safe end` both remove the file.
+        std::fs::remove_file(marks.join("tt.14.impl")).unwrap();
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["vinge.-.plan"]);
+    }
+
+    /// The directory stamp's whole purpose, and its documented blind spot in one
+    /// test: an in-place rewrite of a file *inside* the mark directory leaves the
+    /// directory's own mtime alone, so a settled stamp means no re-read at all.
+    #[test]
+    fn an_unchanged_mark_directory_is_not_read_again() {
+        let _guard = env_guard();
+        sandbox("marks-noread");
+        seed(vec![entry(0, "first")], 1);
+        let marks = mark_sandbox();
+        begin_mark(&marks, "tt.14.impl", 2);
+
+        let mut app = App::new().unwrap();
+        let first = app.marks.clone();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
+
+        // Let the directory's mtime settle out of the current second, so the stamp
+        // is trustworthy rather than deliberately stale.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Rewrite the mark's *contents* in place, same length, without adding or
+        // removing a file. The directory is untouched, so a re-read would be the
+        // only way this could show up — and it must not.
+        begin_mark(&marks, "tt.14.impl", 999);
+        app.sync_from_marks();
+        assert_eq!(app.marks, first, "the directory did not change: no re-read");
+
+        // Creating a file *does* move the directory on, and the whole list is then
+        // re-read — including the rewritten start the previous tick ignored.
+        begin_mark(&marks, "loremind.64.plan", 38);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["loremind.64.plan", "tt.14.impl"]);
+    }
+
     #[test]
     fn sync_falls_back_to_a_nearby_row_when_the_selection_is_gone() {
         let _guard = env_guard();
@@ -588,7 +704,7 @@ mod tests {
         // A stamp identical to the one on disk still counts as changed while the
         // mtime sits inside the current second, since a second write in that
         // second could leave both mtime and length untouched.
-        app.store_stamp = storage::StoreStamp::read();
+        app.store_stamp = storage::store_stamp();
         assert!(
             !app.store_is_unchanged(),
             "an unsettled stamp should not be trusted"

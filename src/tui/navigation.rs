@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{Duration, Local};
-use crate::storage::StoreStamp;
+use crate::storage::PathStamp;
 use super::App;
 use super::types::{InputMode, ViewMode};
 
@@ -12,20 +12,43 @@ impl App {
     /// reload. Stamping afterwards would record a fingerprint newer than the data,
     /// and the update would be lost for good.
     pub(crate) fn reload(&mut self) -> Result<()> {
-        self.store_stamp = StoreStamp::read();
+        self.store_stamp = crate::storage::store_stamp();
         self.data = crate::storage::load_data()?;
         Ok(())
     }
 
     /// Whether the store on disk still matches the snapshot in memory.
+    ///
+    /// The "could this stamp change again without looking different" reasoning
+    /// lives in `PathStamp::unchanged`, so the mark directory's own check next
+    /// door cannot drift from it.
     pub(crate) fn store_is_unchanged(&self) -> bool {
-        let current = StoreStamp::read();
-        match current {
-            // A stamp that could change again without looking different has to be
-            // treated as stale — see `StoreStamp::is_settled`.
-            Some(stamp) => current == self.store_stamp && stamp.is_settled(),
-            None => current == self.store_stamp,
+        PathStamp::unchanged(self.store_stamp, crate::storage::store_stamp())
+    }
+
+    /// Pick up marks begun, ended or cancelled outside the TUI. Called once per
+    /// event-loop tick, right beside [`sync_from_store`](Self::sync_from_store)
+    /// and off the same 250 ms `event::poll`.
+    ///
+    /// Unguarded by `input_mode`, unlike the store: the mark list is display-only
+    /// and replacing it cannot clobber text being typed. Unguarded by
+    /// `show_marks` too, so `App.marks` is current the instant the surface opens
+    /// rather than one tick later — while the surface is closed this costs one
+    /// `stat` per tick and no directory read at all.
+    pub(crate) fn sync_from_marks(&mut self) {
+        let Some(dir) = crate::marks::mark_dir() else {
+            self.marks.clear();
+            return;
+        };
+        // Stamp before reading, for the reason `reload` stamps before loading: a
+        // write landing between the two costs one redundant read, where stamping
+        // afterwards would lose the change for good.
+        let current = PathStamp::read(&dir);
+        if PathStamp::unchanged(self.marks_stamp, current) {
+            return;
         }
+        self.marks_stamp = current;
+        self.marks = crate::marks::open_marks_in(&dir);
     }
 
     /// Pick up writes made outside the TUI — an agent's `tt log`, another shell —

@@ -41,6 +41,31 @@ pub struct Mark {
     pub start: DateTime<Local>,
 }
 
+impl Mark {
+    /// How long this mark has been open, as `2m` or `2h 6m`.
+    ///
+    /// Derived from [`start`](Mark::start) on every call and **never cached as a
+    /// string**: the mark list is only re-read when the mark directory changes,
+    /// so a cached elapsed would freeze until someone began or dropped a mark.
+    /// Deriving it here instead means an open surface counts up every frame at
+    /// the cost of no directory read at all.
+    pub fn elapsed(&self) -> String {
+        self.elapsed_at(Local::now())
+    }
+
+    /// The `now`-taking half of [`elapsed`](Mark::elapsed), so the formatting can
+    /// be tested without waiting for a clock.
+    pub fn elapsed_at(&self, now: DateTime<Local>) -> String {
+        // A start in the future (a clock stepping back, a hand-written mark) reads
+        // as 0m rather than as a negative age.
+        let minutes = (now - self.start).num_minutes().max(0);
+        match minutes / 60 {
+            0 => format!("{}m", minutes),
+            hours => format!("{}h {}m", hours, minutes % 60),
+        }
+    }
+}
+
 /// The directory `tt-safe` keeps its marks in, mirroring `bin/tt-safe`'s
 /// `MARK_DIR="${TT_MARK_DIR:-$HOME/.cache/tt-safe/marks}"`.
 pub fn mark_dir() -> Option<PathBuf> {
@@ -162,16 +187,10 @@ fn split_key(name: &str) -> (String, Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    /// Serialises the one test that repoints `TT_MARK_DIR`, since env is
-    /// process-wide. Every other test passes its directory in explicitly.
-    fn env_guard() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+    /// Serialises the one test here that repoints `TT_MARK_DIR`, since env is
+    /// process-wide. Every other test passes its directory in explicitly. Shared
+    /// with the TUI's `HOME`-repointing tests — see `storage::env_guard`.
+    use crate::storage::env_guard;
 
     /// A fresh scratch mark directory. The real one at
     /// `~/.cache/tt-safe/marks` has live marks in it and must never be touched.
@@ -305,6 +324,37 @@ mod tests {
             Some(PathBuf::from("/elsewhere"))
         );
         assert_eq!(resolve_mark_dir(None, None), None, "no HOME, no default");
+    }
+
+    #[test]
+    fn elapsed_is_derived_from_the_start_and_counts_up() {
+        let mark = |seconds: i64| Mark {
+            project: "tt".into(),
+            issue: Some("14".into()),
+            phase: "impl".into(),
+            start: DateTime::from_timestamp(seconds, 0)
+                .unwrap()
+                .with_timezone(&Local),
+        };
+        let start = 1_000_000_000;
+        let now = |offset: i64| {
+            DateTime::from_timestamp(start + offset, 0)
+                .unwrap()
+                .with_timezone(&Local)
+        };
+
+        assert_eq!(mark(start).elapsed_at(now(0)), "0m");
+        assert_eq!(mark(start).elapsed_at(now(119)), "1m", "seconds truncate");
+        assert_eq!(mark(start).elapsed_at(now(120)), "2m");
+        assert_eq!(mark(start).elapsed_at(now(60 * 60)), "1h 0m");
+        assert_eq!(mark(start).elapsed_at(now(126 * 60)), "2h 6m");
+        // The same mark, read again a minute later: the number moves without the
+        // mark file being touched, which is the whole point of deriving it.
+        let m = mark(start);
+        assert_eq!(m.elapsed_at(now(60)), "1m");
+        assert_eq!(m.elapsed_at(now(61 * 60)), "1h 1m");
+        // A clock that stepped backwards must not print a negative age.
+        assert_eq!(m.elapsed_at(now(-90)), "0m");
     }
 
     #[test]
