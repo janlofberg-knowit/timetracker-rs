@@ -609,6 +609,198 @@ mod tests {
         );
     }
 
+    fn dated(
+        id: u64,
+        description: &str,
+        project: &str,
+        tags: &[&str],
+        date: NaiveDate,
+    ) -> TimeEntry {
+        let start = date
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: (!project.is_empty()).then(|| project.to_string()),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            start_time: start,
+            end_time: Some(start + chrono::Duration::hours(1)),
+        }
+    }
+
+    /// A store spanning three scopes: two days inside the current week plus one
+    /// entry a week back, so day / week / all each see a different set.
+    fn seed_panes() -> App {
+        let today = Local::now().date_naive();
+        let week_start = TimeData::week_start(today);
+        let day_one = week_start;
+        let day_two = week_start + chrono::Duration::days(1);
+        let last_week = week_start - chrono::Duration::days(7);
+        seed(
+            vec![
+                dated(0, "a", "tt", &["impl", "tt/8"], day_one),
+                dated(1, "b", "tt", &["plan"], day_one),
+                dated(2, "c", "loremind", &["impl", "ops"], day_one),
+                dated(3, "d", "vinge", &["ops"], day_two),
+                dated(4, "e", "vinge", &["impl"], last_week),
+                dated(5, "f", "", &[], day_one),
+            ],
+            6,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = day_one;
+        app
+    }
+
+    /// A pane's rows as `value=count`, in the order they are listed.
+    fn values(app: &App, pane: Pane) -> String {
+        app.pane_values(pane)
+            .iter()
+            .map(|(value, count)| format!("{value}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Each pane offers the distinct values of the current view scope with their
+    /// match counts — and an entry with no project contributes no Projects row.
+    #[test]
+    fn pane_values_follow_the_view_scope() {
+        let _guard = env_guard();
+        sandbox("pane-scope");
+        let mut app = seed_panes();
+
+        app.view_mode = ViewMode::Day;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 loremind=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=2 ops=1 plan=1 tt/8=1");
+
+        app.view_mode = ViewMode::Week;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 loremind=1 vinge=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=2 ops=2 plan=1 tt/8=1");
+
+        app.view_mode = ViewMode::All;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 vinge=2 loremind=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=3 ops=2 plan=1 tt/8=1");
+    }
+
+    /// The panes read the scope *before* the filter, so a pane never hides the
+    /// value the user has just filtered on.
+    #[test]
+    fn pane_values_ignore_the_active_filter_and_search() {
+        let _guard = env_guard();
+        sandbox("pane-prefilter");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        let before = app.pane_values(Pane::Tags);
+
+        app.tag_filter = vec!["plan".to_string()];
+        app.search_term = "nothing matches this".to_string();
+        assert!(app.filtered_entries().is_empty(), "filter did not bite");
+        assert_eq!(app.pane_values(Pane::Tags), before);
+        assert_eq!(app.pane_values(Pane::Projects).len(), 2);
+    }
+
+    #[test]
+    fn the_surface_has_no_height_until_a_pane_is_opened() {
+        let _guard = env_guard();
+        sandbox("pane-height");
+        let mut app = seed_panes();
+        assert!(!app.show_projects && !app.show_tags);
+        assert_eq!(app.pane_surface_height(), 0);
+
+        app.toggle_pane(Pane::Projects);
+        assert!(app.pane_surface_height() > 0);
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.pane_surface_height(), 0);
+    }
+
+    #[test]
+    fn tab_cycles_focus_through_the_visible_panes_only() {
+        let _guard = env_guard();
+        sandbox("pane-focus");
+        let mut app = seed_panes();
+
+        // No pane open: Tab is a no-op.
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Tags);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+    }
+
+    #[test]
+    fn hiding_the_focused_pane_hands_focus_back_to_the_table() {
+        let _guard = env_guard();
+        sandbox("pane-focus-drop");
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Projects);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Table);
+        assert!(app.focused_pane().is_none());
+    }
+
+    /// `j`/`k` wrap inside the focused pane and leave the table alone; with no
+    /// pane focused they report "not handled" so the table moves instead.
+    #[test]
+    fn pane_cursor_moves_only_while_a_pane_has_focus() {
+        let _guard = env_guard();
+        sandbox("pane-cursor");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.table_state.select(Some(0));
+
+        assert!(!app.pane_next(), "no pane focused, yet j was swallowed");
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+
+        app.toggle_pane(Pane::Tags);
+        app.cycle_focus();
+        let len = app.pane_values(Pane::Tags).len();
+        assert_eq!(len, 4);
+        assert!(app.pane_next());
+        assert_eq!(app.pane_cursor(Pane::Tags), 1);
+        assert!(app.pane_previous());
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+        // k at the top wraps to the last value
+        assert!(app.pane_previous());
+        assert_eq!(app.pane_cursor(Pane::Tags), len - 1);
+        // …and j at the bottom wraps back
+        assert!(app.pane_next());
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+        assert_eq!(app.table_state.selected(), Some(0), "the table moved too");
+    }
+
+    /// A cursor left past the end by a scope change is clamped, not panicking.
+    #[test]
+    fn a_stale_pane_cursor_is_clamped_to_the_new_value_list() {
+        let _guard = env_guard();
+        sandbox("pane-cursor-stale");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::All;
+        app.project_cursor = 2;
+        assert_eq!(app.pane_cursor(Pane::Projects), 2);
+
+        // Day scope has fewer projects than All
+        app.view_mode = ViewMode::Day;
+        assert_eq!(app.pane_values(Pane::Projects).len(), 2);
+        assert_eq!(app.pane_cursor(Pane::Projects), 1);
+    }
+
     /// `e` pre-fills the Project field, and clearing it drops the project.
     #[test]
     fn editing_round_trips_the_project_field() {
