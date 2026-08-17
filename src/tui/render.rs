@@ -280,7 +280,7 @@ pub fn render_help_popup(f: &mut Frame) {
         heading("  Search & Filter"),
         // This section's key column is two wider than the rest so `Shift-Tab`,
         // the longest binding in the popup, still gets a gap before its text.
-        Line::from(vec![key("  /"), sep("          search entries")]),
+        Line::from(vec![key("  /"), sep("          search any field")]),
         Line::from(vec![key("  Shift-P"), sep("    Projects pane on / off")]),
         Line::from(vec![key("  Shift-T"), sep("    Tags pane on / off")]),
         Line::from(vec![key("  Tab"), sep("        focus table / panes")]),
@@ -670,17 +670,10 @@ fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
         Style::default()
     };
 
-    let end_str = entry
-        .end_time
-        .map(|t| t.format("%H:%M").to_string())
-        .unwrap_or_else(|| "—".to_string());
-
     Row::new(vec![
-        Cell::from(entry.start_time.format("%Y-%m-%d").to_string())
-            .style(Style::default().fg(theme::TITLE)),
-        Cell::from(entry.start_time.format("%H:%M").to_string())
-            .style(Style::default().fg(theme::ACCENT)),
-        Cell::from(end_str).style(Style::default().fg(theme::INACTIVE)),
+        Cell::from(entry.format_date()).style(Style::default().fg(theme::TITLE)),
+        Cell::from(entry.format_start_time()).style(Style::default().fg(theme::ACCENT)),
+        Cell::from(entry.format_end_time()).style(Style::default().fg(theme::INACTIVE)),
         Cell::from(entry.description.clone()),
         Cell::from(entry.format_tags()).style(Style::default().fg(theme::HIGHLIGHT)),
         Cell::from(entry.format_duration()).style(Style::default().fg(dur_color)),

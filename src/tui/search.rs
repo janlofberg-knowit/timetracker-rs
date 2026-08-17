@@ -28,12 +28,7 @@ impl App {
             let search_lower = self.search_term.to_lowercase();
             entries
                 .into_iter()
-                .filter(|e| {
-                    e.description.to_lowercase().contains(&search_lower)
-                        || e.tags
-                            .iter()
-                            .any(|t| t.to_lowercase().contains(&search_lower))
-                })
+                .filter(|e| e.matches_search(&search_lower))
                 .collect()
         }
     }

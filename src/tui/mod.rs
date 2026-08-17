@@ -1051,6 +1051,63 @@ mod tests {
         assert!(app.is_filtering());
     }
 
+    /// `/` must reach every field a row shows: the owner asked to "search on
+    /// anything", and a field the table prints but the search cannot find is the bug
+    /// that asked for.
+    #[test]
+    fn search_matches_every_field_a_row_shows() {
+        let _guard = env_guard();
+        sandbox("search-any-field");
+        let today = Local::now().date_naive();
+        let start = today
+            .and_hms_opt(14, 30, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        seed(
+            vec![
+                TimeEntry {
+                    id: 42,
+                    description: "wrote the migration".to_string(),
+                    project: Some("loremind".to_string()),
+                    tags: vec!["impl".to_string()],
+                    start_time: start,
+                    end_time: Some(start + chrono::Duration::hours(2)),
+                },
+                dated(7, "unrelated", "vinge", &["ops"], today),
+            ],
+            43,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        assert_eq!(in_view(&app).len(), 2);
+
+        for needle in [
+            "migration", // description
+            "LOREMIND",  // project, case-insensitively
+            "impl",      // a tag
+            "42",        // the id
+            "14:",       // a fragment of the start time
+            "16:30",     // the end time
+            "2h 0m",     // the formatted duration
+            &today.format("%Y-%m-%d").to_string(),
+        ] {
+            app.search_term = needle.to_string();
+            let view = in_view(&app);
+            assert!(
+                view.contains(&"wrote the migration".to_string()),
+                "search {needle:?} missed the entry: {view:?}"
+            );
+        }
+
+        // The date matches both entries; every other needle above is unique to one.
+        app.search_term = "loremind".to_string();
+        assert_eq!(in_view(&app), vec!["wrote the migration"]);
+        app.search_term = "no such thing".to_string();
+        assert!(in_view(&app).is_empty());
+    }
+
     /// `e` pre-fills the Project field, and clearing it drops the project.
     #[test]
     fn editing_round_trips_the_project_field() {

@@ -78,6 +78,21 @@ impl TimeEntry {
         duration::format(self.duration())
     }
 
+    /// The date column, as the entries table prints it.
+    pub fn format_date(&self) -> String {
+        self.start_time.format("%Y-%m-%d").to_string()
+    }
+
+    pub fn format_start_time(&self) -> String {
+        self.start_time.format("%H:%M").to_string()
+    }
+
+    /// The end-time column: a clock time, or an em dash while the entry runs.
+    pub fn format_end_time(&self) -> String {
+        self.end_time
+            .map(|t| t.format("%H:%M").to_string())
+            .unwrap_or_else(|| "—".to_string())
+    }
 
     pub fn is_active(&self) -> bool {
         self.end_time.is_none()
@@ -123,6 +138,32 @@ impl TimeEntry {
         };
         let project = project.to_lowercase();
         projects.iter().any(|p| p.trim().to_lowercase() == project)
+    }
+
+    /// Everything a row or the detail popover can show, lower-cased and joined —
+    /// the haystack `/` searches.
+    ///
+    /// The owner asked to "search on anything", so this is built from the same
+    /// formatters the table renders with: a field the UI can show is a field the
+    /// search reaches, and the two cannot drift apart.
+    pub fn search_haystack(&self) -> String {
+        [
+            self.id.to_string(),
+            self.description.clone(),
+            self.project.clone().unwrap_or_default(),
+            self.format_tags(),
+            self.format_date(),
+            self.format_start_time(),
+            self.format_end_time(),
+            self.format_duration(),
+        ]
+        .join(" ")
+        .to_lowercase()
+    }
+
+    /// Whether `needle` (already lower-cased) appears anywhere in this entry.
+    pub fn matches_search(&self, needle_lower: &str) -> bool {
+        self.search_haystack().contains(needle_lower)
     }
 }
 
