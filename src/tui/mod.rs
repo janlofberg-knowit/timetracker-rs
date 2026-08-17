@@ -7,7 +7,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::TableState};
-use crate::storage::load_data;
+use crate::storage::{StoreStamp, load_data};
 use crate::tracker::TimeData;
 
 pub mod theme;
@@ -38,12 +38,18 @@ pub(crate) struct App {
     pub(crate) sort_order: SortOrder,
     /// Cursor position within the currently active input field (char index, not byte index).
     pub(crate) cursor_pos: usize,
+    /// Fingerprint of the store as of the last load, so the event loop can spot
+    /// writes made outside the TUI without reading the file every tick.
+    pub(crate) store_stamp: Option<StoreStamp>,
 }
 
 impl App {
     fn new() -> Result<Self> {
+        // Stamp before loading — see `App::reload`.
+        let store_stamp = StoreStamp::read();
         Ok(Self {
             data: load_data()?,
+            store_stamp,
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
             view_mode: ViewMode::Day,
@@ -77,6 +83,9 @@ impl App {
             Ok((result, data.clone()))
         })?;
         self.data = fresh;
+        // Our own write moved the file on; stamping it here keeps the next tick
+        // from reloading what we already hold.
+        self.store_stamp = StoreStamp::read();
         Ok(result)
     }
 }
@@ -218,6 +227,10 @@ pub fn run_tui() -> Result<()> {
                 }
             }
         }
+
+        // The 250 ms poll above is the loop's clock: whether it returned a key or
+        // timed out, this is where we notice a store written from outside.
+        app.sync_from_store()?;
 
         if app.should_quit {
             break;
@@ -406,6 +419,103 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count, "duplicate ids in the store");
+    }
+
+    fn selected_description(app: &App) -> String {
+        let idx = app.table_state.selected().expect("nothing selected");
+        app.filtered_entries()[idx].description.clone()
+    }
+
+    #[test]
+    fn sync_picks_up_an_outside_write_and_keeps_the_selection() {
+        let _guard = env_guard();
+        sandbox("sync");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "second");
+        agent_write("probe");
+
+        app.sync_from_store().unwrap();
+
+        assert!(descriptions(&app.data).contains(&"probe"));
+        assert_eq!(selected_description(&app), "second");
+    }
+
+    #[test]
+    fn sync_is_skipped_while_a_form_is_open() {
+        let _guard = env_guard();
+        sandbox("sync-form");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        for mode in [
+            InputMode::AddingEntry,
+            InputMode::EditingEntry,
+            InputMode::Searching,
+        ] {
+            app.input_mode = mode;
+            app.input_description = "half typed".to_string();
+            app.sync_from_store().unwrap();
+            assert_eq!(descriptions(&app.data), vec!["first"]);
+            assert_eq!(app.input_description, "half typed");
+        }
+
+        // …and the change is picked up once the mode is Normal again.
+        app.input_mode = InputMode::Normal;
+        app.sync_from_store().unwrap();
+        assert!(descriptions(&app.data).contains(&"probe"));
+    }
+
+    #[test]
+    fn sync_falls_back_to_a_nearby_row_when_the_selection_is_gone() {
+        let _guard = env_guard();
+        sandbox("sync-gone");
+        seed(vec![entry(0, "a"), entry(1, "b"), entry(2, "c")], 3);
+
+        let mut app = App::new().unwrap();
+        let last = app.filtered_entries().len() - 1;
+        app.table_state.select(Some(last));
+        let doomed = app.filtered_entries()[last].id;
+        storage::with_data(|data| {
+            data.entries.retain(|e| e.id != doomed);
+            Ok(())
+        })
+        .unwrap();
+
+        app.sync_from_store().unwrap();
+
+        let len = app.filtered_entries().len();
+        assert_eq!(len, 2);
+        assert_eq!(app.table_state.selected(), Some(len - 1));
+    }
+
+    #[test]
+    fn an_untouched_store_reports_no_change_but_an_unsettled_mtime_does() {
+        let _guard = env_guard();
+        sandbox("sync-quiet");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        // Let the mtime fall out of the current second, past the granularity guard.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(
+            app.store_is_unchanged(),
+            "a quiet store should not trigger a reload"
+        );
+
+        agent_write("probe");
+        assert!(!app.store_is_unchanged(), "an outside write was missed");
+
+        // A stamp identical to the one on disk still counts as changed while the
+        // mtime sits inside the current second, since a second write in that
+        // second could leave both mtime and length untouched.
+        app.store_stamp = storage::StoreStamp::read();
+        assert!(
+            !app.store_is_unchanged(),
+            "an unsettled stamp should not be trusted"
+        );
     }
 
     #[test]
