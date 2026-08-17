@@ -111,6 +111,21 @@ impl App {
         cursor.min(len.saturating_sub(1))
     }
 
+    /// `position/total` for a pane whose values do not all fit in `visible_rows`,
+    /// or `None` when they do.
+    ///
+    /// The cap at [`MAX_VISIBLE_VALUES`] means a long list scrolls, and a list that
+    /// scrolls with nothing on screen to say so hides values outright — the top
+    /// value slides away under `j` and looks like it never existed. This is the
+    /// "there is more, and here is where you are" the box would otherwise lack.
+    pub(crate) fn pane_scroll_indicator(&self, pane: Pane, visible_rows: usize) -> Option<String> {
+        let total = self.pane_values(pane).len();
+        if total <= visible_rows {
+            return None;
+        }
+        Some(format!("{}/{}", self.pane_cursor(pane) + 1, total))
+    }
+
     pub(crate) fn focused_pane(&self) -> Option<Pane> {
         match self.focus {
             Focus::Pane(pane) if self.pane_is_visible(pane) => Some(pane),

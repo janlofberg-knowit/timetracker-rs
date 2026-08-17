@@ -705,6 +705,50 @@ mod tests {
         assert_eq!(app.pane_values(Pane::Projects).len(), 2);
     }
 
+    /// The 6-row cap makes long lists scroll; the indicator is what stops a
+    /// scrolled-away value from looking like it was never there. It has to be
+    /// absent when everything already fits, or it is just noise.
+    #[test]
+    fn the_scroll_indicator_appears_only_when_values_do_not_fit() {
+        let _guard = env_guard();
+        sandbox("pane-scroll-indicator");
+        let today = Local::now().date_naive();
+        let tags: Vec<String> = (0..8).map(|n| format!("tag{n}")).collect();
+        let entries: Vec<TimeEntry> = tags
+            .iter()
+            .enumerate()
+            .map(|(n, tag)| dated(n as u64, "x", "tt", &[tag.as_str()], today))
+            .collect();
+        seed(entries, 8);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_pane(Pane::Tags);
+        app.cycle_focus();
+        assert_eq!(app.pane_values(Pane::Tags).len(), 8);
+
+        // Six rows on screen, eight values: the position tracks the cursor over
+        // every value, wrap included.
+        for expected in 1..=8 {
+            assert_eq!(
+                app.pane_scroll_indicator(Pane::Tags, 6).as_deref(),
+                Some(format!("{expected}/8").as_str())
+            );
+            app.pane_next();
+        }
+        assert_eq!(
+            app.pane_scroll_indicator(Pane::Tags, 6).as_deref(),
+            Some("1/8"),
+            "the cursor did not wrap back to the first value"
+        );
+
+        // Room for all eight — and for more than eight — means no indicator.
+        assert_eq!(app.pane_scroll_indicator(Pane::Tags, 8), None);
+        assert_eq!(app.pane_scroll_indicator(Pane::Tags, 12), None);
+        // Projects has a single value, so it never shows one at the shared height.
+        assert_eq!(app.pane_scroll_indicator(Pane::Projects, 6), None);
+    }
+
     #[test]
     fn the_surface_has_no_height_until_a_pane_is_opened() {
         let _guard = env_guard();

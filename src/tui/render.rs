@@ -327,7 +327,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
     let focused = app.focused_pane() == Some(pane);
     let values = app.pane_values(pane);
 
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focused {
             theme::ACCENT
@@ -343,7 +343,23 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
             }),
         ));
 
-    let width = block.inner(area).width as usize;
+    let inner = block.inner(area);
+
+    // Scrolled lists say so on the top border, opposite the title: ` 2/8 `. The
+    // top border is dead space, so this costs no row and no inner column — a
+    // Scrollbar would have to steal one of the two, and a thumb only hints that
+    // more exists where the count states how much.
+    if let Some(indicator) = app.pane_scroll_indicator(pane, inner.height as usize) {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" {} ", indicator),
+                Style::default().fg(theme::INACTIVE),
+            ))
+            .right_aligned(),
+        );
+    }
+
+    let width = inner.width as usize;
     let items: Vec<ListItem> = if values.is_empty() {
         vec![ListItem::new(Span::styled(
             " nothing in view",
