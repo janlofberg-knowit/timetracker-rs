@@ -18,6 +18,10 @@ mod navigation;
 mod entry_form;
 mod marks_surface;
 mod panes;
+// Per-project totals for the Summary surface. Nothing consumes them yet — the
+// rendering, the `Shift-S` toggle and the help line are #23.
+#[allow(dead_code)]
+mod summary;
 mod render;
 
 pub use types::{Focus, InputField, InputMode, Pane, SortOrder, ViewMode};
@@ -789,6 +793,18 @@ mod tests {
         tags: &[&str],
         date: NaiveDate,
     ) -> TimeEntry {
+        logged(id, description, project, tags, date, 60)
+    }
+
+    /// [`dated`] with a duration, for the summary's per-project totals.
+    fn logged(
+        id: u64,
+        description: &str,
+        project: &str,
+        tags: &[&str],
+        date: NaiveDate,
+        minutes: i64,
+    ) -> TimeEntry {
         let start = date
             .and_hms_opt(9, 0, 0)
             .unwrap()
@@ -800,7 +816,7 @@ mod tests {
             project: (!project.is_empty()).then(|| project.to_string()),
             tags: tags.iter().map(|t| t.to_string()).collect(),
             start_time: start,
-            end_time: Some(start + chrono::Duration::hours(1)),
+            end_time: Some(start + chrono::Duration::minutes(minutes)),
         }
     }
 
@@ -1510,6 +1526,208 @@ mod tests {
         app.toggle_pane_value();
         assert_eq!(app.filtered_total().num_hours(), 2);
         assert!(app.is_filtering());
+    }
+
+    /// A store with unequal per-project times across three scopes, two entries
+    /// with no project at all, and a tie the name has to break.
+    ///
+    /// Day (`day_one`): tt 90m over two entries, loremind 90m, no project 30m —
+    /// 210m. Week adds vinge 120m and a second unprojected 45m — 375m. All adds
+    /// loremind 60m from last week — 435m.
+    fn seed_summary() -> App {
+        let today = Local::now().date_naive();
+        let week_start = TimeData::week_start(today);
+        let day_one = week_start;
+        let day_two = week_start + chrono::Duration::days(1);
+        let last_week = week_start - chrono::Duration::days(7);
+        seed(
+            vec![
+                logged(0, "a", "tt", &["impl"], day_one, 60),
+                logged(1, "b", "tt", &["plan"], day_one, 30),
+                logged(2, "c", "loremind", &["impl"], day_one, 90),
+                logged(3, "d", "", &[], day_one, 30),
+                logged(4, "e", "vinge", &["ops"], day_two, 120),
+                logged(5, "f", "  ", &["ops"], day_two, 45),
+                logged(6, "g", "loremind", &["impl"], last_week, 60),
+            ],
+            7,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = day_one;
+        app
+    }
+
+    /// The three view scopes with a name to report failures against — `ViewMode`
+    /// itself is not `Debug`, and it is not this test's place to make it one.
+    fn scopes() -> [(ViewMode, &'static str); 3] {
+        [
+            (ViewMode::Day, "day"),
+            (ViewMode::Week, "week"),
+            (ViewMode::All, "all"),
+        ]
+    }
+
+    /// The summary's rows as `project=minutes/entries/share%`, in order.
+    fn summary(app: &App) -> String {
+        app.project_summary()
+            .iter()
+            .map(|row| {
+                format!(
+                    "{}={}m/{}/{}%",
+                    row.project,
+                    row.total.num_minutes(),
+                    row.entries,
+                    row.share
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Per-project totals and counts per scope, largest total first with the tie
+    /// between `tt` and `loremind` broken by name, and both unprojected entries
+    /// collapsed into a single `(no project)` row rather than dropped.
+    #[test]
+    fn project_summary_totals_and_counts_follow_the_view_scope() {
+        let _guard = env_guard();
+        sandbox("summary-scope");
+        let mut app = seed_summary();
+
+        app.view_mode = ViewMode::Day;
+        assert_eq!(
+            summary(&app),
+            "loremind=90m/1/43% tt=90m/2/43% (no project)=30m/1/14%"
+        );
+
+        app.view_mode = ViewMode::Week;
+        assert_eq!(
+            summary(&app),
+            "vinge=120m/1/32% loremind=90m/1/24% tt=90m/2/24% (no project)=75m/2/20%"
+        );
+
+        app.view_mode = ViewMode::All;
+        assert_eq!(
+            summary(&app),
+            "loremind=150m/2/34% vinge=120m/1/28% tt=90m/2/21% (no project)=75m/2/17%"
+        );
+
+        // One row for absence in every scope, however many entries lack a project
+        // — including the one whose project is whitespace only.
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            assert_eq!(
+                app.project_summary()
+                    .iter()
+                    .filter(|row| row.project == super::summary::NO_PROJECT)
+                    .count(),
+                1,
+                "{name} did not collapse absence into one row"
+            );
+        }
+    }
+
+    /// The rows account for the whole scope: their totals sum to the scope total
+    /// (which is why the `(no project)` row has to exist), and their shares sum to
+    /// within a point of 100 — rounded honestly rather than fudged to 100 exactly.
+    #[test]
+    fn project_summary_rows_account_for_the_whole_scope() {
+        let _guard = env_guard();
+        sandbox("summary-sums");
+        let mut app = seed_summary();
+
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            let rows = app.project_summary();
+            let scope_total: i64 = app
+                .scope_entries()
+                .iter()
+                .map(|e| e.duration().num_seconds())
+                .sum();
+            let summed: i64 = rows.iter().map(|r| r.total.num_seconds()).sum();
+            assert_eq!(summed, scope_total, "{name} rows do not sum to the scope");
+            let entries: usize = rows.iter().map(|r| r.entries).sum();
+            assert_eq!(entries, app.scope_entries().len(), "{name} entry counts");
+
+            let shares: u32 = rows.iter().map(|r| u32::from(r.share)).sum();
+            assert!(
+                (99..=101).contains(&shares),
+                "{name} shares sum to {shares}, not ~100"
+            );
+        }
+    }
+
+    /// The decision the whole surface hangs on: the summary folds `scope_entries`,
+    /// so a project or tag filter — which does change `filtered_entries` — leaves
+    /// it completely alone. Folding `filtered_entries` instead is the rejected
+    /// behaviour, and this test is what catches that one-word change.
+    #[test]
+    fn project_summary_ignores_the_active_filter_and_search() {
+        let _guard = env_guard();
+        sandbox("summary-prefilter");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        let before = app.project_summary();
+        let in_scope = app.scope_entries().len();
+
+        // A project filter is the case that would collapse a filter-following
+        // summary to a single 100% row.
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(
+            app.filtered_entries().len() < in_scope,
+            "filter did not bite"
+        );
+        assert_eq!(app.project_summary(), before);
+
+        // A tag filter, and then a search on top, are no different.
+        app.selected_projects.clear();
+        app.selected_tags = vec!["ops".to_string()];
+        assert!(
+            app.filtered_entries().len() < in_scope,
+            "filter did not bite"
+        );
+        assert_eq!(app.project_summary(), before);
+
+        app.search_term = "nothing matches this".to_string();
+        assert!(app.filtered_entries().is_empty());
+        assert_eq!(app.project_summary(), before);
+    }
+
+    /// An empty scope has nothing to divide by: an empty list, not a panic. Same
+    /// for a scope whose entries are all zero length, which reaches the share
+    /// calculation with a zero total.
+    #[test]
+    fn an_empty_or_zero_length_scope_summarises_without_dividing_by_zero() {
+        let _guard = env_guard();
+        sandbox("summary-empty");
+        seed(Vec::new(), 0);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        assert!(app.project_summary().is_empty());
+        app.view_mode = ViewMode::All;
+        assert!(app.project_summary().is_empty());
+
+        // A populated store still has empty scopes: a day nobody worked.
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &["impl"], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.selected_date = today - chrono::Duration::days(400);
+        assert!(app.project_summary().is_empty());
+
+        // Zero-length entries: rows exist, the scope total is zero, and the shares
+        // are 0% rather than a division by zero.
+        seed(
+            vec![
+                logged(0, "a", "tt", &[], today, 0),
+                logged(1, "b", "", &[], today, 0),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        // Nothing separates them by total, so the name tie-break decides.
+        assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
     }
 
     /// `/` must reach every field a row shows: the owner asked to "search on
