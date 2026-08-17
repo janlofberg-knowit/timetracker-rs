@@ -42,6 +42,28 @@ pub struct Mark {
 }
 
 impl Mark {
+    /// `project/issue phase`, or bare `project phase` for a mark made with
+    /// `tt-safe`'s no-issue sentinel `-`.
+    ///
+    /// This module owns the row format as well as the file format, so the CLI and
+    /// the TUI cannot drift into showing the same mark two different ways.
+    pub fn label(&self) -> String {
+        let subject = match &self.issue {
+            Some(issue) => format!("{}/{}", self.project, issue),
+            None => self.project.clone(),
+        };
+        if self.phase.is_empty() {
+            // A name with no `.` at all has no phase to show — see `split_key`.
+            return subject;
+        }
+        format!("{} {}", subject, self.phase)
+    }
+
+    /// The clock time the mark was made, `HH:MM`, as `tt-safe marks` prints it.
+    pub fn started_at(&self) -> String {
+        self.start.format("%H:%M").to_string()
+    }
+
     /// How long this mark has been open, as `2m` or `2h 6m`.
     ///
     /// Derived from [`start`](Mark::start) on every call and **never cached as a
@@ -324,6 +346,28 @@ mod tests {
             Some(PathBuf::from("/elsewhere"))
         );
         assert_eq!(resolve_mark_dir(None, None), None, "no HOME, no default");
+    }
+
+    /// The row format `tt-safe marks` prints and the TUI shows, in one place.
+    #[test]
+    fn a_row_reads_project_slash_issue_phase_and_drops_a_missing_issue() {
+        let dir = sandbox("row-format");
+        write(&dir, "tt.8.impl", "1000200\n");
+        write(&dir, "loremind.64.plan", "1000300\n");
+        // `tt-safe begin vinge - plan`: the `-` sentinel collapses away entirely.
+        write(&dir, "vinge.-.plan", "1000100\n");
+        // A name with nothing to split has no phase to show.
+        write(&dir, "bare", "1000000\n");
+
+        let labels: Vec<String> = open_marks_in(&dir).iter().map(Mark::label).collect();
+        assert_eq!(
+            labels,
+            vec!["loremind/64 plan", "tt/8 impl", "vinge plan", "bare"]
+        );
+
+        let mark = &open_marks_in(&dir)[1];
+        assert_eq!(mark.started_at(), mark.start.format("%H:%M").to_string());
+        assert_eq!(mark.started_at().len(), 5, "HH:MM");
     }
 
     #[test]

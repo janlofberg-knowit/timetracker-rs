@@ -16,6 +16,33 @@ use crate::tracker::TimeEntry;
 /// to its content up to this, so a short list does not leave the box half empty.
 const MAX_VISIBLE_VALUES: usize = 6;
 
+/// The number a collapsible surface puts on its top border, or `None` when it has
+/// nothing worth saying there. Every such surface formats it here, so the panes
+/// and the marks box can never disagree about what `3/7` means.
+///
+/// Two readings of one shape, decided by whether the list has a cursor:
+///
+/// - **With a cursor** (`position` is `Some`) the number is about *place*, so it
+///   stays hidden while every row fits — nothing can be off screen, so there is
+///   nothing to report — and reads `position/total` once the list scrolls.
+/// - **Without a cursor** (`position` is `None`) nothing scrolls, so the number is
+///   about *existence*: a bare `total` while everything fits, and `shown/total`
+///   once it does not, which says "there are more of these than you can see"
+///   without implying a position the surface does not have.
+pub(crate) fn surface_count(
+    position: Option<usize>,
+    total: usize,
+    visible_rows: usize,
+) -> Option<String> {
+    match (position, total <= visible_rows) {
+        (_, true) if total == 0 => None,
+        (Some(_), true) => None,
+        (Some(position), false) => Some(format!("{}/{}", position + 1, total)),
+        (None, true) => Some(total.to_string()),
+        (None, false) => Some(format!("{}/{}", visible_rows, total)),
+    }
+}
+
 impl App {
     /// The entries of the current view scope, before the tag filter and the
     /// search term narrow them down. `filtered_entries` starts from this.
@@ -119,11 +146,11 @@ impl App {
     /// value slides away under `j` and looks like it never existed. This is the
     /// "there is more, and here is where you are" the box would otherwise lack.
     pub(crate) fn pane_scroll_indicator(&self, pane: Pane, visible_rows: usize) -> Option<String> {
-        let total = self.pane_values(pane).len();
-        if total <= visible_rows {
-            return None;
-        }
-        Some(format!("{}/{}", self.pane_cursor(pane) + 1, total))
+        surface_count(
+            Some(self.pane_cursor(pane)),
+            self.pane_values(pane).len(),
+            visible_rows,
+        )
     }
 
     pub(crate) fn focused_pane(&self) -> Option<Pane> {

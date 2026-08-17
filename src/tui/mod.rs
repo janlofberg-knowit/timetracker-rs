@@ -16,6 +16,7 @@ pub mod types;
 mod search;
 mod navigation;
 mod entry_form;
+mod marks_surface;
 mod panes;
 mod render;
 
@@ -69,6 +70,9 @@ pub(crate) struct App {
     /// pane surface has zero height and first-run layout is unchanged.
     pub(crate) show_projects: bool,
     pub(crate) show_tags: bool,
+    /// Whether the Marks surface is open. Off by default like the panes, so its
+    /// row is absent from the layout plan and first-run layout is unchanged.
+    pub(crate) show_marks: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -104,6 +108,7 @@ impl App {
             cursor_pos: 0,
             show_projects: false,
             show_tags: false,
+            show_marks: false,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -201,6 +206,10 @@ pub fn run_tui() -> Result<()> {
                             }
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
+                            // No focus argument, unlike the panes: the marks
+                            // surface is display-only, so opening it cannot
+                            // move `j`/`k` or `Enter` anywhere.
+                            KeyCode::Char('M') => app.toggle_marks(),
                             KeyCode::Tab => app.cycle_focus(),
                             // crossterm reports Shift-Tab as its own code, not Tab
                             // with a SHIFT modifier.
@@ -922,6 +931,117 @@ mod tests {
         assert!(app.pane_surface_height() > 0);
         app.toggle_pane(Pane::Projects);
         assert_eq!(app.pane_surface_height(), 0);
+    }
+
+    /// An app with `n` open marks, newest first, in a sandboxed mark directory.
+    fn seed_marks(names: &[(&str, i64)]) -> App {
+        let dir = mark_sandbox();
+        for (key, minutes_ago) in names {
+            begin_mark(&dir, key, *minutes_ago);
+        }
+        App::new().unwrap()
+    }
+
+    #[test]
+    fn the_marks_surface_has_no_height_until_it_is_toggled_on() {
+        let _guard = env_guard();
+        sandbox("marks-height");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = seed_marks(&[]);
+
+        assert!(!app.show_marks);
+        assert_eq!(app.marks_surface_height(), 0, "hidden: no row at all");
+
+        // Empty, but open: one row, so the box can say there is nothing.
+        app.toggle_marks();
+        assert_eq!(app.marks_surface_height(), 3);
+
+        // Then two borders plus one row per mark, capped at three.
+        let dir = mark_sandbox();
+        for (n, expected) in [(1, 3), (2, 4), (3, 5), (4, 5), (5, 5)] {
+            begin_mark(&dir, &format!("proj.{n}.impl"), n);
+            app.marks_stamp = None; // force a re-read; the tick would do this
+            app.sync_from_marks();
+            assert_eq!(app.marks.len(), n as usize);
+            assert_eq!(app.marks_surface_height(), expected, "{n} marks");
+        }
+
+        app.toggle_marks();
+        assert_eq!(app.marks_surface_height(), 0, "hidden again: no row again");
+    }
+
+    #[test]
+    fn the_surface_lists_the_three_newest_marks_and_counts_the_rest() {
+        let _guard = env_guard();
+        sandbox("marks-cap");
+        seed(vec![entry(0, "first")], 1);
+        // Four simultaneous marks, oldest last.
+        let app = seed_marks(&[
+            ("tt.14.impl", 2),
+            ("loremind.64.plan", 38),
+            ("vinge.-.plan", 126),
+            ("ops.-.rota", 300),
+        ]);
+
+        let shown: Vec<String> = app.visible_marks().iter().map(Mark::label).collect();
+        assert_eq!(
+            shown,
+            vec!["tt/14 impl", "loremind/64 plan", "vinge plan"],
+            "the three newest, newest first"
+        );
+        // Three rows on screen, four open: existence, not position.
+        assert_eq!(app.marks_count(3).as_deref(), Some("3/4"));
+    }
+
+    #[test]
+    fn the_border_count_reports_how_many_marks_exist() {
+        let _guard = env_guard();
+        sandbox("marks-count");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = seed_marks(&[]);
+        assert_eq!(app.marks_count(3), None, "nothing open: nothing to count");
+
+        let dir = mark_sandbox();
+        for (n, expected) in [(1, "1"), (2, "2"), (3, "3")] {
+            begin_mark(&dir, &format!("proj.{n}.impl"), n);
+            app.marks_stamp = None;
+            app.sync_from_marks();
+            assert_eq!(
+                app.marks_count(3).as_deref(),
+                Some(expected),
+                "all {n} fit: a bare total"
+            );
+        }
+    }
+
+    /// The surface is display-only: no focus, no cursor, nothing for `Tab` or
+    /// `Enter` to land on.
+    #[test]
+    fn toggling_the_marks_surface_leaves_focus_and_the_table_alone() {
+        let _guard = env_guard();
+        sandbox("marks-focus");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+        let mut app = seed_marks(&[("tt.14.impl", 2)]);
+
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.toggle_marks();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "opening it");
+        app.toggle_marks();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "closing it");
+
+        // And `Tab`'s ring is still the table plus the visible panes only.
+        app.toggle_marks();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "the ring skips the marks surface");
+
+        // `Enter` still means the detail popover on the table, not this surface.
+        app.focus = Focus::Table;
+        app.open_detail();
+        assert!(matches!(app.input_mode, InputMode::Detail));
     }
 
     #[test]

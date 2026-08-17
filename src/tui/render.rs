@@ -29,6 +29,7 @@ const CURSOR_MARKER: &str = ">> ";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LayoutRow {
     Status,
+    Marks,
     Panes,
     Tabs,
     Search,
@@ -71,6 +72,12 @@ impl LayoutRows {
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let mut plan = vec![(LayoutRow::Status, Constraint::Length(3))];
+    // Marks sit between Status and the panes: it answers the same question Status
+    // does — what is running — and Status alone cannot see a `tt-safe` phase.
+    let marks_height = app.marks_surface_height();
+    if marks_height > 0 {
+        plan.push((LayoutRow::Marks, Constraint::Length(marks_height)));
+    }
     let pane_height = app.pane_surface_height();
     if pane_height > 0 {
         plan.push((LayoutRow::Panes, Constraint::Length(pane_height)));
@@ -108,6 +115,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .title(Span::styled(" Status ", Style::default().fg(theme::TITLE))),
         );
     f.render_widget(header, rows.area(LayoutRow::Status));
+
+    if let Some(area) = rows.get(LayoutRow::Marks) {
+        render_marks_surface(f, app, area);
+    }
 
     if let Some(area) = rows.get(LayoutRow::Panes) {
         render_pane_surface(f, app, area);
@@ -194,7 +205,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // has always lived there; the pane keys join it because with both panes
     // collapsed this legend is the surface's only trace on screen, so it has to
     // survive a narrow terminal too.
-    const KEYS_WIDTH: u16 = 20; // " | P/T Tab | ?: help"
+    // Hand-counted against the spans below; update it whenever they change, or the
+    // legend loses its last characters to the clipping zone on its left.
+    const KEYS_WIDTH: u16 = 24; // " | P/T/M | Tab | ?: help"
     let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -225,9 +238,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let hints = Paragraph::new(Line::from(hint_spans));
     f.render_widget(hints, footer_chunks[0]);
 
-    // A pane's key is accented while that pane is open and dim while it is hidden,
-    // so this legend says both that the panes exist and whether they are showing.
-    // `Tab` follows the pair, since it only does anything with a pane open.
+    // A surface's key is accented while that surface is open and dim while it is
+    // hidden, so this legend says both that the surfaces exist and which are
+    // showing. `M` joins `P`/`T` as the third `Shift`-letter toggle; `Tab` is
+    // separated off after them because it cycles the panes only — the marks
+    // surface is display-only and deliberately not on the focus ring.
     let key_style =
         |on: bool| Style::default().fg(if on { theme::ACCENT } else { theme::INACTIVE });
     let panes_open = !app.visible_panes().is_empty();
@@ -236,7 +251,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("P", key_style(app.show_projects)),
         Span::styled("/", Style::default().fg(theme::BORDER)),
         Span::styled("T", key_style(app.show_tags)),
-        Span::raw(" "),
+        Span::styled("/", Style::default().fg(theme::BORDER)),
+        Span::styled("M", key_style(app.show_marks)),
+        Span::styled(" | ", Style::default().fg(theme::BORDER)),
         Span::styled("Tab", key_style(panes_open)),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
         Span::styled("?", Style::default().fg(theme::ACCENT)),
@@ -353,6 +370,9 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  Enter"), sep("      filter on the pane value")]),
         Line::from(Span::raw("")),
         heading("  Other"),
+        // Not under Search & Filter with the P/T panes: this surface filters
+        // nothing and takes no focus, it only shows what `tt-safe` has open.
+        Line::from(vec![key("  Shift-M"), sep("  open marks on / off")]),
         Line::from(vec![key("  o"), sep("        toggle sort order")]),
         Line::from(vec![key("  r"), sep("        reload data from disk")]),
         Line::from(vec![key("  ?"), sep("        toggle this help")]),
@@ -513,6 +533,82 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
         content,
     );
+}
+
+/// The `Marks` surface: `tt-safe`'s open phase marks, newest first.
+///
+/// Rows are `tt-safe marks`' own format — `project/issue phase`, start time,
+/// elapsed — assembled from `crate::marks`, which owns the row format as well as
+/// the file format so the CLI and the TUI cannot disagree. Elapsed is *asked for*
+/// per frame rather than stored, which is what makes the numbers count up between
+/// directory reads.
+fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
+    /// Narrowest the label column gets, so a box of short labels still lines its
+    /// times up where the owner's approved shape puts them.
+    const LABEL_WIDTH: usize = 18;
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BORDER))
+        .title(Span::styled(
+            " Marks (M) ",
+            Style::default().fg(theme::TITLE),
+        ));
+    let inner = block.inner(area);
+
+    // The panes' own border count, on the panes' own mechanism, driven off the
+    // rows this frame really has rather than a constant — so a box squeezed by a
+    // short terminal still tells the truth about what is off screen.
+    if let Some(count) = app.marks_count(inner.height as usize) {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" {} ", count),
+                Style::default().fg(theme::INACTIVE),
+            ))
+            .right_aligned(),
+        );
+    }
+
+    let marks = app.visible_marks();
+    // One label column for the whole box, so the start times and elapsed times
+    // read as columns instead of trailing each label at its own indent.
+    let label_width = marks
+        .iter()
+        .map(|mark| mark.label().chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(LABEL_WIDTH);
+
+    let lines: Vec<Line> = if marks.is_empty() {
+        vec![Line::from(Span::styled(
+            " no open marks",
+            Style::default().fg(theme::INACTIVE).italic(),
+        ))]
+    } else {
+        marks
+            .iter()
+            .map(|mark| {
+                let label = mark.label();
+                let pad = " ".repeat(label_width.saturating_sub(label.chars().count()));
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}{}", label, pad),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!(" {}", mark.started_at()),
+                        Style::default().fg(theme::INACTIVE),
+                    ),
+                    Span::styled(
+                        format!("   ({})", mark.elapsed()),
+                        Style::default().fg(theme::HIGHLIGHT),
+                    ),
+                ])
+            })
+            .collect()
+    };
+
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The pane surface: both panes side by side, or the single open one full width.
