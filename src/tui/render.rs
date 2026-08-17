@@ -499,7 +499,15 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
             Style::default().fg(theme::HIGHLIGHT).bold(),
         ),
         Span::styled(marker, marker_style),
-        overlay_hints(&[("esc", "close")]),
+        // Every hint here is bound in the `InputMode::Detail` arm — a hint that does
+        // nothing would be worse than none. Traversal comes first because it is what
+        // keeps the list interactive from inside the overlay.
+        overlay_hints(&[
+            ("j/k", "move"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("esc", "close"),
+        ]),
     );
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
