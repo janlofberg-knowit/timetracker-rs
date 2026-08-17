@@ -43,11 +43,13 @@ pub enum Pane {
 }
 
 impl Pane {
-    /// Block title, with the toggle key so the surface documents itself.
+    /// Block title, with the toggle key so the surface documents itself. The key
+    /// is a bare capital: the case of the letter already says "shift", so a shift
+    /// glyph in front of it only spends columns the footer legend cannot spare.
     pub fn title(self) -> &'static str {
         match self {
-            Pane::Projects => " Projects (⇧P) ",
-            Pane::Tags => " Tags (⇧T) ",
+            Pane::Projects => " Projects (P) ",
+            Pane::Tags => " Tags (T) ",
         }
     }
 }

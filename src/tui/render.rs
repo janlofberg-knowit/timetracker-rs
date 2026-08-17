@@ -189,7 +189,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // has always lived there; the pane keys join it because with both panes
     // collapsed this legend is the surface's only trace on screen, so it has to
     // survive a narrow terminal too.
-    const KEYS_WIDTH: u16 = 22; // " | ⇧P/⇧T Tab | ?: help"
+    const KEYS_WIDTH: u16 = 20; // " | P/T Tab | ?: help"
     let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -224,9 +224,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let panes_open = !app.visible_panes().is_empty();
     let keys_hint = Paragraph::new(Line::from(vec![
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
-        Span::styled("⇧P", key_style(app.show_projects)),
+        Span::styled("P", key_style(app.show_projects)),
         Span::styled("/", Style::default().fg(theme::BORDER)),
-        Span::styled("⇧T", key_style(app.show_tags)),
+        Span::styled("T", key_style(app.show_tags)),
         Span::raw(" "),
         Span::styled("Tab", key_style(panes_open)),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
