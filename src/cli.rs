@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 use crate::duration;
 use crate::icons;
-use crate::storage::{load_data, save_data};
+use crate::storage::{load_data, with_data};
 use crate::tracker::parse_tags;
 
 #[derive(Parser)]
@@ -49,24 +49,30 @@ pub enum Commands {
 }
 
 pub fn start(description: Vec<String>) -> Result<()> {
-    let mut data = load_data()?;
+    let raw_desc = description.join(" ");
+    let (desc, tags) = parse_tags(&raw_desc);
+    let start_time = Local::now();
 
-    if let Some(active) = data.active_entry() {
+    // The active check and the insert share one lock, so two concurrent starts
+    // cannot both find nothing active
+    let already_tracking = with_data(|data| {
+        if let Some(active) = data.active_entry() {
+            return Ok(Some((active.description.clone(), active.start_time)));
+        }
+        data.add_entry(desc.clone(), tags.clone(), start_time, None);
+        Ok(None)
+    })?;
+
+    if let Some((active_desc, active_start)) = already_tracking {
         println!(
             "{}  Already tracking: \"{}\" (started at {})",
             icons::WARNING,
-            active.description,
-            active.start_time.format("%H:%M")
+            active_desc,
+            active_start.format("%H:%M")
         );
         println!("Stop it first with: tt stop");
         return Ok(());
     }
-
-    let raw_desc = description.join(" ");
-    let (desc, tags) = parse_tags(&raw_desc);
-    let start_time = Local::now();
-    data.add_entry(desc.clone(), tags.clone(), start_time, None);
-    save_data(&data)?;
 
     let tags_display = if tags.is_empty() {
         String::new()
@@ -85,16 +91,20 @@ pub fn start(description: Vec<String>) -> Result<()> {
 }
 
 pub fn stop() -> Result<()> {
-    let mut data = load_data()?;
+    let stopped = with_data(|data| {
+        // Get info before stopping
+        let info = data.active_entry().map(|e| {
+            (e.description.clone(), e.format_duration())
+        });
 
-    // Get info before stopping
-    let info = data.active_entry().map(|e| {
-        (e.description.clone(), e.format_duration())
-    });
+        if data.stop_active() {
+            Ok(info)
+        } else {
+            Ok(None)
+        }
+    })?;
 
-    if data.stop_active() {
-        let (desc, dur) = info.unwrap();
-        save_data(&data)?;
+    if let Some((desc, dur)) = stopped {
         println!("{}  Stopped: \"{}\" - Duration: {}", icons::STOPPED, desc, dur);
     } else {
         println!("No active task to stop.");
@@ -103,7 +113,6 @@ pub fn stop() -> Result<()> {
 }
 
 pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Result<()> {
-    let mut data = load_data()?;
     let dur = duration::parse(&time_str);
     let end_time = Local::now();
     let start_time = end_time - dur;
@@ -114,8 +123,10 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
             tags.push(tag);
         }
     }
-    data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
-    save_data(&data)?;
+    with_data(|data| {
+        data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
+        Ok(())
+    })?;
 
     let tags_display = if tags.is_empty() {
         String::new()
