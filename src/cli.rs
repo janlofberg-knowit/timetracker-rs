@@ -59,7 +59,7 @@ pub fn start(description: Vec<String>) -> Result<()> {
         if let Some(active) = data.active_entry() {
             return Ok(Some((active.description.clone(), active.start_time)));
         }
-        data.add_entry(desc.clone(), tags.clone(), start_time, None);
+        data.add_entry(desc.clone(), None, tags.clone(), start_time, None);
         Ok(None)
     })?;
 
@@ -124,7 +124,7 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
         }
     }
     with_data(|data| {
-        data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
+        data.add_entry(desc.clone(), None, tags.clone(), start_time, Some(end_time));
         Ok(())
     })?;
 

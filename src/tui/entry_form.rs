@@ -73,7 +73,13 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.add_entry(self.input_description.clone(), tags, start_time, end_time);
+        self.data.add_entry(
+            self.input_description.clone(),
+            None,
+            tags,
+            start_time,
+            end_time,
+        );
         save_data(&self.data)?;
         self.cancel_adding();
         Ok(())
@@ -91,7 +97,14 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.update_entry(entry_id, self.input_description.clone(), tags, start_time, end_time);
+        self.data.update_entry(
+            entry_id,
+            self.input_description.clone(),
+            None,
+            tags,
+            start_time,
+            end_time,
+        );
         save_data(&self.data)?;
         self.cancel_adding();
         Ok(())
