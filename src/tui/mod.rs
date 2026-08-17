@@ -15,9 +15,10 @@ pub mod types;
 mod search;
 mod navigation;
 mod entry_form;
+mod panes;
 mod render;
 
-pub use types::{InputField, InputMode, SortOrder, ViewMode};
+pub use types::{Focus, InputField, InputMode, Pane, SortOrder, ViewMode};
 
 pub(crate) struct App {
     pub(crate) data: TimeData,
@@ -42,6 +43,14 @@ pub(crate) struct App {
     /// Fingerprint of the store as of the last load, so the event loop can spot
     /// writes made outside the TUI without reading the file every tick.
     pub(crate) store_stamp: Option<StoreStamp>,
+    /// Whether the Projects / Tags panes are open. Both default to off, so the
+    /// pane surface has zero height and first-run layout is unchanged.
+    pub(crate) show_projects: bool,
+    pub(crate) show_tags: bool,
+    /// What `Tab` has given focus to, and where each pane's cursor rests.
+    pub(crate) focus: Focus,
+    pub(crate) project_cursor: usize,
+    pub(crate) tag_cursor: usize,
 }
 
 impl App {
@@ -68,6 +77,11 @@ impl App {
             editing_entry_id: None,
             sort_order: SortOrder::NewestFirst,
             cursor_pos: 0,
+            show_projects: false,
+            show_tags: false,
+            focus: Focus::Table,
+            project_cursor: 0,
+            tag_cursor: 0,
         })
     }
 
@@ -133,8 +147,21 @@ pub fn run_tui() -> Result<()> {
                                     app.should_quit = true;
                                 }
                             }
-                            KeyCode::Char('j') | KeyCode::Down => app.next(),
-                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                            // j/k move inside the focused pane when there is one,
+                            // and fall through to the table otherwise.
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if !app.pane_next() {
+                                    app.next();
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if !app.pane_previous() {
+                                    app.previous();
+                                }
+                            }
+                            KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
+                            KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
+                            KeyCode::Tab => app.cycle_focus(),
                             KeyCode::Char('d') => app.delete_selected()?,
                             KeyCode::Char('s') => app.stop_active()?,
                             KeyCode::Char('r') => app.reload()?,

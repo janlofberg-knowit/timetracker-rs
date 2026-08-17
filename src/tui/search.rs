@@ -1,18 +1,10 @@
 use chrono::Duration;
-use crate::tracker::TimeData;
 use super::App;
-use super::types::{InputMode, SortOrder, ViewMode};
+use super::types::{InputMode, SortOrder};
 
 impl App {
     pub(crate) fn filtered_entries(&self) -> Vec<&crate::tracker::TimeEntry> {
-        let mut entries: Vec<_> = match self.view_mode {
-            ViewMode::All => self.data.entries.iter().collect(),
-            ViewMode::Day => self.data.entries_for_date(self.selected_date),
-            ViewMode::Week => {
-                let week_start = TimeData::week_start(self.selected_date);
-                self.data.entries_for_week(week_start)
-            }
-        };
+        let mut entries = self.scope_entries();
 
         match self.sort_order {
             SortOrder::NewestFirst => entries.sort_by(|a, b| b.start_time.cmp(&a.start_time)),

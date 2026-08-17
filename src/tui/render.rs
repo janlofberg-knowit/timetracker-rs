@@ -1,34 +1,81 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 use chrono::{Duration, Local, NaiveDate};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Tabs,
+    },
 };
 use crate::tracker::TimeData;
 use super::{theme, App};
-use super::types::{InputField, InputMode, ViewMode};
+use super::types::{InputField, InputMode, Pane, ViewMode};
+
+/// A named vertical row of the main layout.
+///
+/// Some rows are conditional — the search bar only while searching, the P/T pane
+/// surface only while a pane is open — so the row a given index refers to depends
+/// on which conditions hold. Numbering them by hand meant one shifted-index pair
+/// per combination (`if show_search { (3, 4) } else { (2, 3) }`), which multiplies
+/// with every new conditional row. `LayoutRows` keeps the names and the
+/// constraints in lockstep instead and resolves a row to its `Rect` by name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LayoutRow {
+    Status,
+    Panes,
+    Tabs,
+    Search,
+    Content,
+    Footer,
+}
+
+/// The rows actually laid out this frame, paired with their areas.
+struct LayoutRows {
+    names: Vec<LayoutRow>,
+    areas: Rc<[Rect]>,
+}
+
+impl LayoutRows {
+    /// `plan` is the rows to lay out, top to bottom; a conditional row is simply
+    /// left out rather than given a zero-height constraint.
+    fn split(area: Rect, plan: Vec<(LayoutRow, Constraint)>) -> Self {
+        let (names, constraints): (Vec<LayoutRow>, Vec<Constraint>) = plan.into_iter().unzip();
+        let areas = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+        Self { names, areas }
+    }
+
+    /// The row's area, or `None` when this frame does not include the row.
+    fn get(&self, row: LayoutRow) -> Option<Rect> {
+        self.names
+            .iter()
+            .position(|name| *name == row)
+            .map(|idx| self.areas[idx])
+    }
+
+    /// For the rows that are always part of the layout.
+    fn area(&self, row: LayoutRow) -> Rect {
+        self.get(row)
+            .unwrap_or_else(|| panic!("layout row {row:?} is always present"))
+    }
+}
 
 pub fn ui(f: &mut Frame, app: &mut App) {
-    let show_search = app.is_searching();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if show_search {
-            vec![
-                Constraint::Length(3), // Status
-                Constraint::Length(3), // Tabs + date info
-                Constraint::Length(3), // Search bar
-                Constraint::Min(10),   // Main content
-                Constraint::Length(3), // Footer
-            ]
-        } else {
-            vec![
-                Constraint::Length(3), // Status
-                Constraint::Length(3), // Tabs + date info
-                Constraint::Min(10),   // Main content
-                Constraint::Length(3), // Footer
-            ]
-        })
-        .split(f.area());
+    let mut plan = vec![(LayoutRow::Status, Constraint::Length(3))];
+    let pane_height = app.pane_surface_height();
+    if pane_height > 0 {
+        plan.push((LayoutRow::Panes, Constraint::Length(pane_height)));
+    }
+    plan.push((LayoutRow::Tabs, Constraint::Length(3))); // Tabs + date info
+    if app.is_searching() {
+        plan.push((LayoutRow::Search, Constraint::Length(3)));
+    }
+    plan.push((LayoutRow::Content, Constraint::Min(10)));
+    plan.push((LayoutRow::Footer, Constraint::Length(3)));
+    let rows = LayoutRows::split(f.area(), plan);
 
     // Status header
     let (status_text, status_style) = match app.data.active_entry() {
@@ -54,7 +101,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(theme::BORDER))
                 .title(Span::styled(" Status ", Style::default().fg(theme::TITLE))),
         );
-    f.render_widget(header, chunks[0]);
+    f.render_widget(header, rows.area(LayoutRow::Status));
+
+    if let Some(area) = rows.get(LayoutRow::Panes) {
+        render_pane_surface(f, app, area);
+    }
 
     // View tabs
     let tab_titles = vec!["[1] Day", "[2] Week", "[3] All"];
@@ -89,25 +140,24 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     Style::default().fg(theme::HIGHLIGHT),
                 )),
         );
-    f.render_widget(tabs, chunks[1]);
+    f.render_widget(tabs, rows.area(LayoutRow::Tabs));
 
-    let (content_idx, footer_idx) = if show_search { (3, 4) } else { (2, 3) };
-
-    if show_search {
-        render_search_bar(f, app, chunks[2]);
+    if let Some(area) = rows.get(LayoutRow::Search) {
+        render_search_bar(f, app, area);
     }
 
+    let content = rows.area(LayoutRow::Content);
     if app.input_mode == InputMode::AddingEntry || app.input_mode == InputMode::EditingEntry {
-        render_entry_form(f, app, chunks[content_idx]);
+        render_entry_form(f, app, content);
     } else if app.view_mode == ViewMode::Week {
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(25), Constraint::Min(40)])
-            .split(chunks[content_idx]);
+            .split(content);
         render_weekly_breakdown(f, app, content_chunks[0]);
         render_entries_table(f, app, content_chunks[1]);
     } else {
-        render_entries_table(f, app, chunks[content_idx]);
+        render_entries_table(f, app, content);
     }
 
     // Footer: left = hints (clips), right = "? : help" (always visible)
@@ -128,20 +178,25 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     let total_str = crate::duration::format(total);
+    let footer = rows.area(LayoutRow::Footer);
     let footer_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER));
-    let footer_inner = footer_block.inner(chunks[footer_idx]);
-    f.render_widget(footer_block, chunks[footer_idx]);
+    let footer_inner = footer_block.inner(footer);
+    f.render_widget(footer_block, footer);
 
-    const HELP_WIDTH: u16 = 11;
-    let hints_width = footer_inner.width.saturating_sub(HELP_WIDTH);
+    // The right-hand zone is the part of the footer that never clips. `?: help`
+    // has always lived there; the pane keys join it because with both panes
+    // collapsed this legend is the surface's only trace on screen, so it has to
+    // survive a narrow terminal too.
+    const KEYS_WIDTH: u16 = 22; // " | ⇧P/⇧T Tab | ?: help"
+    let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(hints_width), Constraint::Length(HELP_WIDTH)])
+        .constraints([Constraint::Length(hints_width), Constraint::Length(KEYS_WIDTH)])
         .split(footer_inner);
 
-    let hints = Paragraph::new(Line::from(vec![
+    let hint_spans = vec![
         Span::styled(format!(" {}", total_label), Style::default().fg(theme::TITLE)),
         Span::styled(total_str, Style::default().fg(theme::HIGHLIGHT).bold()),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
@@ -157,15 +212,28 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled(": del | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("s", Style::default().fg(theme::ACCENT)),
         Span::styled(": stop", Style::default().fg(theme::INACTIVE)),
-    ]));
+    ];
+    let hints = Paragraph::new(Line::from(hint_spans));
     f.render_widget(hints, footer_chunks[0]);
 
-    let help_hint = Paragraph::new(Line::from(vec![
+    // A pane's key is accented while that pane is open and dim while it is hidden,
+    // so this legend says both that the panes exist and whether they are showing.
+    // `Tab` follows the pair, since it only does anything with a pane open.
+    let key_style =
+        |on: bool| Style::default().fg(if on { theme::ACCENT } else { theme::INACTIVE });
+    let panes_open = !app.visible_panes().is_empty();
+    let keys_hint = Paragraph::new(Line::from(vec![
+        Span::styled(" | ", Style::default().fg(theme::BORDER)),
+        Span::styled("⇧P", key_style(app.show_projects)),
+        Span::styled("/", Style::default().fg(theme::BORDER)),
+        Span::styled("⇧T", key_style(app.show_tags)),
+        Span::raw(" "),
+        Span::styled("Tab", key_style(panes_open)),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
         Span::styled("?", Style::default().fg(theme::ACCENT)),
         Span::styled(": help", Style::default().fg(theme::INACTIVE)),
     ]));
-    f.render_widget(help_hint, footer_chunks[1]);
+    f.render_widget(keys_hint, footer_chunks[1]);
 
     if app.input_mode == InputMode::Help {
         render_help_popup(f);
@@ -175,7 +243,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 pub fn render_help_popup(f: &mut Frame) {
     let area = f.area();
     let popup_width = 52u16.min(area.width.saturating_sub(4));
-    let popup_height = 26u16.min(area.height.saturating_sub(4));
+    let popup_height = 29u16.min(area.height.saturating_sub(4));
     let popup_area = Rect {
         x: (area.width.saturating_sub(popup_width)) / 2,
         y: (area.height.saturating_sub(popup_height)) / 2,
@@ -213,6 +281,9 @@ pub fn render_help_popup(f: &mut Frame) {
         heading("  Search & Filter"),
         Line::from(vec![key("  /"), sep("        search entries")]),
         Line::from(vec![key("  f"), sep("        filter by selected tags")]),
+        Line::from(vec![key("  Shift-P"), sep("  Projects pane on / off")]),
+        Line::from(vec![key("  Shift-T"), sep("  Tags pane on / off")]),
+        Line::from(vec![key("  Tab"), sep("      focus table / panes")]),
         Line::from(Span::raw("")),
         heading("  Other"),
         Line::from(vec![key("  o"), sep("        toggle sort order")]),
@@ -233,6 +304,73 @@ pub fn render_help_popup(f: &mut Frame) {
         )
         .style(Style::default().bg(Color::Rgb(28, 28, 28)));
     f.render_widget(popup, popup_area);
+}
+
+/// The pane surface: both panes side by side, or the single open one full width.
+fn render_pane_surface(f: &mut Frame, app: &App, area: Rect) {
+    let panes = app.visible_panes();
+    let share = panes.len() as u32;
+    let constraints: Vec<Constraint> = panes.iter().map(|_| Constraint::Ratio(1, share)).collect();
+    let areas = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+    for (pane, pane_area) in panes.iter().zip(areas.iter()) {
+        render_pane(f, app, *pane, *pane_area);
+    }
+}
+
+fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
+    let focused = app.focused_pane() == Some(pane);
+    let values = app.pane_values(pane);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused {
+            theme::ACCENT
+        } else {
+            theme::BORDER
+        }))
+        .title(Span::styled(
+            pane.title(),
+            Style::default().fg(if focused {
+                theme::HIGHLIGHT
+            } else {
+                theme::TITLE
+            }),
+        ));
+
+    let width = block.inner(area).width as usize;
+    let items: Vec<ListItem> = if values.is_empty() {
+        vec![ListItem::new(Span::styled(
+            " nothing in view",
+            Style::default().fg(theme::INACTIVE).italic(),
+        ))]
+    } else {
+        values
+            .iter()
+            .map(|(value, count)| {
+                // Value left, match count flushed right within the block.
+                let count = count.to_string();
+                let used = 1 + value.chars().count() + count.chars().count() + 1;
+                let gap = width.saturating_sub(used).max(1);
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {}", value), Style::default().fg(Color::White)),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(count, Style::default().fg(theme::HIGHLIGHT)),
+                ]))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(theme::SELECTED_BG));
+    let mut state = ListState::default();
+    if !values.is_empty() {
+        state.select(Some(app.pane_cursor(pane)));
+    }
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {

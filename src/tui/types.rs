@@ -34,6 +34,32 @@ pub enum InputField {
     Duration,
 }
 
+/// One of the two collapsible value pickers on the surface between the Status
+/// panel and the tabs row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pane {
+    Projects,
+    Tags,
+}
+
+impl Pane {
+    /// Block title, with the toggle key so the surface documents itself.
+    pub fn title(self) -> &'static str {
+        match self {
+            Pane::Projects => " Projects (⇧P) ",
+            Pane::Tags => " Tags (⇧T) ",
+        }
+    }
+}
+
+/// What `j`/`k` currently move in `InputMode::Normal`: the entries table, or the
+/// cursor inside one of the panes. `Tab` cycles through it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Table,
+    Pane(Pane),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum SortOrder {
     NewestFirst,
