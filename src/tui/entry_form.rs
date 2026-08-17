@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate};
-use crate::storage::save_data;
 use super::App;
 use super::types::{InputField, InputMode, ViewMode};
 
@@ -73,14 +72,12 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.add_entry(
-            self.input_description.clone(),
-            None,
-            tags,
-            start_time,
-            end_time,
-        );
-        save_data(&self.data)?;
+        let description = self.input_description.clone();
+        // Added against the freshly loaded store, so the id comes from the current
+        // `next_id` rather than the one this session started with.
+        self.mutate_store(|data| {
+            data.add_entry(description, None, tags, start_time, end_time);
+        })?;
         self.cancel_adding();
         Ok(())
     }
@@ -97,15 +94,11 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.update_entry(
-            entry_id,
-            self.input_description.clone(),
-            None,
-            tags,
-            start_time,
-            end_time,
-        );
-        save_data(&self.data)?;
+        let description = self.input_description.clone();
+        // Updating an id that is no longer in the store returns false, not an error.
+        self.mutate_store(|data| {
+            data.update_entry(entry_id, description, None, tags, start_time, end_time)
+        })?;
         self.cancel_adding();
         Ok(())
     }

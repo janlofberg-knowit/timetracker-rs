@@ -108,7 +108,7 @@ impl TimeEntry {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct TimeData {
     pub entries: Vec<TimeEntry>,
     pub next_id: u64,

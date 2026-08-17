@@ -62,6 +62,23 @@ impl App {
             cursor_pos: 0,
         })
     }
+
+    /// Apply `edit` to the store under its exclusive lock, then refresh the
+    /// in-memory view from what actually landed.
+    ///
+    /// `App.data` is loaded once at startup, so mutating that snapshot and saving
+    /// it back would rewrite the whole file and silently drop anything written
+    /// since — and reuse a stale `next_id`. Every TUI mutation goes through here
+    /// instead: the intent is computed from the view, but applied to the freshly
+    /// loaded store.
+    pub(crate) fn mutate_store<T>(&mut self, edit: impl FnOnce(&mut TimeData) -> T) -> Result<T> {
+        let (result, fresh) = crate::storage::with_data(|data| {
+            let result = edit(data);
+            Ok((result, data.clone()))
+        })?;
+        self.data = fresh;
+        Ok(result)
+    }
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -209,4 +226,203 @@ pub fn run_tui() -> Result<()> {
 
     restore_terminal(&mut terminal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage;
+    use crate::tracker::TimeEntry;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serialises the tests that repoint `HOME`, since it is process-wide.
+    fn env_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Point `HOME` at a fresh scratch dir so `ProjectDirs` resolves the store
+    /// inside it. Tests must never touch the user's real store.
+    fn sandbox(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tt-store-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("HOME", &dir) };
+        let path = storage::get_data_path().unwrap();
+        assert!(
+            path.starts_with(&dir),
+            "sandbox HOME not in effect: {path:?}"
+        );
+        dir
+    }
+
+    fn entry(id: u64, description: &str) -> TimeEntry {
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: None,
+            tags: Vec::new(),
+            start_time: Local::now(),
+            end_time: None,
+        }
+    }
+
+    fn seed(entries: Vec<TimeEntry>, next_id: u64) {
+        storage::save_data(&TimeData {
+            entries,
+            next_id,
+            schema_version: 1,
+        })
+        .unwrap();
+    }
+
+    /// A write from outside the TUI, through the same `with_data` path `tt log`
+    /// uses — i.e. what an agent session does while the TUI sits on its snapshot.
+    fn agent_write(description: &str) -> u64 {
+        storage::with_data(|data| {
+            Ok(data
+                .add_entry(
+                    description.to_string(),
+                    Some("probe".to_string()),
+                    vec!["probe".to_string()],
+                    Local::now(),
+                    Some(Local::now()),
+                )
+                .id)
+        })
+        .unwrap()
+    }
+
+    fn on_disk() -> TimeData {
+        storage::load_data().unwrap()
+    }
+
+    fn descriptions(data: &TimeData) -> Vec<&str> {
+        data.entries
+            .iter()
+            .map(|e| e.description.as_str())
+            .collect()
+    }
+
+    fn select(app: &mut App, description: &str) {
+        let idx = app
+            .filtered_entries()
+            .iter()
+            .position(|e| e.description == description)
+            .expect("entry not in view");
+        app.table_state.select(Some(idx));
+    }
+
+    #[test]
+    fn delete_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("delete");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        select(&mut app, "doomed");
+        app.delete_selected().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["keep", "probe"]);
+        assert_eq!(descriptions(&app.data), vec!["keep", "probe"]);
+    }
+
+    #[test]
+    fn deleting_an_already_removed_id_is_a_no_op() {
+        let _guard = env_guard();
+        sandbox("delete-gone");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        // Someone else removed it first, then wrote an entry of their own
+        storage::with_data(|data| {
+            data.entries.retain(|e| e.id != 1);
+            Ok(())
+        })
+        .unwrap();
+        agent_write("probe");
+
+        app.delete_selected().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["keep", "probe"]);
+    }
+
+    #[test]
+    fn stop_active_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("stop");
+        seed(vec![entry(0, "running")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        app.stop_active().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["running", "probe"]);
+        assert!(
+            data.entries[0].end_time.is_some(),
+            "the active entry should have been stopped"
+        );
+    }
+
+    #[test]
+    fn add_keeps_a_concurrent_agent_write_and_takes_a_fresh_id() {
+        let _guard = env_guard();
+        sandbox("add");
+        seed(vec![entry(0, "existing")], 1);
+
+        let mut app = App::new().unwrap();
+        // The agent claims id 1, which the TUI's snapshot still thinks is free
+        let agent_id = agent_write("probe");
+        assert_eq!(agent_id, 1);
+
+        app.start_adding();
+        app.input_description = "from the tui".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        let data = on_disk();
+        assert_eq!(
+            descriptions(&data),
+            vec!["existing", "probe", "from the tui"]
+        );
+        let tui_id = data
+            .entries
+            .iter()
+            .find(|e| e.description == "from the tui")
+            .unwrap()
+            .id;
+        assert_ne!(tui_id, agent_id, "the TUI entry reused the agent's id");
+        assert_eq!(tui_id, 2);
+        let mut ids: Vec<u64> = data.entries.iter().map(|e| e.id).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "duplicate ids in the store");
+    }
+
+    #[test]
+    fn edit_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("edit");
+        seed(vec![entry(0, "before")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        select(&mut app, "before");
+        app.start_editing();
+        app.input_description = "after".to_string();
+        app.submit_edit().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["after", "probe"]);
+        assert_eq!(descriptions(&app.data), vec!["after", "probe"]);
+    }
 }

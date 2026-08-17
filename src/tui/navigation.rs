@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::{Duration, Local};
-use crate::storage::save_data;
 use super::App;
 use super::types::ViewMode;
 
@@ -37,24 +36,27 @@ impl App {
     }
 
     pub(crate) fn delete_selected(&mut self) -> Result<()> {
-        let filtered = self.filtered_entries();
-        if let Some(idx) = self.table_state.selected() {
-            if idx < filtered.len() {
-                let entry_id = filtered[idx].id;
-                self.data.entries.retain(|e| e.id != entry_id);
-                save_data(&self.data)?;
-                let new_len = self.filtered_entries().len();
-                if idx >= new_len && new_len > 0 {
-                    self.table_state.select(Some(new_len - 1));
-                }
-            }
+        // Resolve the id from the view, then drop the borrow: the removal itself
+        // happens against the freshly loaded store, not this snapshot.
+        let Some(idx) = self.table_state.selected() else {
+            return Ok(());
+        };
+        let Some(entry_id) = self.filtered_entries().get(idx).map(|e| e.id) else {
+            return Ok(());
+        };
+
+        // An id that is already gone simply matches nothing — not an error.
+        self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
+
+        let new_len = self.filtered_entries().len();
+        if idx >= new_len && new_len > 0 {
+            self.table_state.select(Some(new_len - 1));
         }
         Ok(())
     }
 
     pub(crate) fn stop_active(&mut self) -> Result<()> {
-        self.data.stop_active();
-        save_data(&self.data)?;
+        self.mutate_store(|data| data.stop_active())?;
         Ok(())
     }
 
