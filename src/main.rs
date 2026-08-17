@@ -13,6 +13,14 @@ use clap::Parser;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Migrate under the store lock, once, before any command reads the data.
+    // Deliberately not in `load_data`: that runs on read-only paths and on the
+    // TUI's reload, and a write from a loader would surprise every later reader.
+    storage::with_data(|data| {
+        tracker::migrate(data);
+        Ok(())
+    })?;
+
     match cli.command {
         Commands::Start { description } => cli::start(description),
         Commands::Stop => cli::stop(),
