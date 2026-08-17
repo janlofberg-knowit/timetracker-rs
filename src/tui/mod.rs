@@ -269,13 +269,34 @@ pub fn run_tui() -> Result<()> {
                             }
                             _ => {}
                         },
-                        // Modal, exactly like Help: the popover reports the entry as
-                        // it stands, so nothing but leaving it is bound. `Enter`
-                        // closes what `Enter` opened; the table selection is
-                        // untouched either way.
+                        // Modal like Help — no second surface can be open at once —
+                        // but not inert: the popover renders whatever
+                        // `selected_entry()` returns, so moving the table cursor is
+                        // the whole implementation of "the overlay follows the list".
+                        // There is no cached entry and no second cursor to keep in
+                        // sync. `Enter` closes what `Enter` opened.
                         InputMode::Detail => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                                 app.input_mode = InputMode::Normal;
+                            }
+                            // The table's own next/previous, not the Normal arm's
+                            // pane-first variant: this overlay is about entries, so a
+                            // focused pane must not capture j/k while it is open.
+                            KeyCode::Char('j') | KeyCode::Down => app.next(),
+                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                            // The form is modal too, so it replaces the popover rather
+                            // than nesting inside it — `start_editing` sets the mode.
+                            KeyCode::Char('e') => app.start_editing(),
+                            // Unconfirmed, matching the table: inventing a
+                            // confirmation that exists only here would make the same
+                            // key mean two different things. The popover then reports
+                            // whatever the selection fell to, and closes if the delete
+                            // emptied the view.
+                            KeyCode::Char('d') => {
+                                app.delete_selected()?;
+                                if app.selected_entry().is_none() {
+                                    app.input_mode = InputMode::Normal;
+                                }
                             }
                             _ => {}
                         },
@@ -1112,6 +1133,85 @@ mod tests {
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.selected_projects, vec!["tt".to_string()]);
         assert_eq!(app.selected_entry().map(|e| e.id), Some(0));
+    }
+
+    /// What the `InputMode::Detail` arm does with j/k, `e` and `d`. Written as one
+    /// closure per key so the test drives the same calls the arm does.
+    #[test]
+    fn the_detail_popover_traverses_the_list_and_acts_on_what_it_shows() {
+        let _guard = env_guard();
+        sandbox("detail-traverse");
+        seed(vec![entry(0, "a"), entry(1, "b"), entry(2, "c")], 3);
+
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+        app.open_detail();
+        let ids: Vec<u64> = app.filtered_entries().iter().map(|e| e.id).collect();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+
+        // j/k walk the list and the popover reports the new row, wrapping at both
+        // ends rather than sticking or blanking.
+        app.next();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[1]));
+        app.previous();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+        app.previous();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[2]));
+        app.next();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+        assert!(app.input_mode == InputMode::Detail, "traversal closed it");
+
+        // `e` hands the entry on screen to the form, which replaces the popover.
+        app.start_editing();
+        assert!(app.input_mode == InputMode::EditingEntry);
+        assert_eq!(app.editing_entry_id, Some(ids[0]));
+
+        // `d` deletes it and the popover stays open on the new selection.
+        app.input_mode = InputMode::Detail;
+        let delete = |app: &mut App| {
+            app.delete_selected().unwrap();
+            if app.selected_entry().is_none() {
+                app.input_mode = InputMode::Normal;
+            }
+        };
+        delete(&mut app);
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(app.filtered_entries().len(), 2);
+        assert!(app.selected_entry().is_some());
+
+        // …and the delete that empties the view closes it instead of leaving an
+        // empty modal behind.
+        delete(&mut app);
+        delete(&mut app);
+        assert_eq!(app.filtered_entries().len(), 0);
+        assert!(app.input_mode == InputMode::Normal);
+    }
+
+    /// `Detail` is deliberately *not* in `sync_from_store`'s guarded set: there is no
+    /// half-typed input to clobber, and the id anchoring means an agent's write while
+    /// the popover is open cannot swap the entry being read.
+    #[test]
+    fn an_outside_write_reaches_the_open_detail_popover_without_moving_it() {
+        let _guard = env_guard();
+        sandbox("detail-sync");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "second");
+        app.open_detail();
+        let shown = app.selected_entry().map(|e| e.id);
+        agent_write("probe");
+
+        app.sync_from_store().unwrap();
+
+        assert!(descriptions(&app.data).contains(&"probe"));
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(
+            app.selected_entry().map(|e| e.id),
+            shown,
+            "the popover changed entry under the reader"
+        );
+        assert_eq!(selected_description(&app), "second");
     }
 
     /// An empty view has nothing to show, so there is no modal to escape from.

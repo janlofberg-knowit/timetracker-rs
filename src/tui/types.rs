@@ -22,9 +22,10 @@ pub enum InputMode {
     EditingEntry,
     Searching,
     Help,
-    /// The selected entry's detail popover. Modal like `Help`: it swallows every
-    /// key but the one that closes it, so the fields underneath cannot change
-    /// while they are being read.
+    /// The selected entry's detail popover. Modal like `Help` in that nothing else
+    /// can be open beside it, but the list stays live underneath: j/k and the
+    /// arrows move the table cursor and the popover re-reads the new selection,
+    /// and `e`/`d` act on whichever entry is being shown.
     Detail,
 }
 
