@@ -161,10 +161,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // Footer: left = hints (clips), right = "? : help" (always visible)
-    let (total, total_label) = if app.is_searching() && !app.search_term.is_empty() {
+    let searching = app.is_searching() && !app.search_term.is_empty();
+    let (total, total_label) = if searching || app.is_filtering() {
         (app.filtered_total(), "Filtered: ")
-    } else if app.is_tag_filtering() {
-        (app.filtered_total(), "Tagged: ")
     } else {
         let t = match app.view_mode {
             ViewMode::All => app.data.today_total(),
@@ -282,11 +281,11 @@ pub fn render_help_popup(f: &mut Frame) {
         // This section's key column is two wider than the rest so `Shift-Tab`,
         // the longest binding in the popup, still gets a gap before its text.
         Line::from(vec![key("  /"), sep("          search entries")]),
-        Line::from(vec![key("  f"), sep("          filter by selected tags")]),
         Line::from(vec![key("  Shift-P"), sep("    Projects pane on / off")]),
         Line::from(vec![key("  Shift-T"), sep("    Tags pane on / off")]),
         Line::from(vec![key("  Tab"), sep("        focus table / panes")]),
         Line::from(vec![key("  Shift-Tab"), sep("  focus panes in reverse")]),
+        Line::from(vec![key("  Enter"), sep("      filter on the pane value")]),
         Line::from(Span::raw("")),
         heading("  Other"),
         Line::from(vec![key("  o"), sep("        toggle sort order")]),
@@ -369,12 +368,21 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         values
             .iter()
             .map(|(value, count)| {
-                // Value left, match count flushed right within the block.
+                // Value left, match count flushed right within the block. The lead
+                // column the value already sat in carries the selection mark, so
+                // marking one costs no width and shifts nothing.
+                let selected = app.pane_value_is_selected(pane, value);
+                let mark = if selected { "•" } else { " " };
                 let count = count.to_string();
                 let used = 1 + value.chars().count() + count.chars().count() + 1;
                 let gap = width.saturating_sub(used).max(1);
+                let value_style = if selected {
+                    Style::default().fg(theme::ACCENT).bold()
+                } else {
+                    Style::default().fg(Color::White)
+                };
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {}", value), Style::default().fg(Color::White)),
+                    Span::styled(format!("{}{}", mark, value), value_style),
                     Span::raw(" ".repeat(gap)),
                     Span::styled(count, Style::default().fg(theme::HIGHLIGHT)),
                 ]))
@@ -766,15 +774,16 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
             (rows, app.table_state.selected())
         };
 
-    let title = if app.is_tag_filtering() {
-        format!(
-            " Entries [filtered: {}] ",
-            app.tag_filter
-                .iter()
-                .map(|t| format!("#{}", t))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
+    // Projects read as `(tt)` and tags as `#impl`, the same sigils the CLI listing
+    // uses, so the title says which pane a value came from without a legend.
+    let title = if app.is_filtering() {
+        let values: Vec<String> = app
+            .selected_projects
+            .iter()
+            .map(|p| format!("({})", p))
+            .chain(app.selected_tags.iter().map(|t| format!("#{}", t)))
+            .collect();
+        format!(" Entries [filtered: {}] ", values.join(" "))
     } else {
         " Entries ".to_string()
     };

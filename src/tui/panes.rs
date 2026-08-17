@@ -167,6 +167,51 @@ impl App {
         self.focus = order[(current + delta).rem_euclid(len) as usize];
     }
 
+    /// The values selected in a pane, i.e. what it contributes to the filter.
+    pub(crate) fn pane_selection(&self, pane: Pane) -> &[String] {
+        match pane {
+            Pane::Projects => &self.selected_projects,
+            Pane::Tags => &self.selected_tags,
+        }
+    }
+
+    /// Whether a value a pane is offering is in that pane's selection. Both sides
+    /// come from [`pane_values`](Self::pane_values), so this is an exact match; the
+    /// filter predicates stay case-insensitive because the *store* is not
+    /// normalised.
+    pub(crate) fn pane_value_is_selected(&self, pane: Pane, value: &str) -> bool {
+        self.pane_selection(pane).iter().any(|v| v == value)
+    }
+
+    /// `Enter` inside the focused pane: toggle the value under that pane's cursor
+    /// into or out of its selection set.
+    ///
+    /// Returns false when no pane has focus, so `Enter` on the entries table falls
+    /// through to whatever that arm does — `App.focus` is what disambiguates the
+    /// one key, and the table's meaning is the detail popover.
+    pub(crate) fn toggle_pane_value(&mut self) -> bool {
+        let Some(pane) = self.focused_pane() else {
+            return false;
+        };
+        let cursor = self.pane_cursor(pane);
+        let Some((value, _)) = self.pane_values(pane).into_iter().nth(cursor) else {
+            return true;
+        };
+        let selection = match pane {
+            Pane::Projects => &mut self.selected_projects,
+            Pane::Tags => &mut self.selected_tags,
+        };
+        match selection.iter().position(|v| v == &value) {
+            Some(pos) => {
+                selection.remove(pos);
+            }
+            None => selection.push(value),
+        }
+        // The row that was selected is very unlikely to still be the same row.
+        self.table_state.select(Some(0));
+        true
+    }
+
     /// `j` inside the focused pane. Returns false when nothing is focused, so the
     /// caller can fall through to moving the table selection.
     pub(crate) fn pane_next(&mut self) -> bool {

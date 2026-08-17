@@ -35,7 +35,10 @@ pub(crate) struct App {
     pub(crate) input_end_time: String,
     pub(crate) input_duration: String,
     pub(crate) search_term: String,
-    pub(crate) tag_filter: Vec<String>,
+    /// The values picked in each pane. OR within a set, AND across the two — see
+    /// `filtered_entries`.
+    pub(crate) selected_projects: Vec<String>,
+    pub(crate) selected_tags: Vec<String>,
     pub(crate) editing_entry_id: Option<u64>,
     pub(crate) sort_order: SortOrder,
     /// Cursor position within the currently active input field (char index, not byte index).
@@ -73,7 +76,8 @@ impl App {
             input_end_time: String::new(),
             input_duration: String::new(),
             search_term: String::new(),
-            tag_filter: Vec::new(),
+            selected_projects: Vec::new(),
+            selected_tags: Vec::new(),
             editing_entry_id: None,
             sort_order: SortOrder::NewestFirst,
             cursor_pos: 0,
@@ -141,8 +145,8 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('q') | KeyCode::Esc => {
                                 if app.is_searching() {
                                     app.clear_search();
-                                } else if app.is_tag_filtering() {
-                                    app.clear_tag_filter();
+                                } else if app.is_filtering() {
+                                    app.clear_filters();
                                 } else {
                                     app.should_quit = true;
                                 }
@@ -159,6 +163,13 @@ pub fn run_tui() -> Result<()> {
                                     app.previous();
                                 }
                             }
+                            // One key, disambiguated by focus: in a pane it toggles
+                            // the value under the cursor into the filter, and on the
+                            // table it is the detail popover's (not yet built), so
+                            // for now it falls through to nothing.
+                            KeyCode::Enter => {
+                                app.toggle_pane_value();
+                            }
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
                             KeyCode::Tab => app.cycle_focus(),
@@ -170,7 +181,6 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('r') => app.reload()?,
                             KeyCode::Char('a') => app.start_adding(),
                             KeyCode::Char('e') => app.start_editing(),
-                            KeyCode::Char('f') => app.filter_by_selected_tags(),
                             KeyCode::Char('/') => app.start_search(),
                             KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
                             KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
@@ -698,7 +708,7 @@ mod tests {
         app.view_mode = ViewMode::Day;
         let before = app.pane_values(Pane::Tags);
 
-        app.tag_filter = vec!["plan".to_string()];
+        app.selected_tags = vec!["plan".to_string()];
         app.search_term = "nothing matches this".to_string();
         assert!(app.filtered_entries().is_empty(), "filter did not bite");
         assert_eq!(app.pane_values(Pane::Tags), before);
@@ -932,6 +942,113 @@ mod tests {
         app.view_mode = ViewMode::Day;
         assert_eq!(app.pane_values(Pane::Projects).len(), 2);
         assert_eq!(app.pane_cursor(Pane::Projects), 1);
+    }
+
+    /// The descriptions of the entries currently in view, in table order.
+    fn in_view(app: &App) -> Vec<String> {
+        app.filtered_entries()
+            .iter()
+            .map(|e| e.description.clone())
+            .collect()
+    }
+
+    /// Move focus onto `pane` and put its cursor on `value`.
+    fn point_at(app: &mut App, pane: Pane, value: &str) {
+        if !app.pane_is_visible(pane) {
+            app.toggle_pane(pane);
+        }
+        while app.focused_pane() != Some(pane) {
+            app.cycle_focus();
+        }
+        let idx = app
+            .pane_values(pane)
+            .iter()
+            .position(|(v, _)| v == value)
+            .unwrap_or_else(|| panic!("{value} not offered by the pane"));
+        match pane {
+            Pane::Projects => app.project_cursor = idx,
+            Pane::Tags => app.tag_cursor = idx,
+        }
+    }
+
+    /// `Enter` is the toggle, and it is disambiguated by focus: in a pane it filters
+    /// on the value under the cursor, on the table it is not a pane action at all.
+    #[test]
+    fn enter_toggles_the_value_under_the_pane_cursor() {
+        let _guard = env_guard();
+        sandbox("pane-toggle");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+
+        point_at(&mut app, Pane::Projects, "tt");
+        assert!(app.toggle_pane_value(), "Enter was not handled by the pane");
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(in_view(&app), vec!["a", "b"]);
+        assert!(app.is_filtering());
+        assert!(app.pane_value_is_selected(Pane::Projects, "tt"));
+
+        // A second Enter on the same value clears it again.
+        assert!(app.toggle_pane_value());
+        assert!(app.selected_projects.is_empty());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+        assert!(!app.is_filtering());
+
+        // With focus on the table there is no pane value to toggle: Enter reports
+        // "not handled" and touches nothing, leaving the arm free for the popover.
+        app.focus = Focus::Table;
+        assert!(!app.toggle_pane_value());
+        assert!(app.selected_projects.is_empty() && app.selected_tags.is_empty());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// OR within a pane, AND across the panes.
+    #[test]
+    fn selections_or_within_a_pane_and_and_across_panes() {
+        let _guard = env_guard();
+        sandbox("pane-filter-semantics");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+
+        point_at(&mut app, Pane::Projects, "tt");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b"]);
+
+        // A second project widens the set — the two are OR'd.
+        point_at(&mut app, Pane::Projects, "loremind");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b", "c"]);
+
+        // A tag narrows within them — the panes are AND'd.
+        point_at(&mut app, Pane::Tags, "impl");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "c"]);
+
+        // …and OR still holds inside the Tags pane too.
+        point_at(&mut app, Pane::Tags, "plan");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b", "c"]);
+
+        app.clear_filters();
+        assert!(!app.is_filtering());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// The footer's total is the filtered one whenever a filter is on, so the number
+    /// on screen always describes the rows on screen.
+    #[test]
+    fn the_filtered_total_tracks_the_selection() {
+        let _guard = env_guard();
+        sandbox("pane-filter-total");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        // Four one-hour entries in scope.
+        assert_eq!(app.filtered_total().num_hours(), 4);
+
+        point_at(&mut app, Pane::Projects, "tt");
+        app.toggle_pane_value();
+        assert_eq!(app.filtered_total().num_hours(), 2);
+        assert!(app.is_filtering());
     }
 
     /// `e` pre-fills the Project field, and clearing it drops the project.

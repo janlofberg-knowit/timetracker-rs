@@ -78,6 +78,7 @@ impl TimeEntry {
         duration::format(self.duration())
     }
 
+
     pub fn is_active(&self) -> bool {
         self.end_time.is_none()
     }
@@ -105,6 +106,23 @@ impl TimeEntry {
     /// Check if entry matches any of the given tags (case-insensitive)
     pub fn has_any_tag(&self, tags: &[String]) -> bool {
         tags.iter().any(|t| self.has_tag(t))
+    }
+
+    /// Check if the entry's project is any of the given ones (case-insensitive).
+    ///
+    /// An entry with no project matches nothing: absence is not a value anyone can
+    /// select, so it can never be one of `projects`.
+    pub fn has_any_project(&self, projects: &[String]) -> bool {
+        let Some(project) = self
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
+            return false;
+        };
+        let project = project.to_lowercase();
+        projects.iter().any(|p| p.trim().to_lowercase() == project)
     }
 }
 
