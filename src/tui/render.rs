@@ -781,15 +781,27 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         " Entries ".to_string()
     };
 
+    // Tags used to be `Length(14)`, so the cell clipped at the same 14 columns on a
+    // 30-inch screen as on a half-open laptop. `Fill(1)` beside the description's
+    // `Min(12)` splits whatever is left between the only two columns whose content
+    // has no fixed width, so both grow with the terminal — the full tag list of the
+    // widest row shows from ~146 columns.
+    //
+    // The fixed columns are cut to exactly what they render (`2026-08-17`, `14:30`,
+    // and the `Duration` header, which is wider than any duration) instead of
+    // carrying two or three columns of padding each: `column_spacing` already puts
+    // a gap between cells, and those 7 reclaimed columns are what makes the
+    // 80-column case gain on *both* variable columns (tags 14 -> 19, description
+    // 17 -> 19) rather than trading one for the other.
     let table = Table::new(
         rows,
         [
-            Constraint::Length(12),
-            Constraint::Length(7),
-            Constraint::Length(7),
+            Constraint::Length(10),
+            Constraint::Length(5),
+            Constraint::Length(5),
             Constraint::Min(12),
-            Constraint::Length(14),
-            Constraint::Length(9),
+            Constraint::Fill(1),
+            Constraint::Length(8),
             Constraint::Length(3),
         ],
     )
