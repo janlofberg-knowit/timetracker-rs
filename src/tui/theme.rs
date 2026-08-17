@@ -12,3 +12,4 @@ pub const DURATION_LOW: Color = Color::Rgb(165, 214, 167);  // Light green
 pub const BORDER: Color = Color::Rgb(88, 88, 88);           // Border gray
 pub const TITLE: Color = Color::Rgb(186, 186, 186);         // Light gray
 pub const DAY_HEADER_BG: Color = Color::Rgb(38, 48, 68);    // Dark blue for day separators
+pub const OVERLAY_BG: Color = Color::Rgb(28, 28, 28);       // Modal popup background

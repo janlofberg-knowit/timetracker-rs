@@ -92,13 +92,29 @@ impl App {
         self.table_state.select(Some(i));
     }
 
+    /// The entry the table cursor is on, as the current view orders it.
+    pub(crate) fn selected_entry(&self) -> Option<&crate::tracker::TimeEntry> {
+        let idx = self.table_state.selected()?;
+        self.filtered_entries().into_iter().nth(idx)
+    }
+
+    /// `Enter` with the table focused: show the selected entry in full.
+    ///
+    /// Nothing selected means nothing to show — an empty view must not open an
+    /// empty modal the user then has to escape from.
+    pub(crate) fn open_detail(&mut self) {
+        if self.selected_entry().is_some() {
+            self.input_mode = InputMode::Detail;
+        }
+    }
+
     pub(crate) fn delete_selected(&mut self) -> Result<()> {
         // Resolve the id from the view, then drop the borrow: the removal itself
         // happens against the freshly loaded store, not this snapshot.
         let Some(idx) = self.table_state.selected() else {
             return Ok(());
         };
-        let Some(entry_id) = self.filtered_entries().get(idx).map(|e| e.id) else {
+        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
             return Ok(());
         };
 

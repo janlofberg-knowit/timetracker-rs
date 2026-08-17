@@ -22,6 +22,10 @@ pub enum InputMode {
     EditingEntry,
     Searching,
     Help,
+    /// The selected entry's detail popover. Modal like `Help`: it swallows every
+    /// key but the one that closes it, so the fields underneath cannot change
+    /// while they are being read.
+    Detail,
 }
 
 #[derive(Clone, Copy, PartialEq)]

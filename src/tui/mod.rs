@@ -165,10 +165,14 @@ pub fn run_tui() -> Result<()> {
                             }
                             // One key, disambiguated by focus: in a pane it toggles
                             // the value under the cursor into the filter, and on the
-                            // table it is the detail popover's (not yet built), so
-                            // for now it falls through to nothing.
+                            // table it opens the selected entry's detail popover.
+                            // `toggle_pane_value` reporting false *is* the focus
+                            // check — there is no second place for the two meanings
+                            // to disagree about which is which.
                             KeyCode::Enter => {
-                                app.toggle_pane_value();
+                                if !app.toggle_pane_value() {
+                                    app.open_detail();
+                                }
                             }
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
@@ -261,6 +265,16 @@ pub fn run_tui() -> Result<()> {
                         },
                         InputMode::Help => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                app.input_mode = InputMode::Normal;
+                            }
+                            _ => {}
+                        },
+                        // Modal, exactly like Help: the popover reports the entry as
+                        // it stands, so nothing but leaving it is bound. `Enter`
+                        // closes what `Enter` opened; the table selection is
+                        // untouched either way.
+                        InputMode::Detail => match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                                 app.input_mode = InputMode::Normal;
                             }
                             _ => {}
@@ -1000,6 +1014,56 @@ mod tests {
         assert!(!app.toggle_pane_value());
         assert!(app.selected_projects.is_empty() && app.selected_tags.is_empty());
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// The other half of that one key: with the table focused, `Enter` opens the
+    /// detail popover, and with a pane focused it must not.
+    #[test]
+    fn enter_opens_the_detail_popover_only_from_the_table() {
+        let _guard = env_guard();
+        sandbox("detail-focus");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.table_state.select(Some(0));
+
+        // This is exactly what the Normal-mode Enter arm does.
+        let enter = |app: &mut App| {
+            if !app.toggle_pane_value() {
+                app.open_detail();
+            }
+        };
+
+        point_at(&mut app, Pane::Projects, "tt");
+        enter(&mut app);
+        assert!(
+            app.input_mode == InputMode::Normal,
+            "Enter in a pane opened the popover instead of filtering"
+        );
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+
+        app.focus = Focus::Table;
+        enter(&mut app);
+        assert!(
+            app.input_mode == InputMode::Detail,
+            "Enter on the table did not open the popover"
+        );
+        // Opening it changes nothing else: same selection, same filter.
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(0));
+    }
+
+    /// An empty view has nothing to show, so there is no modal to escape from.
+    #[test]
+    fn the_detail_popover_stays_shut_with_nothing_selected() {
+        let _guard = env_guard();
+        sandbox("detail-empty");
+        seed(vec![], 0);
+        let mut app = App::new().unwrap();
+        assert!(app.selected_entry().is_none());
+
+        app.open_detail();
+        assert!(app.input_mode == InputMode::Normal);
     }
 
     /// OR within a pane, AND across the panes.

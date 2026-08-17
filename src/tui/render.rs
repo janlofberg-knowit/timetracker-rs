@@ -199,6 +199,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled(format!(" {}", total_label), Style::default().fg(theme::TITLE)),
         Span::styled(total_str, Style::default().fg(theme::HIGHLIGHT).bold()),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
+        // Detail goes first among the hints: this zone clips from the right at 80
+        // columns, and `Enter` is the newest and least guessable binding here.
+        Span::styled("Enter", Style::default().fg(theme::ACCENT)),
+        Span::styled(": detail | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("t", Style::default().fg(theme::ACCENT)),
         Span::styled(": today | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("/", Style::default().fg(theme::ACCENT)),
@@ -234,24 +238,78 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     ]));
     f.render_widget(keys_hint, footer_chunks[1]);
 
-    if app.input_mode == InputMode::Help {
-        render_help_popup(f);
+    match app.input_mode {
+        InputMode::Help => render_help_popup(f),
+        InputMode::Detail => render_detail_popup(f, app),
+        _ => {}
     }
 }
 
-pub fn render_help_popup(f: &mut Frame) {
+/// Geometry and chrome shared by every modal overlay, and the only place either
+/// popover is positioned or framed.
+///
+/// The two popups are the same object with different content: a centred `Rect`
+/// cleared out of the frame beneath it, a bordered block filled with the overlay
+/// background, the subject on the left of the top border with a marker
+/// right-aligned opposite it, and a line of key hints on the last row inside the
+/// bottom border. Returns the content area between the two.
+fn render_overlay(
+    f: &mut Frame,
+    width: u16,
+    height: u16,
+    title: Span<'_>,
+    marker: Span<'_>,
+    hints: Line<'_>,
+) -> Rect {
     let area = f.area();
-    let popup_width = 52u16.min(area.width.saturating_sub(4));
-    let popup_height = 29u16.min(area.height.saturating_sub(4));
+    let width = width.min(area.width.saturating_sub(4));
+    let height = height.min(area.height.saturating_sub(2));
     let popup_area = Rect {
-        x: (area.width.saturating_sub(popup_width)) / 2,
-        y: (area.height.saturating_sub(popup_height)) / 2,
-        width: popup_width,
-        height: popup_height,
+        x: (area.width.saturating_sub(width)) / 2,
+        y: (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
     };
 
+    // `Clear` first: without it the widgets underneath show through the gaps in
+    // whatever the popup draws.
     f.render_widget(Clear, popup_area);
+    let overlay_style = Style::default().bg(theme::OVERLAY_BG);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .title(title)
+        .title_top(Line::from(marker).right_aligned())
+        .style(overlay_style);
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
 
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
+    f.render_widget(Paragraph::new(hints).style(overlay_style), rows[1]);
+    rows[0]
+}
+
+/// ` esc close `-style hints, spelled out rather than glyphed to match the pane
+/// keys and the footer legend.
+fn overlay_hints(pairs: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (k, what)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", Style::default().fg(theme::BORDER)));
+        }
+        spans.push(Span::styled(*k, Style::default().fg(theme::ACCENT).bold()));
+        spans.push(Span::styled(
+            format!(" {}", what),
+            Style::default().fg(theme::INACTIVE),
+        ));
+    }
+    Line::from(spans)
+}
+
+pub fn render_help_popup(f: &mut Frame) {
     fn key(k: &'static str) -> Span<'static> {
         Span::styled(k, Style::default().fg(theme::ACCENT).bold())
     }
@@ -276,6 +334,7 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  e"), sep("        edit selected entry")]),
         Line::from(vec![key("  d"), sep("        delete selected entry")]),
         Line::from(vec![key("  s"), sep("        stop active entry")]),
+        Line::from(vec![key("  Enter"), sep("    entry detail")]),
         Line::from(Span::raw("")),
         heading("  Search & Filter"),
         // This section's key column is two wider than the rest so `Shift-Tab`,
@@ -294,18 +353,152 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  q / Esc"), sep("  quit")]),
     ];
 
-    let popup = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::ACCENT))
-                .title(Span::styled(
-                    " Keybindings ",
-                    Style::default().fg(theme::HIGHLIGHT).bold(),
-                )),
+    // Two borders, one hints row and one row per line — sized from the content so
+    // adding a binding cannot silently push the last one out of the box.
+    let content = render_overlay(
+        f,
+        52,
+        lines.len() as u16 + 3,
+        Span::styled(
+            " Keybindings ",
+            Style::default().fg(theme::HIGHLIGHT).bold(),
+        ),
+        Span::styled(" ? ", Style::default().fg(theme::INACTIVE)),
+        overlay_hints(&[("esc", "close")]),
+    );
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        content,
+    );
+}
+
+/// The selected entry, every field of it, wrapped rather than truncated — the
+/// answer to a table cell that had to clip.
+fn render_detail_popup(f: &mut Frame, app: &App) {
+    let Some(entry) = app.selected_entry() else {
+        return;
+    };
+
+    // Label column wide enough for the longest label, so the values line up and a
+    // wrapped value hangs under its own first line rather than under the label.
+    const LABEL: usize = 12;
+    let width = 80u16.min(f.area().width.saturating_sub(4)).max(24) as usize;
+    // 2 border columns, the leading two-space indent every line carries, the label
+    // column, and a two-column right margin so a wrapped line never runs flush into
+    // the border.
+    let value_width = width.saturating_sub(2 + 2 + LABEL + 2).max(8);
+
+    fn label(text: &str) -> Span<'_> {
+        Span::styled(
+            format!("  {:<width$}", text, width = LABEL),
+            Style::default().fg(theme::TITLE),
         )
-        .style(Style::default().bg(Color::Rgb(28, 28, 28)));
-    f.render_widget(popup, popup_area);
+    }
+
+    /// Greedy word wrap. Values are joined tag lists and prose, so the break
+    /// points are spaces; a single word longer than the line is left long rather
+    /// than cut, since cutting is the thing this popover exists to avoid.
+    fn wrap(text: &str, width: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        for word in text.split_whitespace() {
+            match lines.last_mut() {
+                Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                    line.push(' ');
+                    line.push_str(word);
+                }
+                _ => lines.push(word.to_string()),
+            }
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
+    /// One labelled field: the first line beside the label, the rest indented to
+    /// the value column.
+    fn field(name: &str, value: &str, style: Style, value_width: usize) -> Vec<Line<'static>> {
+        wrap(value, value_width)
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let head = if i == 0 {
+                    format!("  {:<width$}", name, width = LABEL)
+                } else {
+                    " ".repeat(2 + LABEL)
+                };
+                Line::from(vec![
+                    Span::styled(head, Style::default().fg(theme::TITLE)),
+                    Span::styled(text, style),
+                ])
+            })
+            .collect()
+    }
+
+    let value = Style::default().fg(Color::White);
+    let tags = if entry.tags.is_empty() {
+        "—".to_string()
+    } else {
+        entry.format_tags()
+    };
+    let mut lines: Vec<Line> = vec![Line::from(Span::raw(""))];
+    lines.extend(field(
+        "Project",
+        entry.project.as_deref().unwrap_or("—"),
+        Style::default().fg(theme::ACCENT),
+        value_width,
+    ));
+    lines.extend(field(
+        "Tags",
+        &tags,
+        Style::default().fg(theme::HIGHLIGHT),
+        value_width,
+    ));
+    lines.extend(field("Date", &entry.format_date(), value, value_width));
+    lines.extend(field(
+        "Start",
+        &entry.format_start_time(),
+        value,
+        value_width,
+    ));
+    // `format_end_time` is already the em dash while an entry runs, so an active
+    // entry needs no special case here.
+    lines.extend(field("End", &entry.format_end_time(), value, value_width));
+    lines.extend(field(
+        "Duration",
+        &entry.format_duration(),
+        Style::default().fg(theme::ACCENT).bold(),
+        value_width,
+    ));
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(label("Description")));
+    // The description gets the full inner width rather than the value column: it
+    // is prose, and it is the field most likely to need the room.
+    for text in wrap(&entry.description, width.saturating_sub(2 + 2 + 2).max(8)) {
+        lines.push(Line::from(vec![Span::raw("  "), Span::styled(text, value)]));
+    }
+    lines.push(Line::from(Span::raw("")));
+
+    let (marker, marker_style) = if entry.is_active() {
+        (" active ", Style::default().fg(theme::ACTIVE).bold())
+    } else {
+        (" logged ", Style::default().fg(theme::INACTIVE))
+    };
+    let content = render_overlay(
+        f,
+        width as u16,
+        lines.len() as u16 + 3,
+        Span::styled(
+            format!(" Entry #{} ", entry.id),
+            Style::default().fg(theme::HIGHLIGHT).bold(),
+        ),
+        Span::styled(marker, marker_style),
+        overlay_hints(&[("esc", "close")]),
+    );
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        content,
+    );
 }
 
 /// The pane surface: both panes side by side, or the single open one full width.
