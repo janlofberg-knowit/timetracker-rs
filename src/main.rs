@@ -3,6 +3,10 @@ use anyhow::Result;
 mod cli;
 mod duration;
 mod icons;
+// Read-only reader for `tt-safe`'s mark files. Nothing consumes it yet — the
+// Marks surface (#14) and the poll wiring (#15) are the callers.
+#[allow(dead_code)]
+mod marks;
 mod storage;
 mod tracker;
 mod tui;
