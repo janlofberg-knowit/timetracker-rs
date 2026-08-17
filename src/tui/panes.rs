@@ -132,10 +132,24 @@ impl App {
 
     /// `Tab`: entries table → each visible pane, left to right → back.
     pub(crate) fn cycle_focus(&mut self) {
+        self.shift_focus(1);
+    }
+
+    /// `Shift-Tab`: the exact inverse of [`cycle_focus`](Self::cycle_focus).
+    pub(crate) fn cycle_focus_back(&mut self) {
+        self.shift_focus(-1);
+    }
+
+    /// Walk the focus ring — the table followed by the visible panes, left to
+    /// right — by `delta` steps, wrapping. A focus pointing at a pane that is not
+    /// on the ring (a pane hidden while focused) reads as the table, so both
+    /// directions recover to the same place.
+    fn shift_focus(&mut self, delta: isize) {
         let mut order = vec![Focus::Table];
         order.extend(self.visible_panes().into_iter().map(Focus::Pane));
-        let current = order.iter().position(|f| *f == self.focus).unwrap_or(0);
-        self.focus = order[(current + 1) % order.len()];
+        let current = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
+        let len = order.len() as isize;
+        self.focus = order[(current + delta).rem_euclid(len) as usize];
     }
 
     /// `j` inside the focused pane. Returns false when nothing is focused, so the

@@ -162,6 +162,9 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
                             KeyCode::Tab => app.cycle_focus(),
+                            // crossterm reports Shift-Tab as its own code, not Tab
+                            // with a SHIFT modifier.
+                            KeyCode::BackTab => app.cycle_focus_back(),
                             KeyCode::Char('d') => app.delete_selected()?,
                             KeyCode::Char('s') => app.stop_active()?,
                             KeyCode::Char('r') => app.reload()?,
@@ -739,6 +742,92 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table);
+    }
+
+    /// `Shift-Tab` must undo `Tab` for every pane-visibility combination, so the
+    /// two together are a ring the user can walk in either direction.
+    #[test]
+    fn shift_tab_cycles_focus_in_the_exact_reverse_order() {
+        let _guard = env_guard();
+        sandbox("pane-focus-back");
+
+        for (projects, tags) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut app = seed_panes();
+            if projects {
+                app.toggle_pane(Pane::Projects);
+            }
+            if tags {
+                app.toggle_pane(Pane::Tags);
+            }
+
+            // The ring walked forwards, from the table, is the reference order.
+            let ring_len = 1 + app.visible_panes().len();
+            let mut forward = Vec::new();
+            for _ in 0..ring_len {
+                app.cycle_focus();
+                forward.push(app.focus);
+            }
+            assert_eq!(
+                app.focus,
+                Focus::Table,
+                "forward did not return to the table"
+            );
+
+            // Backwards from the table must visit the same states in reverse.
+            let mut backward = Vec::new();
+            for _ in 0..ring_len {
+                app.cycle_focus_back();
+                backward.push(app.focus);
+            }
+            backward.reverse();
+            let mut expected = forward.clone();
+            expected.rotate_right(1);
+            assert_eq!(
+                backward, expected,
+                "reverse cycling is not the inverse of forward for \
+                 projects={projects} tags={tags}"
+            );
+
+            // …and one step back always undoes one step forward.
+            for _ in 0..ring_len {
+                let before = app.focus;
+                app.cycle_focus();
+                app.cycle_focus_back();
+                assert_eq!(app.focus, before, "Shift-Tab did not undo Tab");
+                app.cycle_focus();
+            }
+        }
+    }
+
+    /// A pane hidden while focused leaves focus off the ring; both directions have
+    /// to recover from that rather than panicking or landing somewhere invisible.
+    #[test]
+    fn shift_tab_recovers_when_the_focused_pane_was_hidden() {
+        let _guard = env_guard();
+        sandbox("pane-focus-back-hidden");
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        app.cycle_focus();
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+
+        // Hide Tags out from under the focus without going through toggle_pane's
+        // hand-back, which is the only way this state can be observed.
+        app.show_tags = false;
+        assert!(app.focused_pane().is_none());
+        app.cycle_focus_back();
+        assert_eq!(
+            app.focus,
+            Focus::Pane(Pane::Projects),
+            "reverse left focus off screen"
+        );
+
+        app.show_tags = true;
+        app.focus = Focus::Pane(Pane::Tags);
+        app.show_tags = false;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
     #[test]
