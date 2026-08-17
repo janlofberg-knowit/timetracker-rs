@@ -747,8 +747,8 @@ mod tests {
         let mut app = App::new().unwrap();
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
+        // Opening the pane focuses it, so `pane_next` moves its cursor.
         app.toggle_pane(Pane::Tags);
-        app.cycle_focus();
         assert_eq!(app.pane_values(Pane::Tags).len(), 8);
 
         // Six rows on screen, eight values: the position tracks the cursor over
@@ -797,19 +797,66 @@ mod tests {
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table);
 
+        // Opening a pane focuses it, so the ring is walked from the table.
         app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Table;
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table);
 
         app.toggle_pane(Pane::Projects);
+        app.focus = Focus::Table;
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table);
+    }
+
+    /// The request behind this: opening a pane must also focus it, so the pane the
+    /// user just asked for is the one `j`/`k`/`Enter` drive — no `Tab` in between.
+    #[test]
+    fn opening_a_pane_focuses_it() {
+        let _guard = env_guard();
+        sandbox("pane-open-focus");
+        let mut app = seed_panes();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focused_pane(), Some(Pane::Projects));
+
+        // Opening the *other* pane while one is focused moves focus to the new one.
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+
+        // …in either order.
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+    }
+
+    /// Closing a pane and opening it again resumes its cursor where it was: the
+    /// cursor lives on `App`, not on the pane's visibility.
+    #[test]
+    fn a_reopened_pane_resumes_its_cursor() {
+        let _guard = env_guard();
+        sandbox("pane-reopen-cursor");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.toggle_pane(Pane::Tags);
+        app.pane_next();
+        app.pane_next();
+        assert_eq!(app.pane_cursor(Pane::Tags), 2);
+
+        app.toggle_pane(Pane::Tags);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        assert_eq!(app.pane_cursor(Pane::Tags), 2);
     }
 
     /// `Shift-Tab` must undo `Tab` for every pane-visibility combination, so the
@@ -827,6 +874,8 @@ mod tests {
             if tags {
                 app.toggle_pane(Pane::Tags);
             }
+            // Opening focuses the pane opened; the ring is walked from the table.
+            app.focus = Focus::Table;
 
             // The ring walked forwards, from the table, is the reference order.
             let ring_len = 1 + app.visible_panes().len();
@@ -876,12 +925,10 @@ mod tests {
         let mut app = seed_panes();
         app.toggle_pane(Pane::Projects);
         app.toggle_pane(Pane::Tags);
-        app.cycle_focus();
-        app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
 
         // Hide Tags out from under the focus without going through toggle_pane's
-        // hand-back, which is the only way this state can be observed.
+        // hand-off, which is the only way this state can be observed.
         app.show_tags = false;
         assert!(app.focused_pane().is_none());
         app.cycle_focus_back();
@@ -898,18 +945,33 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
+    /// Closing the focused pane lands focus on the other pane when that one is
+    /// still open, and on the table when it was the last one.
     #[test]
-    fn hiding_the_focused_pane_hands_focus_back_to_the_table() {
+    fn hiding_the_focused_pane_falls_back_to_the_other_pane_then_the_table() {
         let _guard = env_guard();
         sandbox("pane-focus-drop");
         let mut app = seed_panes();
         app.toggle_pane(Pane::Projects);
-        app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
 
+        // The last open pane closing leaves nothing on the surface to focus.
         app.toggle_pane(Pane::Projects);
         assert_eq!(app.focus, Focus::Table);
         assert!(app.focused_pane().is_none());
+
+        // With the other pane still open, focus moves there rather than to the table.
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+
+        // Closing an *unfocused* pane leaves focus alone.
+        app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
     /// `j`/`k` wrap inside the focused pane and leave the table alone; with no
@@ -926,7 +988,6 @@ mod tests {
         assert_eq!(app.pane_cursor(Pane::Tags), 0);
 
         app.toggle_pane(Pane::Tags);
-        app.cycle_focus();
         let len = app.pane_values(Pane::Tags).len();
         assert_eq!(len, 4);
         assert!(app.pane_next());

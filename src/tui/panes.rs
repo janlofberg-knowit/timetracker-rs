@@ -133,15 +133,30 @@ impl App {
         }
     }
 
-    /// Show or hide a pane. Hiding the focused one hands focus back to the table,
-    /// so `j`/`k` never move a cursor that is no longer on screen.
+    /// Show or hide a pane.
+    ///
+    /// Opening one also focuses it: opening a pane *is* the intent to use it, so
+    /// `j`/`k` and `Enter` land there straight away rather than after a `Tab` the
+    /// user has to remember. That holds for the second pane too — the newly opened
+    /// one is the one just asked for.
+    ///
+    /// Hiding the focused pane moves focus to the other pane when that one is still
+    /// open, and to the table otherwise. Focus stays inside the surface for as long
+    /// as the surface exists, which is both the mirror of open-focuses-it and the
+    /// smaller jump; either way `j`/`k` never move a cursor that is off screen.
     pub(crate) fn toggle_pane(&mut self, pane: Pane) {
         match pane {
             Pane::Projects => self.show_projects = !self.show_projects,
             Pane::Tags => self.show_tags = !self.show_tags,
         }
-        if !self.pane_is_visible(pane) && self.focus == Focus::Pane(pane) {
-            self.focus = Focus::Table;
+        if self.pane_is_visible(pane) {
+            self.focus = Focus::Pane(pane);
+        } else if self.focus == Focus::Pane(pane) {
+            self.focus = self
+                .visible_panes()
+                .first()
+                .copied()
+                .map_or(Focus::Table, Focus::Pane);
         }
     }
 
