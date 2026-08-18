@@ -126,6 +126,60 @@ impl Case {
         fs::write(self.mark_file(key), format!("{start}\n")).unwrap();
     }
 
+    /// Run `tt <args>` with **no** `agent` prefix — the store-reading commands.
+    ///
+    /// [`Case::run`] prepends `agent` to every argv because that is what the mark
+    /// tests need; `tt report` is not an agent subcommand, so it needs the bare
+    /// form.
+    pub fn run_bare(&self, args: &[&str]) -> Run {
+        self.run_with(args, true)
+    }
+
+    /// Lay a `data.json` into the sandbox from fabricated rows.
+    ///
+    /// `schema_version: 1` on purpose: `main`'s migrate preamble early-returns at
+    /// `>= 1`, so the fabricated `project` fields survive instead of being
+    /// overwritten by the tag-inference migration this Story exists to replace.
+    pub fn write_store(&self, rows: &[StoreRow]) {
+        let entries: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let project = match row.project {
+                    Some(name) => format!("\"{name}\""),
+                    None => "null".to_string(),
+                };
+                let tags: Vec<String> =
+                    row.tags.iter().map(|tag| format!("\"{tag}\"")).collect();
+                let end = match row.end {
+                    Some(end) => format!("\"{}\"", stamp(end)),
+                    None => "null".to_string(),
+                };
+                format!(
+                    r#"{{"id":{},"description":"{}","project":{},"tags":[{}],"start_time":"{}","end_time":{},"idle":[]}}"#,
+                    i as u64 + 1,
+                    row.description,
+                    project,
+                    tags.join(","),
+                    stamp(row.start),
+                    end
+                )
+            })
+            .collect();
+
+        let dir = self.data_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("data.json"),
+            format!(
+                r#"{{"entries":[{}],"next_id":{},"schema_version":1}}"#,
+                entries.join(","),
+                rows.len() as u64 + 1
+            ),
+        )
+        .unwrap();
+    }
+
     /// The sandbox's own store directory — where `data.json` and `data.lock` land
     /// if anything at all reaches the store.
     pub fn data_dir(&self) -> PathBuf {
@@ -196,6 +250,25 @@ pub fn clock(epoch: i64) -> String {
         .with_timezone(&chrono::Local)
         .format("%H:%M")
         .to_string()
+}
+
+/// One fabricated store row for [`Case::write_store`].
+pub struct StoreRow {
+    pub description: &'static str,
+    pub project: Option<&'static str>,
+    pub tags: &'static [&'static str],
+    /// Epoch seconds.
+    pub start: i64,
+    /// Epoch seconds; `None` leaves the entry running.
+    pub end: Option<i64>,
+}
+
+/// An epoch second as the store's RFC 3339 local timestamp.
+fn stamp(epoch: i64) -> String {
+    DateTime::<chrono::Utc>::from_timestamp(epoch, 0)
+        .expect("a real epoch")
+        .with_timezone(&Local)
+        .to_rfc3339()
 }
 
 /// The store as `tt` writes it, with only the fields these tests assert on.

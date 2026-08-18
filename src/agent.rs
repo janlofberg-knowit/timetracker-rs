@@ -453,6 +453,19 @@ fn strip_stray_tags(summary: &str) -> String {
     stripped
 }
 
+/// The phase vocabulary, in the order the docs list it.
+///
+/// The convention's third axis: `plan` for planning, `impl` for the code, then
+/// `qa`, `review`, `docs`, `spike` and `ops`. It lives here beside
+/// [`description`] because that is what writes the phase into a tag, and a
+/// vocabulary with two homes drifts — `src/report.rs` reads it back off the
+/// stored tags to build its phase breakdown.
+///
+/// Deliberately **not** used to validate the `phase` argument: `bin/tt-safe`
+/// accepts any word, and tightening that is a behaviour change (#58), not part
+/// of giving the list one home.
+pub const PHASES: [&str; 7] = ["plan", "impl", "qa", "review", "docs", "spike", "ops"];
+
 /// The description `cli::log` is given: the summary plus the convention's tags.
 ///
 /// One string rather than a `Vec` of `extra_tags` because `cli::log` runs

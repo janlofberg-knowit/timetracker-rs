@@ -5,6 +5,7 @@ mod cli;
 mod duration;
 mod icons;
 mod marks;
+mod report;
 mod storage;
 mod tracker;
 mod tui;
@@ -55,6 +56,14 @@ fn main() -> Result<()> {
             trim,
         } => cli::log(description, time, tags, project, idle, trim),
         Commands::Today => cli::today(),
+        Commands::Report {
+            all,
+            week,
+            since,
+            until,
+            project,
+            json,
+        } => cli::report(all, week, since, until, project, json),
         Commands::List => cli::list(),
         Commands::Tui => tui::run_tui(),
         Commands::Status => cli::status(),
