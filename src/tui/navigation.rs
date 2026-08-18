@@ -297,12 +297,16 @@ impl App {
     /// the footer never advertises a key that would do nothing. Lives here rather
     /// than in `render` because it is a fact about the selection, and it is what
     /// the tests assert against.
+    ///
+    /// Both destructive keys carry a trailing `…`, the usual sign that a key opens
+    /// something rather than acts: `d` and `t` now raise a confirmation, and a
+    /// footer promising a bare "delete" would over-report what one keypress does.
     pub(crate) fn detail_hints(&self) -> Vec<(&'static str, &'static str)> {
-        let mut hints = vec![("j/k", "move"), ("e", "edit"), ("d", "delete")];
+        let mut hints = vec![("j/k", "move"), ("e", "edit"), ("d", "delete…")];
         if self.selected_entry().is_some_and(|e| !e.idle.is_empty()) {
             // "trim" is the user-facing verb on every surface, even though the store
             // operation it calls is `split_at_idle`.
-            hints.push(("t", "trim"));
+            hints.push(("t", "trim…"));
         }
         hints.push(("esc", "close"));
         hints

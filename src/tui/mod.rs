@@ -1522,7 +1522,7 @@ mod tests {
         select(&mut app, "long session");
         app.open_detail();
         assert!(
-            app.detail_hints().contains(&("t", "trim")),
+            app.detail_hints().contains(&("t", "trim…")),
             "the footer hid the hint on an entry that has idle"
         );
         let before = app
@@ -1558,7 +1558,7 @@ mod tests {
         // still carries a stretch it excludes — so the hint is gone too.
         assert!(pieces.iter().all(|e| e.idle.is_empty()));
         assert!(
-            !app.detail_hints().contains(&("t", "trim")),
+            !app.detail_hints().contains(&("t", "trim…")),
             "the footer advertises a trim that would now do nothing"
         );
         assert!(
@@ -1577,7 +1577,7 @@ mod tests {
         select(&mut app, "no idle here");
         app.open_detail();
         assert!(
-            !app.detail_hints().contains(&("t", "trim")),
+            !app.detail_hints().contains(&("t", "trim…")),
             "the footer advertised a no-op"
         );
         let before = serde_json::to_string(&on_disk()).unwrap();
@@ -1830,6 +1830,128 @@ mod tests {
         assert!(app.confirms_pending('t'));
         assert!(app.confirms_pending('y'));
         assert!(!app.confirms_pending('d'), "`d` confirmed a trim");
+    }
+
+    /// One rendered frame, as lines of text — so the prompts are asserted against
+    /// what actually reaches the screen rather than against the strings that went in.
+    fn frame_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The prompt has to name the entry: the failure it prevents is a cursor on the
+    /// wrong row, which only the subject line catches.
+    #[test]
+    fn the_delete_prompt_names_the_entry_it_would_destroy() {
+        let _guard = env_guard();
+        sandbox("confirm-render-delete");
+        let today = Local::now().date_naive();
+        seed(
+            vec![dated(12, "pane cursor markers", "tt", &["tt"], today)],
+            13,
+        );
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "pane cursor markers");
+        app.request_confirm(ConfirmAction::Delete);
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+
+        assert!(
+            screen.contains("Delete entry #12?"),
+            "the title did not ask about the captured entry:\n{screen}"
+        );
+        assert!(
+            screen.contains("pane cursor markers (tt)"),
+            "the prompt did not name the entry:\n{screen}"
+        );
+        let duration = app.data.get_entry(12).unwrap().format_duration();
+        assert!(
+            screen.contains(&duration),
+            "the prompt did not state the duration {duration}:\n{screen}"
+        );
+        // Exactly the keys the `Confirm` arm binds, and no others.
+        assert!(screen.contains("d / y yes"), "hint row:\n{screen}");
+        assert!(
+            screen.contains("n / esc / enter cancel"),
+            "hint row:\n{screen}"
+        );
+        assert!(!screen.contains("t / y"), "a delete prompt offered `t`");
+    }
+
+    /// The trim prompt states the outcome, which is knowable before anything is
+    /// written — and reads it from the same helper the write uses.
+    #[test]
+    fn the_trim_prompt_states_the_pieces_and_what_is_removed() {
+        let _guard = env_guard();
+        sandbox("confirm-render-trim");
+        seed(vec![with_idle(14, 110, &[(25, 45), (85, 100)])], 15);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Trim);
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+
+        assert!(
+            screen.contains("Trim entry #14?"),
+            "the title did not ask about a trim:\n{screen}"
+        );
+        // Two holes, so three pieces: 0-25, 45-85, 100-110.
+        assert!(
+            screen.contains("3 pieces: 0h 25m, 0h 40m, 0h 10m"),
+            "the prompt did not state the pieces:\n{screen}"
+        );
+        assert!(
+            screen.contains("0h 35m removed"),
+            "the prompt did not state what it removes:\n{screen}"
+        );
+        assert!(screen.contains("t / y yes"), "hint row:\n{screen}");
+        assert!(
+            !screen.contains("split"),
+            "the user-facing verb is trim, never split:\n{screen}"
+        );
+    }
+
+    /// The three copy surfaces that describe `d` and `t` must not promise that one
+    /// keypress destroys anything.
+    #[test]
+    fn the_key_hints_say_the_destructive_keys_ask_first() {
+        let _guard = env_guard();
+        sandbox("confirm-render-hints");
+        seed(vec![with_idle(4, 180, &[(30, 45)])], 5);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+
+        // The footer legend, which clips from the right at 80 columns — so it gets a
+        // one-column `…` and nothing more.
+        let footer = frame_lines(&mut app, 200, 30).join("\n");
+        assert!(footer.contains("d: del…"), "footer legend:\n{footer}");
+
+        // The help popup, which has the room to say it in words.
+        app.input_mode = InputMode::Help;
+        let help = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(
+            help.contains("delete selected entry (asks first)"),
+            "help popup:\n{help}"
+        );
+
+        // And the popover footer, whose every hint is bound in the `Detail` arm.
+        app.input_mode = InputMode::Detail;
+        let popover = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(popover.contains("d delete…"), "popover hints:\n{popover}");
+        assert!(popover.contains("t trim…"), "popover hints:\n{popover}");
     }
 
     /// `t` on an entry with nothing to trim raises no prompt at all — the popover

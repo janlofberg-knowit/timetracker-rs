@@ -10,7 +10,7 @@ use ratatui::{
 };
 use crate::tracker::TimeData;
 use super::{theme, App};
-use super::types::{InputField, InputMode, Pane, ViewMode};
+use super::types::{ConfirmAction, InputField, InputMode, Pane, ViewMode};
 
 /// What marks the row a cursor is on, in every list that has a cursor: the entries
 /// table and both P/T panes. One string so the lists stay recognisably the same
@@ -242,7 +242,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("e", Style::default().fg(theme::ACCENT)),
         Span::styled(": edit | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("d", Style::default().fg(theme::ACCENT)),
-        Span::styled(": del | ", Style::default().fg(theme::INACTIVE)),
+        Span::styled(": del… | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("s", Style::default().fg(theme::ACCENT)),
         Span::styled(": stop", Style::default().fg(theme::INACTIVE)),
     ];
@@ -275,6 +275,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     match app.input_mode {
         InputMode::Help => render_help_popup(f),
         InputMode::Detail => render_detail_popup(f, app),
+        InputMode::Confirm => render_confirm_popup(f, app),
         _ => {}
     }
 }
@@ -366,7 +367,7 @@ pub fn render_help_popup(f: &mut Frame) {
         heading("  Entries"),
         Line::from(vec![key("  a"), sep("        add entry (uses browsed date)")]),
         Line::from(vec![key("  e"), sep("        edit selected entry")]),
-        Line::from(vec![key("  d"), sep("        delete selected entry")]),
+        Line::from(vec![key("  d"), sep("        delete selected entry (asks first)")]),
         Line::from(vec![key("  s"), sep("        stop active entry")]),
         Line::from(vec![key("  Enter"), sep("    entry detail")]),
         Line::from(Span::raw("")),
@@ -405,6 +406,103 @@ pub fn render_help_popup(f: &mut Frame) {
         ),
         Span::styled(" ? ", Style::default().fg(theme::INACTIVE)),
         overlay_hints(&[("esc", "close")]),
+    );
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        content,
+    );
+}
+
+/// The one overlay that asks instead of telling: a destructive action waiting for
+/// a yes.
+///
+/// **It names the entry.** The failure a confirmation actually prevents here is not
+/// "meant to press a different key", it is "the cursor was on a different row", and
+/// only naming the subject catches that. For the same reason the entry comes from
+/// the *captured* id rather than from `selected_entry()`: the 250 ms poll can move
+/// the cursor while this is on screen, and a prompt that followed the cursor would
+/// re-describe itself under the reader.
+///
+/// The trim prompt also states its outcome, which is fully computable before the
+/// mutation — piece count, each piece's duration, and how much is removed — from
+/// `TimeEntry::trim_spans`, the same helper `split_at_idle` then writes. Never a
+/// second copy of that arithmetic here.
+fn render_confirm_popup(f: &mut Frame, app: &App) {
+    let Some(pending) = app.pending_confirm else {
+        return;
+    };
+    // Gone from under the prompt: draw nothing rather than describe the wrong
+    // entry. The poll drops the prompt on the same tick (`sync_from_store`), so
+    // this is the one frame in between.
+    let Some(entry) = app.data.get_entry(pending.entry_id) else {
+        return;
+    };
+
+    let value = Style::default().fg(Color::White);
+    let dim = Style::default().fg(theme::INACTIVE);
+
+    // The subject line: what the entry is, so a cursor on the wrong row shows up
+    // here rather than after the fact.
+    let mut subject = vec![Span::styled(format!("  {}", entry.description), value)];
+    if let Some(project) = entry.project.as_deref().filter(|p| !p.trim().is_empty()) {
+        subject.push(Span::styled(format!(" ({})", project), dim));
+    }
+    subject.push(Span::styled(
+        format!("  {}", entry.format_duration()),
+        Style::default().fg(theme::ACCENT).bold(),
+    ));
+    let mut lines = vec![Line::from(subject)];
+
+    if pending.action == ConfirmAction::Trim {
+        let pieces = entry.trim_spans();
+        let kept = pieces.iter().fold(Duration::zero(), |acc, (from, to)| {
+            acc + to.signed_duration_since(*from)
+        });
+        let durations: Vec<String> = pieces
+            .iter()
+            .map(|(from, to)| crate::duration::format(to.signed_duration_since(*from)))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled("  -> ", dim),
+            Span::styled(format!("{} pieces: ", durations.len()), value),
+            Span::styled(durations.join(", "), Style::default().fg(theme::ACCENT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("     ", dim),
+            Span::styled(
+                crate::duration::format(entry.duration() - kept),
+                Style::default().fg(theme::ACCENT).bold(),
+            ),
+            Span::styled(" removed", dim),
+        ]));
+    }
+
+    // Sized from the content, like the other two overlays, so a long description
+    // gets room instead of being clipped by a fixed width — bounded, because the
+    // question is the point and a full-width banner reads as a screen, not a
+    // prompt.
+    let title = format!(" {} entry #{}? ", pending.action.verb(), entry.id);
+    let widest = lines
+        .iter()
+        .map(Line::width)
+        .chain(std::iter::once(title.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let width = (widest as u16 + 4).clamp(32, 72);
+
+    let content = render_overlay(
+        f,
+        width,
+        lines.len() as u16 + 3,
+        Span::styled(title, Style::default().fg(theme::HIGHLIGHT).bold()),
+        Span::styled(" confirm ", Style::default().fg(theme::INACTIVE)),
+        // Exactly what the `Confirm` arm binds, and nothing else. `enter` is listed
+        // with the other cancels on purpose: it already means "close this" in the
+        // popover, so it keeps that meaning here rather than learning a second one.
+        overlay_hints(&[
+            (pending.action.confirm_keys(), "yes"),
+            ("n / esc / enter", "cancel"),
+        ]),
     );
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
@@ -544,7 +642,9 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         // Every hint here is bound in the `InputMode::Detail` arm — a hint that does
         // nothing would be worse than none, which is also why `app.detail_hints()`
         // drops `[t]` on an entry with no idle to trim. Traversal comes first
-        // because it is what keeps the list interactive from inside the overlay.
+        // because it is what keeps the list interactive from inside the overlay, and
+        // the two destructive keys trail a `…` because they open a confirmation
+        // rather than acting.
         overlay_hints(&app.detail_hints()),
     );
     f.render_widget(

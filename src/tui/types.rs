@@ -73,6 +73,15 @@ impl ConfirmAction {
         }
     }
 
+    /// The keys that answer yes, as the prompt's hint row spells them — the
+    /// originating key first, since that is the one the fingers are already on.
+    pub fn confirm_keys(self) -> &'static str {
+        match self {
+            ConfirmAction::Delete => "d / y",
+            ConfirmAction::Trim => "t / y",
+        }
+    }
+
     /// The prompt's verb, capitalised for the title. **`Trim`, never "split"** —
     /// the store mechanic is a split (`split_at_idle`), the user-facing verb is
     /// trim on every surface (#35 decision 0).
