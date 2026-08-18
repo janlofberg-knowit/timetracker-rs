@@ -151,6 +151,55 @@ impl App {
         Ok(())
     }
 
+    /// `[t]` in the detail popover: trim the selected entry's idle stretches away,
+    /// which splits it into the pieces between them.
+    ///
+    /// Destructive and unconfirmed, matching `d`. Afterwards the popover stays open
+    /// on the piece that kept the original id — the earliest one — **selected by
+    /// id**: `selected_entry` is positional (`nth` into the re-sorted list), so
+    /// inserting the later pieces would otherwise slide the overlay onto a
+    /// different entry under the reader. The view can never empty here, since one
+    /// entry becomes two or more, so there is no "closed it instead" case.
+    pub(crate) fn trim_selected(&mut self) -> Result<()> {
+        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
+            return Ok(());
+        };
+        // Nothing to trim comes back as no pieces, which is why the footer only
+        // advertises `[t]` when there are intervals: the key is never a surprise
+        // no-op the user has to interpret.
+        let pieces = self.mutate_store(|data| data.split_at_idle(entry_id))?;
+        if pieces.is_empty() {
+            return Ok(());
+        }
+        self.select_by_id(entry_id);
+        Ok(())
+    }
+
+    /// Put the table cursor on the row with this id, leaving it alone when the
+    /// current view does not hold that entry.
+    pub(crate) fn select_by_id(&mut self, id: u64) {
+        if let Some(idx) = self.filtered_entries().iter().position(|e| e.id == id) {
+            self.table_state.select(Some(idx));
+        }
+    }
+
+    /// The detail popover's footer hints, in render order.
+    ///
+    /// `[t]` appears only when the selected entry actually has idle intervals, so
+    /// the footer never advertises a key that would do nothing. Lives here rather
+    /// than in `render` because it is a fact about the selection, and it is what
+    /// the tests assert against.
+    pub(crate) fn detail_hints(&self) -> Vec<(&'static str, &'static str)> {
+        let mut hints = vec![("j/k", "move"), ("e", "edit"), ("d", "delete")];
+        if self.selected_entry().is_some_and(|e| !e.idle.is_empty()) {
+            // "trim" is the user-facing verb on every surface, even though the store
+            // operation it calls is `split_at_idle`.
+            hints.push(("t", "trim"));
+        }
+        hints.push(("esc", "close"));
+        hints
+    }
+
     pub(crate) fn stop_active(&mut self) -> Result<()> {
         self.mutate_store(|data| data.stop_active())?;
         Ok(())

@@ -26,11 +26,19 @@ fn main() -> Result<()> {
     })?;
 
     match cli.command {
-        Commands::Start { description, project } => cli::start(description, project),
+        Commands::Start {
+            description,
+            project,
+        } => cli::start(description, project),
         Commands::Stop => cli::stop(),
-        Commands::Log { description, time, tags, project } => {
-            cli::log(description, time, tags, project)
-        }
+        Commands::Log {
+            description,
+            time,
+            tags,
+            project,
+            idle,
+            trim,
+        } => cli::log(description, time, tags, project, idle, trim),
         Commands::Today => cli::today(),
         Commands::List => cli::list(),
         Commands::Tui => tui::run_tui(),
