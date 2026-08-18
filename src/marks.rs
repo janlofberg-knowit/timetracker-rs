@@ -1,4 +1,4 @@
-//! Reader for `tt-safe`'s open phase marks.
+//! Reader and writer for the agent layer's open phase marks.
 //!
 //! This module owns *every* fact about the mark-file format, so the coupling to
 //! the `tt-safe` shell wrapper lives in exactly one file. That is deliberate
@@ -21,7 +21,8 @@
 use chrono::{DateTime, Local};
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// Suffixes that turn a mark's name into one of its sibling files.
@@ -167,11 +168,19 @@ fn is_sibling_of_a_mark(name: &OsString, present: &HashSet<&OsString>) -> bool {
     })
 }
 
+/// The instant a mark file holds, or `None` when it holds anything else.
+///
+/// The single place the file's one-line body is interpreted, so the reader, the
+/// row and `begin`'s "already marked" message all read a mark the same way.
+fn read_start(path: &Path) -> Option<DateTime<Local>> {
+    let contents = fs::read_to_string(path).ok()?;
+    let seconds: i64 = contents.trim().parse().ok()?;
+    Some(DateTime::from_timestamp(seconds, 0)?.with_timezone(&Local))
+}
+
 /// Parse one mark file, or `None` if it is not one.
 fn read_mark(dir: &Path, name: &OsString) -> Option<Mark> {
-    let contents = fs::read_to_string(dir.join(name)).ok()?;
-    let seconds: i64 = contents.trim().parse().ok()?;
-    let start = DateTime::from_timestamp(seconds, 0)?.with_timezone(&Local);
+    let start = read_start(&dir.join(name))?;
     let (project, issue, phase) = split_key(name.to_str()?);
     Some(Mark {
         project,
@@ -204,6 +213,145 @@ fn split_key(name: &str) -> (String, Option<String>, String) {
         // No `.` at all: nothing to split, so show the whole name as the project.
         None => (name.to_string(), None, String::new()),
     }
+}
+
+// --- writer ---------------------------------------------------------------
+//
+// The writer lives beside the reader because this module owns *every* fact about
+// the format: a writer in its own file would make that claim false and let the
+// two halves drift. Nothing here locks anything — no path below is the store, and
+// `create_new` plus `O_APPEND` cover the only two races there are.
+
+/// What [`begin_in`] found: a mark it created, or one that was already open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Begin {
+    /// The mark file was created, holding this instant.
+    Created(DateTime<Local>),
+    /// A mark was already open and is left byte-identical, so the original start
+    /// wins. `None` when its contents are not a timestamp — the same
+    /// unreadable-start case `bin/tt-safe`'s `fmt_time` prints as `??:??`.
+    AlreadyOpen(Option<DateTime<Local>>),
+}
+
+/// What [`touch_in`] did: recorded a heartbeat, or refused for want of a mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Touch {
+    Recorded,
+    /// No mark file for this phase, so no beats file was created either.
+    NoMark,
+}
+
+/// The sanitised filename for one phase: `<project>.<issue>.<phase>` with every
+/// character outside `[A-Za-z0-9._-]` replaced by `_`, mirroring `bin/tt-safe`'s
+/// `mark_key`.
+///
+/// The key is built here and nowhere else, because a mark and its heartbeats are
+/// the same name in two directories: a mark path and a beats path that sanitised
+/// differently would leave a phase with beats it could never find again. The
+/// no-issue sentinel `-` is written literally, so `begin vinge - plan` is
+/// `vinge.-.plan`.
+pub fn mark_key(project: &str, issue: &str, phase: &str) -> String {
+    format!("{project}.{issue}.{phase}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The mark file for `key` inside `dir`.
+pub fn mark_path(dir: &Path, key: &str) -> PathBuf {
+    dir.join(key)
+}
+
+/// The heartbeat file for `key` inside `dir`.
+///
+/// A `beats/` **subdirectory**, never a `<mark>.<suffix>` sibling. Because
+/// [`mark_key`] always builds `<project>.<issue>.<phase>`, every mark filename
+/// contains at least two dots, so no mark can ever be named `beats` — which is
+/// what lets [`open_marks_in`] separate marks from heartbeats with a file-type
+/// test instead of a name filter (see #16).
+pub fn beats_path(dir: &Path, key: &str) -> PathBuf {
+    dir.join("beats").join(key)
+}
+
+/// The legacy pre-beats heartbeat for `key`: `tt-safe touch` overwrote a single
+/// value into it before `beats/` existed. Never written here, only cleared.
+fn legacy_beat_path(dir: &Path, key: &str) -> PathBuf {
+    dir.join(format!("{key}.last"))
+}
+
+/// Open a mark for one phase, or report the one already open.
+///
+/// Created with `create_new`, which makes the file's existence and its creation a
+/// single atomic step: the shell's `[ -f "$mark" ] || date +%s > "$mark"` can lose
+/// a start to a concurrent `begin` between the test and the write, and this cannot.
+/// An existing mark is never rewritten — the original start is the whole point of a
+/// mark surviving a compacted context.
+pub fn begin_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<Begin> {
+    let path = mark_path(dir, &mark_key(project, issue, phase));
+    fs::create_dir_all(dir)?;
+
+    let start = Local::now();
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            writeln!(file, "{}", start.timestamp())?;
+            Ok(Begin::Created(start))
+        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            Ok(Begin::AlreadyOpen(read_start(&path)))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Append one heartbeat for a phase that is already marked.
+///
+/// Appended, never overwritten: the *sequence* of beats is the evidence that
+/// tells a long active phase from a long silence. One `O_APPEND` line per call,
+/// which needs no lock — concurrent appends of a short line do not interleave.
+///
+/// A phase nobody began records nothing at all: a beats file without its mark
+/// would be heartbeats for work no `end` can ever measure.
+pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<Touch> {
+    let key = mark_key(project, issue, phase);
+    if !mark_path(dir, &key).is_file() {
+        return Ok(Touch::NoMark);
+    }
+
+    let beats = beats_path(dir, &key);
+    if let Some(parent) = beats.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().append(true).create(true).open(&beats)?;
+    writeln!(file, "{}", Local::now().timestamp())?;
+    Ok(Touch::Recorded)
+}
+
+/// Drop a mark and every heartbeat belonging to it.
+///
+/// All three paths are cleared — the mark, the legacy `.last` beat and the
+/// `beats/` entry — so an upgraded session leaves nothing behind, and each is
+/// allowed to be absent: cancelling a phase that was never begun is not an error.
+/// The `beats/` directory itself stays, since other phases' beats live in it.
+pub fn cancel_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<()> {
+    let key = mark_key(project, issue, phase);
+    for path in [
+        mark_path(dir, &key),
+        legacy_beat_path(dir, &key),
+        beats_path(dir, &key),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -422,5 +570,142 @@ mod tests {
                 ("bare".into(), None, String::new()),
             ]
         );
+    }
+
+    // --- writer -----------------------------------------------------------
+
+    fn read(dir: &Path, name: &str) -> String {
+        fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    #[test]
+    fn a_key_is_sanitised_once_and_keeps_the_no_issue_sentinel() {
+        assert_eq!(mark_key("tt", "8", "impl"), "tt.8.impl");
+        // The `-` sentinel is a literal part of the name, not an absent field.
+        assert_eq!(mark_key("vinge", "-", "plan"), "vinge.-.plan");
+        // `[^A-Za-z0-9._-]` → `_`, exactly as the shell's `${key//…/_}`.
+        assert_eq!(
+            mark_key("my proj", "7", "code/review"),
+            "my_proj.7.code_review"
+        );
+        // Both paths are built from that one key, so they can never disagree.
+        let dir = Path::new("/marks");
+        assert_eq!(
+            mark_path(dir, &mark_key("my proj", "7", "impl")),
+            PathBuf::from("/marks/my_proj.7.impl")
+        );
+        assert_eq!(
+            beats_path(dir, &mark_key("my proj", "7", "impl")),
+            PathBuf::from("/marks/beats/my_proj.7.impl")
+        );
+    }
+
+    #[test]
+    fn begin_writes_the_start_the_reader_reads_back() {
+        let dir = sandbox("begin");
+        let Begin::Created(start) = begin_in(&dir, "tt", "8", "impl").unwrap() else {
+            panic!("a fresh directory should have no mark to find");
+        };
+
+        // The file holds exactly one `\n`-terminated decimal epoch.
+        assert_eq!(read(&dir, "tt.8.impl"), format!("{}\n", start.timestamp()));
+        // Writer and reader agree, which is the whole point of the Story.
+        assert_eq!(
+            labels(&open_marks_in(&dir)),
+            vec![("tt".into(), Some("8".into()), "impl".into())]
+        );
+        assert_eq!(open_marks_in(&dir)[0].start.timestamp(), start.timestamp());
+    }
+
+    #[test]
+    fn a_second_begin_keeps_the_original_start_byte_for_byte() {
+        let dir = sandbox("begin-again");
+        write(&dir, "tt.8.impl", "1000200\n");
+
+        let again = begin_in(&dir, "tt", "8", "impl").unwrap();
+        assert_eq!(
+            read(&dir, "tt.8.impl"),
+            "1000200\n",
+            "the mark was rewritten"
+        );
+        match again {
+            Begin::AlreadyOpen(Some(start)) => assert_eq!(start.timestamp(), 1000200),
+            other => panic!("expected an already-open mark, got {other:?}"),
+        }
+
+        // An unreadable start still reports the mark as open, so the caller can say
+        // so with `??:??` rather than silently taking a new start.
+        write(&dir, "broken.1.impl", "not a timestamp\n");
+        assert_eq!(
+            begin_in(&dir, "broken", "1", "impl").unwrap(),
+            Begin::AlreadyOpen(None)
+        );
+    }
+
+    #[test]
+    fn each_touch_appends_one_beat_and_leaves_the_mark_alone() {
+        let dir = sandbox("touch");
+        begin_in(&dir, "tt", "8", "impl").unwrap();
+        let mark = read(&dir, "tt.8.impl");
+
+        for _ in 0..3 {
+            assert_eq!(touch_in(&dir, "tt", "8", "impl").unwrap(), Touch::Recorded);
+        }
+
+        let beats = read(&dir, "beats/tt.8.impl");
+        assert_eq!(beats.lines().count(), 3, "one line per touch: {beats:?}");
+        assert!(
+            beats.lines().all(|line| line.parse::<i64>().is_ok()),
+            "every beat is a bare epoch: {beats:?}"
+        );
+        assert_eq!(read(&dir, "tt.8.impl"), mark, "the mark was rewritten");
+        // Beats are a subdirectory, never a sibling suffix.
+        assert!(!dir.join("tt.8.impl.beats").exists());
+        assert!(!dir.join("tt.8.impl.last").exists());
+    }
+
+    #[test]
+    fn touch_on_an_unbegun_phase_writes_nothing_at_all() {
+        let dir = sandbox("touch-unbegun");
+        assert_eq!(touch_in(&dir, "tt", "8", "impl").unwrap(), Touch::NoMark);
+        assert!(
+            !dir.join("beats").exists(),
+            "no beats directory was created"
+        );
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the directory is untouched"
+        );
+    }
+
+    #[test]
+    fn cancel_clears_the_mark_its_legacy_beat_and_its_beats_but_not_a_sibling_phase() {
+        let dir = sandbox("cancel");
+        begin_in(&dir, "tt", "8", "impl").unwrap();
+        touch_in(&dir, "tt", "8", "impl").unwrap();
+        // The pre-beats heartbeat, from a session that predates `beats/`.
+        write(&dir, "tt.8.impl.last", "1000250\n");
+        begin_in(&dir, "other", "9", "plan").unwrap();
+        touch_in(&dir, "other", "9", "plan").unwrap();
+
+        cancel_in(&dir, "tt", "8", "impl").unwrap();
+
+        assert!(!dir.join("tt.8.impl").exists());
+        assert!(!dir.join("tt.8.impl.last").exists());
+        assert!(!dir.join("beats/tt.8.impl").exists());
+        assert!(
+            dir.join("beats").is_dir(),
+            "the beats directory itself stays"
+        );
+        assert!(
+            dir.join("other.9.plan").is_file(),
+            "a sibling mark was cleared"
+        );
+        assert!(dir.join("beats/other.9.plan").is_file());
+
+        // Cancelling what was never begun is not an error.
+        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        cancel_in(&dir, "never", "1", "begun").unwrap();
     }
 }
