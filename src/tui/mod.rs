@@ -222,7 +222,7 @@ pub fn run_tui() -> Result<()> {
                             // No focus argument, unlike the panes: the marks
                             // surface is display-only, so opening it cannot
                             // move `j`/`k` or `Enter` anywhere.
-                            KeyCode::Char('M') => app.toggle_marks(),
+                            KeyCode::Char('A') => app.toggle_marks(),
                             // Display-only like the marks surface, so no focus
                             // argument here either. Capital `S` only: lowercase
                             // `s` stops the active entry.
