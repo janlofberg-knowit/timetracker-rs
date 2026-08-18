@@ -5,18 +5,22 @@
 //! fork-local divergence — `tt-safe` does not exist upstream — and keeping it
 //! self-contained means an upstream merge can simply drop this file.
 //!
-//! The format, from `bin/tt-safe`:
+//! The format, shared with `bin/tt-safe` until the wrapper is retired:
 //!
-//! - One file per phase at `$MARK_DIR/<project>.<issue>.<phase>`, where
-//!   `MARK_DIR` is `${TT_MARK_DIR:-$HOME/.cache/tt-safe/marks}`.
+//! - One file per phase at `<mark dir>/<project>.<issue>.<phase>`, where the mark
+//!   directory is `$TT_MARK_DIR` if set, else `marks` inside this app's own cache
+//!   directory (`$HOME/Library/Caches/com.timetracker.tt` on macOS).
 //! - The name is sanitised `[^A-Za-z0-9._-]` → `_`, so a *segment* may itself
 //!   contain `.` or `_` and the name is **not** losslessly splittable.
 //! - The content is a single unix-seconds start timestamp.
-//! - A mark may have sibling files alongside it (`<mark>.last` today, and
-//!   `<mark>.beats` once the append-only heartbeat lands) which are not marks.
+//! - Heartbeats live in a `beats/` **subdirectory** of the mark directory, one
+//!   append-only file per mark under the same name — never as a
+//!   `<mark>.<suffix>` sibling. A mark can still have one legacy sibling,
+//!   `<mark>.last`, from before `beats/` existed; nothing writes it any more and
+//!   `cancel` clears it.
 //!
-//! Only the start timestamp is read. See [`open_marks_in`] for why the
-//! heartbeat siblings are deliberately left alone.
+//! Only the start timestamp is read. See [`open_marks_in`] for why the heartbeats
+//! are deliberately left alone.
 
 use chrono::{DateTime, Local, TimeDelta};
 use std::collections::HashSet;
@@ -29,10 +33,17 @@ use crate::duration;
 
 /// Suffixes that turn a mark's name into one of its sibling files.
 ///
-/// `.last` is `tt-safe touch`'s overwritten heartbeat; `.beats` is the
-/// append-only replacement that #12 introduces. Listing both now means the
-/// reader is already correct when that change lands.
-const SIBLING_SUFFIXES: [&str; 2] = [".last", ".beats"];
+/// Exactly one: `.last`, the single-value heartbeat `touch` overwrote before
+/// `beats/` existed. It is real — migration carries it, `cancel` clears it and
+/// `end` still reads it as a one-beat sequence — so the reader has to know it is
+/// not a mark.
+///
+/// A `.beats` sibling was listed here in anticipation of the append-only
+/// heartbeat, but that landed as a `beats/` **subdirectory** instead
+/// (see [`beats_path`]), so nothing has ever written the sibling form and nothing
+/// will. It is dropped rather than left as dead weight that implies a file shape
+/// this module does not have.
+const SIBLING_SUFFIXES: [&str; 1] = [".last"];
 
 /// One open phase mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,18 +164,37 @@ pub fn rows_at(marks: &[Mark], now: DateTime<Local>) -> Vec<String> {
         .collect()
 }
 
-/// The directory `tt-safe` keeps its marks in, mirroring `bin/tt-safe`'s
-/// `MARK_DIR="${TT_MARK_DIR:-$HOME/.cache/tt-safe/marks}"`.
+/// The directory the marks live in: `$TT_MARK_DIR` when set, else `marks` inside
+/// this app's own cache directory.
+///
+/// `tt` writes these files itself now, so they belong under the app's own
+/// directories rather than in the wrapper's `~/.cache/tt-safe/`. `TT_MARK_DIR`
+/// stays as the override — every sandboxed test depends on it, and the wrapper
+/// still honours the same variable — and "set but empty" is no setting at all,
+/// as in the shell.
+///
+/// `None` only when there is no home directory to resolve at all, which is a
+/// caller's error to report rather than a path to guess at.
 pub fn mark_dir() -> Option<PathBuf> {
-    resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), std::env::var_os("HOME"))
+    resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), cache_dir())
 }
 
-/// The env-free half of [`mark_dir`], so the fallback can be tested without
-/// repointing this process's `HOME`.
-fn resolve_mark_dir(mark_dir: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+/// This app's cache directory — `$HOME/Library/Caches/com.timetracker.tt` on
+/// macOS — the same `ProjectDirs` triple `storage::get_data_path` uses.
+///
+/// It follows `HOME`, so a sandboxed `HOME` redirects the marks exactly as it
+/// already redirects the store.
+fn cache_dir() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("com", "timetracker", "tt")?;
+    Some(dirs.cache_dir().to_path_buf())
+}
+
+/// The env-free half of [`mark_dir`], taking the resolved cache root so the
+/// fallback can be tested without repointing this process's `HOME`.
+fn resolve_mark_dir(mark_dir: Option<OsString>, cache: Option<PathBuf>) -> Option<PathBuf> {
     match mark_dir {
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        _ => Some(PathBuf::from(home?).join(".cache/tt-safe/marks")),
+        _ => Some(cache?.join("marks")),
     }
 }
 
@@ -182,10 +212,11 @@ pub fn open_marks() -> Vec<Mark> {
 /// Unreadable and unparseable files are skipped individually, so one bad file
 /// never hides its siblings.
 ///
-/// **Only the start timestamp is read; the heartbeat siblings are not.** A
-/// directory-mtime fingerprint cannot detect `tt-safe touch` rewriting
-/// `<mark>.last` in place, so anything derived from a heartbeat would appear to
-/// work and then silently go stale — and #12 changes that file's shape anyway.
+/// **Only the start timestamp is read; the heartbeats are not.** A directory-mtime
+/// fingerprint cannot detect a beat being appended inside `beats/`, so anything
+/// derived from a heartbeat would appear to work and then silently go stale. The
+/// `beats/` subdirectory is skipped by the file-type filter below, never by its
+/// name — see [`beats_path`].
 pub fn open_marks_in(dir: &Path) -> Vec<Mark> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -426,8 +457,9 @@ mod tests {
     /// with the TUI's `HOME`-repointing tests — see `storage::env_guard`.
     use crate::storage::env_guard;
 
-    /// A fresh scratch mark directory. The real one at
-    /// `~/.cache/tt-safe/marks` has live marks in it and must never be touched.
+    /// A fresh scratch mark directory. The real one — under this app's cache
+    /// directory, and the wrapper's older one beside it — has live marks in it
+    /// and must never be touched.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-marks-test-{name}"));
         let _ = fs::remove_dir_all(&dir);
@@ -491,12 +523,16 @@ mod tests {
         );
     }
 
+    /// Heartbeats are a subdirectory, so they are excluded by the file-type
+    /// filter and not by their name — which is why a mark whose *phase* is
+    /// `beats` is still listed. There is no `<mark>.beats` sibling to skip: that
+    /// form was never written and is no longer a sibling suffix.
     #[test]
-    fn a_beats_sibling_is_skipped_too() {
+    fn the_beats_subdirectory_is_not_a_mark_but_a_beats_phase_is() {
         let dir = sandbox("beats");
         write(&dir, "tt.8.impl", "1000200\n");
-        write(&dir, "tt.8.impl.beats", "1000210\n1000220\n");
-        // No `tt.9.beats` mark exists, so this one is a mark of its own.
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        write(&dir.join("beats"), "tt.8.impl", "1000210\n1000220\n");
         write(&dir, "proj.-.beats", "1000100\n");
 
         assert_eq!(
@@ -551,21 +587,76 @@ mod tests {
     }
 
     #[test]
-    fn the_default_directory_falls_back_to_home() {
+    fn the_default_directory_is_marks_inside_the_app_cache_dir() {
+        let cache = || {
+            Some(PathBuf::from(
+                "/sandbox/home/Library/Caches/com.timetracker.tt",
+            ))
+        };
         assert_eq!(
-            resolve_mark_dir(None, Some("/sandbox/home".into())),
-            Some(PathBuf::from("/sandbox/home/.cache/tt-safe/marks"))
+            resolve_mark_dir(None, cache()),
+            Some(PathBuf::from(
+                "/sandbox/home/Library/Caches/com.timetracker.tt/marks"
+            ))
         );
         // An empty `TT_MARK_DIR` is no setting at all, as in the shell.
         assert_eq!(
-            resolve_mark_dir(Some("".into()), Some("/sandbox/home".into())),
-            Some(PathBuf::from("/sandbox/home/.cache/tt-safe/marks"))
+            resolve_mark_dir(Some("".into()), cache()),
+            Some(PathBuf::from(
+                "/sandbox/home/Library/Caches/com.timetracker.tt/marks"
+            ))
         );
         assert_eq!(
-            resolve_mark_dir(Some("/elsewhere".into()), Some("/sandbox/home".into())),
+            resolve_mark_dir(Some("/elsewhere".into()), cache()),
             Some(PathBuf::from("/elsewhere"))
         );
-        assert_eq!(resolve_mark_dir(None, None), None, "no HOME, no default");
+        assert_eq!(
+            resolve_mark_dir(None, None),
+            None,
+            "no cache dir, no default"
+        );
+        // …but an override still stands without one, so `TT_MARK_DIR` alone is
+        // enough to run.
+        assert_eq!(
+            resolve_mark_dir(Some("/elsewhere".into()), None),
+            Some(PathBuf::from("/elsewhere"))
+        );
+    }
+
+    /// The cache directory really does follow `HOME`, which is what makes a
+    /// sandboxed `HOME` enough to redirect the marks as well as the store.
+    #[test]
+    fn the_cache_directory_follows_home() {
+        let _guard = env_guard();
+        let dir = sandbox("cache-follows-home");
+
+        let restore_home = std::env::var_os("HOME");
+        let restore_marks = std::env::var_os("TT_MARK_DIR");
+        unsafe { std::env::set_var("HOME", &dir) };
+        unsafe { std::env::remove_var("TT_MARK_DIR") };
+        let resolved = mark_dir();
+        // A mark written through the writer comes back from the default location.
+        let begun = resolved.as_deref().map(|d| begin_in(d, "tt", "54", "impl"));
+        let listed = open_marks();
+        match restore_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        if let Some(value) = restore_marks {
+            unsafe { std::env::set_var("TT_MARK_DIR", value) };
+        }
+
+        let resolved = resolved.expect("a sandboxed HOME resolves a cache dir");
+        assert!(
+            resolved.starts_with(&dir),
+            "the cache dir ignored HOME: {resolved:?}"
+        );
+        assert_eq!(resolved.file_name().unwrap(), "marks");
+        begun.unwrap().unwrap();
+        assert_eq!(
+            labels(&listed),
+            vec![("tt".into(), Some("54".into()), "impl".into())]
+        );
     }
 
     /// The row format `tt-safe marks` prints and the TUI shows, in one place.
