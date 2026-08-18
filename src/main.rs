@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 mod cli;
+mod config;
 mod duration;
 mod icons;
 mod storage;
