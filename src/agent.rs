@@ -196,7 +196,16 @@ fn item(
         std::process::exit(64);
     };
     let minutes = whole_minutes(minutes);
-    log_entry(project, issue, phase, summary, minutes, Vec::new(), false)
+    log_entry(
+        project,
+        issue,
+        phase,
+        summary,
+        minutes,
+        Vec::new(),
+        false,
+        None,
+    )
 }
 
 /// A minutes argument as the wrapper accepted it, or exit 64.
@@ -225,6 +234,14 @@ fn whole_minutes(raw: &str) -> i64 {
 ///
 /// `extra_tags` is deliberately empty — every tag is already in the description,
 /// so `parse_tags` produces exactly the set the wrapper's `--description=` did.
+///
+/// `ended_at` is the mark's last heartbeat for a mark-derived close and `None`
+/// wherever there is no mark timeline to pin to — the explicit-minutes path and
+/// `item`, both of which record no silence and so have nothing to line up with.
+// Eight: the four naming fields, then the four the entry needs. Grouping them into
+// a struct would only move the same list one indirection away, and every caller
+// already has all eight to hand.
+#[allow(clippy::too_many_arguments)]
 fn log_entry(
     project: &str,
     issue: &str,
@@ -233,6 +250,7 @@ fn log_entry(
     minutes: i64,
     idle: Vec<IdleInterval>,
     trim: bool,
+    ended_at: Option<DateTime<Local>>,
 ) -> Result<()> {
     cli::log(
         description(project, issue, phase, summary),
@@ -241,6 +259,7 @@ fn log_entry(
         Some(project.to_string()),
         idle,
         trim,
+        ended_at,
     )
 }
 
@@ -279,6 +298,9 @@ fn end(
     let dir = mark_dir()?;
     let mut idle = Vec::new();
     let mut split_at_idle = false;
+    // Where the entry gets pinned. Stays `None` on the explicit-minutes path,
+    // which ignores the mark's timestamps entirely and records no silence.
+    let mut anchor = None;
 
     let minutes = match minutes {
         Some(raw) => whole_minutes(raw),
@@ -298,6 +320,10 @@ fn end(
                 .unwrap_or_else(|| Local::now().timestamp())
                 .max(marked.started);
             let measured = (ended - marked.started) / 60;
+            // Every mark-derived close is anchored here, `--full` and `--trim`
+            // alike: the gaps below are epochs on this timeline, so the entry has
+            // to end where the timeline does.
+            anchor = Some(instant(ended)?);
 
             // Computed for every mark-derived close, `--full` included: the
             // intervals go on the entry even when the full span is logged.
@@ -313,16 +339,23 @@ fn end(
                     .iter()
                     .map(|&(from, to)| Ok(IdleInterval::new(instant(from)?, instant(to)?)))
                     .collect::<Result<Vec<_>>>()?;
-                // What `--trim` logs: the span minus *every* over-threshold gap,
-                // not just the worst one the refusal names.
+                // What `--trim` ends up storing: the span minus *every*
+                // over-threshold gap, not just the worst one the refusal names.
+                // Reported, never logged — the subtraction is `split_at_idle`'s.
                 let silent: i64 = gaps.iter().map(|(from, to)| (to - from) / 60).sum();
                 let trimmed = (measured - silent).max(0);
 
                 if full {
                     measured
                 } else if trim {
+                    // The **measured** span, not `trimmed`: `split_at_idle` cuts
+                    // the same gaps out of the entry, and handing it a span that
+                    // already had them removed subtracted them twice — the entry
+                    // collapsed to a fragment while stdout claimed the trimmed
+                    // figure. One subtraction, done on absolute times inside the
+                    // entry the anchor put them in.
                     split_at_idle = true;
-                    trimmed
+                    measured
                 } else {
                     refuse(project, issue, phase, &gaps, measured, trimmed);
                 }
@@ -330,7 +363,16 @@ fn end(
         }
     };
 
-    log_entry(project, issue, phase, summary, minutes, idle, split_at_idle)?;
+    log_entry(
+        project,
+        issue,
+        phase,
+        summary,
+        minutes,
+        idle,
+        split_at_idle,
+        anchor,
+    )?;
     // Cleared only once the entry has actually been recorded — and on *every*
     // successful close, the explicit-minutes path included. A refusal returns
     // above, leaving the mark and its beats in place so the phase can still be

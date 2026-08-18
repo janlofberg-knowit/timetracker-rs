@@ -54,7 +54,7 @@ fn main() -> Result<()> {
             project,
             idle,
             trim,
-        } => cli::log(description, time, tags, project, idle, trim),
+        } => cli::log(description, time, tags, project, idle, trim, None),
         Commands::Today => cli::today(),
         Commands::Report {
             all,

@@ -237,6 +237,10 @@ struct GapFixture {
     minutes: i64,
     /// The hole, unrounded.
     hole_minutes: i64,
+    /// The last heartbeat — where `end` measures to, and so where a mark-derived
+    /// entry has to end. Happens to coincide with the hole's far edge in this
+    /// fixture; named separately so a case asserting the anchor says what it means.
+    last_beat: i64,
 }
 
 impl GapFixture {
@@ -262,6 +266,7 @@ fn gap_fixture(case: &Case) -> GapFixture {
         hole: (beats[1], beats[2]),
         minutes: (beats[2] - start) / 60,
         hole_minutes: (beats[2] - beats[1]) / 60,
+        last_beat: beats[2],
     }
 }
 
@@ -501,29 +506,98 @@ fn trim_adds_the_split_and_full_does_not() {
     assert_eq!(entries[0].seconds(), fixture.minutes_rounded() * 60);
 }
 
-/// Ported from "--trim asks tt to trim, and still records the interval".
+/// A mark-derived entry is pinned to the mark's own timeline, not to `now` (#86).
 ///
-/// The interval *is* passed — `trim: true` never travels with an empty idle
-/// vector — and `split_at_idle` then consumes it: the logged span is already the
-/// span minus every flagged gap, so the recorded interval covers what is left and
-/// the split leaves nothing of it behind. That is exactly what the wrapper's
-/// `--time=<trimmed> --idle=… --trim` argv produces against the real `tt`, so it
-/// is parity rather than a port artefact; see the report on #55.
+/// `end` measures to the last heartbeat, so the entry has to *end* there too: the
+/// `idle` epochs it records are read off the mark, and anchored at `now` instead
+/// they would sit `now - last beat` later than the entry that carries them. That
+/// displacement is invisible while nothing reads the intervals back, and it is
+/// what made `--trim` cut in the wrong place.
 #[test]
-fn trim_trims_and_still_records_the_interval() {
+fn a_mark_derived_entry_ends_at_the_marks_last_heartbeat() {
+    let case = Case::new("anchor-last-beat");
+    let fixture = gap_fixture(&case);
+
+    case.run(&["end", "proj", "12", "plan", "planned the thing", "--full"])
+        .assert_status(0);
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(
+        entry
+            .end_time
+            .expect("a logged entry is closed")
+            .timestamp(),
+        fixture.last_beat,
+        "the entry ends at the last beat, not at now"
+    );
+
+    // The point of the anchor: every recorded interval falls inside the entry that
+    // carries it. Inclusive at both ends — this fixture's hole runs right up to the
+    // last beat, so its far edge *is* the entry's end.
+    let start = entry.start_time.timestamp();
+    let end = fixture.last_beat;
+    for gap in &entry.idle {
+        let (from, to) = gap.epochs();
+        assert!(
+            from >= start && to <= end,
+            "idle {from}-{to} escaped the entry {start}-{end}"
+        );
+    }
+    assert!(!entry.idle.is_empty(), "the fixture's hole was recorded");
+}
+
+/// Ported from "--trim asks tt to trim, and still records the interval", and the
+/// case that pins wart 5 shut (#87).
+///
+/// What this asserted before was the *wrapper's* outcome, and the wrapper's outcome
+/// was broken: `end` handed `cli::log` a span that already had the gaps taken out
+/// **and** asked it to trim, so `split_at_idle` took them out again and the store
+/// kept a sub-second fragment while stdout claimed the trimmed figure. The old
+/// assertions could not see it — they checked stdout's number and that `idle` came
+/// back empty, both of which a fragment satisfies. So this asserts the **stored
+/// span** now, which is the only thing that could have caught it.
+#[test]
+fn trim_subtracts_each_gap_exactly_once_and_reports_what_survived() {
     let case = Case::new("idle-trim");
     let fixture = gap_fixture(&case);
 
     let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--trim"]);
     run.assert_status(0);
-    // The span minus the hole, where `--full` on the same fixture logs the span.
-    assert_eq!(
-        run.logged_minutes(),
-        common::round_quarter(fixture.minutes - fixture.hole_minutes)
-    );
-    // The trim was asked for and acted on, which is what tells this run apart from
-    // the `--full` one above: no interval is left standing on the entry.
+
+    // The logged span is the measured one — the subtraction is `split_at_idle`'s
+    // job now — so what survives is the *rounded* span minus the hole, and the
+    // rounding is the floor-15 one every close goes through.
+    let survives = fixture.minutes_rounded() - fixture.hole_minutes;
     let entries = case.store().entries;
+    let stored: i64 = entries.iter().map(|entry| entry.seconds()).sum();
+    assert_eq!(
+        stored,
+        survives * 60,
+        "the store holds the span minus the hole, once: {entries:?}"
+    );
+    // The wart's signature: a piece so short it is not work. Asserted separately
+    // from the sum, because a fragment plus a full-length piece would sum right.
+    assert!(
+        entries.iter().all(|entry| entry.seconds() >= 60),
+        "a sub-second fragment survived the split: {entries:?}"
+    );
+    // And it reports what it stored, not what it was asked for.
+    assert_eq!(run.logged_minutes(), survives);
+
+    // The surviving piece sits where the beats say the work was: it ends where the
+    // silence began, rather than floating somewhere near `now`.
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.end_time.expect("closed").timestamp())
+            .max(),
+        Some(fixture.hole.0),
+        "the last surviving piece ends at the start of the hole"
+    );
+    // Nothing is left standing on the pieces: a split on every interval consumes
+    // them all. `--full` is where the durable evidence lives.
     assert!(
         entries.iter().all(|entry| entry.idle.is_empty()),
         "the split did not consume the interval: {entries:?}"

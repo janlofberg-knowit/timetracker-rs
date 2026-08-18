@@ -113,11 +113,12 @@ The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
   minutes as a trailing argument — which wins over both flags. `--trim` never fires on
   its own and is never a default.
 
-  Either way the flagged gaps are recorded on the entry (`tt log --idle=<start>-<end>`,
-  one per gap), so `--full` keeps the evidence rather than discarding it, and the
-  intervals can be trimmed later from the TUI's detail popover with `[t]`. `--trim` is
+  `--full` records the flagged gaps on the entry (`tt log --idle=<start>-<end>`, one
+  per gap), so the evidence survives rather than being discarded, and the intervals
+  can be trimmed later from the TUI's detail popover with `[t]`. `--trim` is
   **destructive and unconfirmed**: it splits the entry into the pieces between the
-  gaps.
+  gaps there and then, so the silence is gone and what it reports back is what it
+  stored — a smaller figure than the span it was given.
 - **exit 64, no mark** — never marked, or the mark was lost. Use `item` with a
   duration you can justify, or ask. A missing summary is the same exit code.
 
