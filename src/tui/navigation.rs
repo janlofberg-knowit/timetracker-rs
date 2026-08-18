@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{Duration, Local};
 use crate::storage::PathStamp;
 use super::App;
-use super::types::{InputMode, ViewMode};
+use super::types::{ConfirmAction, InputMode, PendingConfirm, ViewMode};
 
 impl App {
     /// Record the store's fingerprint, then load it.
@@ -86,6 +86,18 @@ impl App {
             (None, Some(idx)) => Some(idx.min(len.saturating_sub(1))),
             (None, None) => None,
         });
+
+        // `Confirm` is deliberately absent from the guard above (#40 decision 5), so
+        // the reload can carry away the entry a prompt is currently describing. Drop
+        // the prompt when that happens, rather than leaving a modal on screen that
+        // asks about something no longer there. `confirm_pending` re-checks anyway —
+        // this is about the frame the user is looking at, not about correctness.
+        let target_vanished = self
+            .pending_confirm
+            .is_some_and(|pending| self.data.get_entry(pending.entry_id).is_none());
+        if target_vanished {
+            self.cancel_confirm();
+        }
         Ok(())
     }
 
@@ -132,20 +144,27 @@ impl App {
     }
 
     pub(crate) fn delete_selected(&mut self) -> Result<()> {
-        // Resolve the id from the view, then drop the borrow: the removal itself
-        // happens against the freshly loaded store, not this snapshot.
-        let Some(idx) = self.table_state.selected() else {
-            return Ok(());
-        };
         let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
             return Ok(());
         };
+        self.delete_entry(entry_id)
+    }
 
+    /// Remove one entry by id, then keep the table cursor inside the shorter list.
+    ///
+    /// By id rather than by selection, because the confirmation flow captured its
+    /// target before the prompt went up and the cursor may have moved since — see
+    /// [`PendingConfirm`].
+    pub(crate) fn delete_entry(&mut self, entry_id: u64) -> Result<()> {
         // An id that is already gone simply matches nothing — not an error.
         self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
 
         let new_len = self.filtered_entries().len();
-        if idx >= new_len && new_len > 0 {
+        let past_the_end = self
+            .table_state
+            .selected()
+            .is_some_and(|idx| idx >= new_len);
+        if past_the_end && new_len > 0 {
             self.table_state.select(Some(new_len - 1));
         }
         Ok(())
@@ -164,6 +183,12 @@ impl App {
         let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
             return Ok(());
         };
+        self.trim_entry(entry_id)
+    }
+
+    /// Trim one entry by id, for the reason [`delete_entry`](Self::delete_entry) is
+    /// by id: the confirmation captured its target before the prompt went up.
+    pub(crate) fn trim_entry(&mut self, entry_id: u64) -> Result<()> {
         // Nothing to trim comes back as no pieces, which is why the footer only
         // advertises `[t]` when there are intervals: the key is never a surprise
         // no-op the user has to interpret.
@@ -173,6 +198,89 @@ impl App {
         }
         self.select_by_id(entry_id);
         Ok(())
+    }
+
+    /// Raise the confirmation prompt for a destructive action on the selected entry.
+    ///
+    /// **The target id is captured here, now.** `delete_entry` and `trim_entry` are
+    /// given that id rather than re-reading the selection, because `sync_from_store`
+    /// is deliberately *not* guarded for `Confirm` (#40 decision 5): the 250 ms poll
+    /// keeps running while the prompt is up, so an agent's write can re-anchor the
+    /// table cursor underneath it. Guarding the poll instead would freeze the prompt
+    /// on data the store no longer has, and the user would be answering about a
+    /// stale screen — so the poll stays live and the answer is pinned to an id.
+    ///
+    /// Nothing selected means nothing to confirm. A trim with nothing to trim is
+    /// also nothing to confirm: the popover only advertises `[t]` when the entry has
+    /// idle (#39), and a prompt offering to trim an entry into one unchanged piece
+    /// would be a prompt whose yes does nothing.
+    pub(crate) fn request_confirm(&mut self, action: ConfirmAction) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        let entry_id = entry.id;
+        if action == ConfirmAction::Trim && entry.trim_spans().is_empty() {
+            return;
+        }
+        self.pending_confirm = Some(PendingConfirm {
+            action,
+            entry_id,
+            from: self.input_mode,
+        });
+        self.input_mode = InputMode::Confirm;
+    }
+
+    /// Whether `c` is a yes to the prompt that is up: `y`, or the very key that
+    /// raised it.
+    ///
+    /// The originating key and not just any repeat, so a `d` pressed on a trim
+    /// prompt and a `t` pressed on a delete prompt are both inert (#40 decision 2).
+    /// It lives here rather than in the event loop's `match` guard because it is a
+    /// fact about the pending action, and because the guard has to be testable.
+    pub(crate) fn confirms_pending(&self, c: char) -> bool {
+        self.pending_confirm
+            .is_some_and(|pending| c == 'y' || c == pending.action.key())
+    }
+
+    /// The yes: perform the pending action on **the captured id and nothing else**.
+    ///
+    /// A captured id that is no longer in the store self-cancels — the prompt
+    /// described an entry that has since been written away, so the honest answer is
+    /// to do nothing rather than to act on whatever took its place.
+    pub(crate) fn confirm_pending(&mut self) -> Result<()> {
+        let Some(pending) = self.pending_confirm.take() else {
+            return Ok(());
+        };
+        if self.data.get_entry(pending.entry_id).is_some() {
+            match pending.action {
+                ConfirmAction::Delete => self.delete_entry(pending.entry_id)?,
+                ConfirmAction::Trim => self.trim_entry(pending.entry_id)?,
+            }
+        }
+        self.close_confirm(pending.from);
+        Ok(())
+    }
+
+    /// The no — and every escape route: `n`, `Esc` and `Enter` all land here, so the
+    /// store is untouched and the screen goes back where it was.
+    pub(crate) fn cancel_confirm(&mut self) {
+        let from = self
+            .pending_confirm
+            .take()
+            .map_or(InputMode::Normal, |pending| pending.from);
+        self.close_confirm(from);
+    }
+
+    /// Leave the prompt for the mode that raised it, downgrading to `Normal` when
+    /// that was the popover and the view it read has since emptied — an empty modal
+    /// is something the user then has to escape from for no reason.
+    fn close_confirm(&mut self, from: InputMode) {
+        self.pending_confirm = None;
+        self.input_mode = if from == InputMode::Detail && self.selected_entry().is_none() {
+            InputMode::Normal
+        } else {
+            from
+        };
     }
 
     /// Put the table cursor on the row with this id, leaving it alone when the
