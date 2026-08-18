@@ -117,6 +117,26 @@ pub enum AgentCommands {
         /// Whole minutes, rounded up to the nearest quarter hour
         minutes: Option<String>,
     },
+    /// Close a marked phase, measuring it to its last heartbeat
+    End {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+        /// 3-6 words of plain prose, with no issue number in them
+        summary: Option<String>,
+        /// Whole minutes, overriding the mark's own timestamps entirely — and
+        /// winning over both flags below
+        minutes: Option<String>,
+        /// Log the whole measured span, recording the flagged silence without
+        /// removing it
+        #[arg(long, conflicts_with = "trim")]
+        full: bool,
+        /// Log the measured span minus every flagged gap, splitting the entry at
+        /// each one
+        #[arg(long)]
+        trim: bool,
+    },
 }
 
 impl AgentCommands {
@@ -137,7 +157,7 @@ impl AgentCommands {
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
             | AgentCommands::List => false,
-            AgentCommands::Item { .. } => true,
+            AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
         }
     }
 }

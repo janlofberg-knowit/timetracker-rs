@@ -19,6 +19,7 @@
 //! `tt`'s house style rather than the wrapper's — see [`list`].
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Local};
 
 use crate::tracker::IdleInterval;
 
@@ -57,6 +58,23 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             phase,
             summary.as_deref(),
             minutes.as_deref(),
+        ),
+        AgentCommands::End {
+            project,
+            issue,
+            phase,
+            summary,
+            minutes,
+            full,
+            trim,
+        } => end(
+            project,
+            issue,
+            phase,
+            summary.as_deref(),
+            minutes.as_deref(),
+            *full,
+            *trim,
         ),
     }
 }
@@ -223,6 +241,169 @@ fn log_entry(
         Some(project.to_string()),
         idle,
         trim,
+    )
+}
+
+/// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`:
+/// close a marked phase and log what it actually cost.
+///
+/// `bin/tt-safe`'s `cmd_end` (`:262-352`). The phase is measured to its **last
+/// heartbeat**, never to now, so time spent idle after the work finished is not
+/// billed; any interior silence longer than `TT_MAX_GAP_MINUTES` is flagged, and
+/// with nothing said about it the close is **refused** rather than guessed at.
+/// Steady heartbeats are direct evidence the work was still happening, so length
+/// alone proves nothing — what is suspicious is a silence inside the phase.
+///
+/// Resolution order is the wrapper's: an explicit minutes argument wins over both
+/// flags and skips the mark's timestamps entirely, recording no silence and
+/// computing no gaps; `--full` logs the measured span with the silence recorded
+/// but not removed; `--trim` logs the span minus every flagged gap.
+fn end(
+    project: &str,
+    issue: &str,
+    phase: &str,
+    summary: Option<&str>,
+    minutes: Option<&str>,
+    full: bool,
+    trim: bool,
+) -> Result<()> {
+    let Some(summary) = summary else {
+        // Hand-checked rather than a required positional: clap would answer a
+        // missing one with exit 2, and 64 is the code the wrapper's callers know.
+        eprintln!(
+            "tt: need a summary: tt agent end <project> <issue|-> <phase> <summary> [minutes]"
+        );
+        std::process::exit(64);
+    };
+
+    let dir = mark_dir()?;
+    let mut idle = Vec::new();
+    let mut split_at_idle = false;
+
+    let minutes = match minutes {
+        Some(raw) => whole_minutes(raw),
+        None => {
+            let Some(marked) = marks::read_phase_in(&dir, project, issue, phase)? else {
+                eprintln!(
+                    "tt: no mark for {} — pass minutes explicitly",
+                    phase_name(project, issue, phase)
+                );
+                std::process::exit(64);
+            };
+
+            // Clamped up to the start, so a heartbeat behind the mark (a clock
+            // stepping back) reads as a zero-length phase and not a negative one.
+            let ended = marked
+                .ended
+                .unwrap_or_else(|| Local::now().timestamp())
+                .max(marked.started);
+            let measured = (ended - marked.started) / 60;
+
+            // Computed for every mark-derived close, `--full` included: the
+            // intervals go on the entry even when the full span is logged.
+            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, max_gap_minutes());
+            if gaps.is_empty() {
+                measured
+            } else {
+                // One interval per flagged gap, in the chronological order
+                // `gaps_over` emits them — recorded whether or not the caller
+                // trimmed, because recording the silence is what lets the TUI
+                // show it and trim it later. `--full` keeps the evidence.
+                idle = gaps
+                    .iter()
+                    .map(|&(from, to)| Ok(IdleInterval::new(instant(from)?, instant(to)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                // What `--trim` logs: the span minus *every* over-threshold gap,
+                // not just the worst one the refusal names.
+                let silent: i64 = gaps.iter().map(|(from, to)| (to - from) / 60).sum();
+                let trimmed = (measured - silent).max(0);
+
+                if full {
+                    measured
+                } else if trim {
+                    split_at_idle = true;
+                    trimmed
+                } else {
+                    refuse(project, issue, phase, &gaps, measured, trimmed);
+                }
+            }
+        }
+    };
+
+    log_entry(project, issue, phase, summary, minutes, idle, split_at_idle)?;
+    // Cleared only once the entry has actually been recorded — and on *every*
+    // successful close, the explicit-minutes path included. A refusal returns
+    // above, leaving the mark and its beats in place so the phase can still be
+    // closed once the human call is made.
+    marks::cancel_in(&dir, project, issue, phase)?;
+    Ok(())
+}
+
+/// Refuse the close, naming the worst hole, and exit 65.
+///
+/// A total says "this looks odd"; an interval says which stretch to check, which
+/// is the only actionable form. Both figures go on one line so neither answer is
+/// privileged — the caller decides which is true, and a long genuinely-active
+/// session wants `--full`.
+///
+/// The figures are **unrounded**, as the wrapper's are: rounding happens later,
+/// on the way to `cli::log`. And `has an <n>m gap` is ungrammatical for most `n`;
+/// that is reproduced verbatim rather than fixed, because these messages are the
+/// contract an agent reads (#58 owns the wart).
+fn refuse(
+    project: &str,
+    issue: &str,
+    phase: &str,
+    gaps: &[(i64, i64)],
+    measured: i64,
+    trimmed: i64,
+) -> ! {
+    // Strictly greater, so the **first** of two equal holes is the one named.
+    let mut worst = (0, 0, 0);
+    for &(from, to) in gaps {
+        let minutes = (to - from) / 60;
+        if minutes > worst.0 {
+            worst = (minutes, from, to);
+        }
+    }
+
+    eprintln!(
+        "tt: {} has an {}m gap ({}-{})",
+        phase_name(project, issue, phase),
+        worst.0,
+        clock(worst.1),
+        clock(worst.2)
+    );
+    eprintln!("tt: --full logs {measured}m, --trim logs {trimmed}m");
+    eprintln!("tt: or pass the real minutes instead.");
+    std::process::exit(65);
+}
+
+/// How long a silence has to be to count, in minutes.
+///
+/// `TT_MAX_GAP_MINUTES` with a documented default of 45, matching
+/// `bin/tt-safe:51`: set-but-empty means unset, and so does an unparseable value.
+/// The wrapper's `TODO` about moving this into a settings file is noted and not
+/// acted on — an env var plus a documented default is parity.
+fn max_gap_minutes() -> i64 {
+    std::env::var("TT_MAX_GAP_MINUTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(45)
+}
+
+/// One epoch as an instant, or a real error naming it.
+fn instant(epoch: i64) -> Result<DateTime<Local>> {
+    DateTime::from_timestamp(epoch, 0)
+        .map(|instant| instant.with_timezone(&Local))
+        .with_context(|| format!("{epoch} is not a valid timestamp"))
+}
+
+/// One epoch as `HH:MM`, or `??:??` — the wrapper's `fmt_time` fallback.
+fn clock(epoch: i64) -> String {
+    instant(epoch).map_or_else(
+        |_| "??:??".to_string(),
+        |instant| instant.format("%H:%M").to_string(),
     )
 }
 
