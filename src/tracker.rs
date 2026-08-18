@@ -48,7 +48,7 @@ impl TimeEntry {
     /// Returns the status icon for this entry (active or empty)
     pub fn status_icon(&self) -> &'static str {
         if self.is_active() {
-            icons::ACTIVE
+            icons::active()
         } else {
             ""
         }
