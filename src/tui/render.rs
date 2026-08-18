@@ -383,8 +383,8 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(Span::raw("")),
         heading("  Other"),
         // Not under Search & Filter with the P/T panes: this surface filters
-        // nothing and takes no focus, it only shows what `tt-safe` has open.
-        Line::from(vec![key("  Shift-M"), sep("  open marks on / off")]),
+        // nothing and takes no focus, it only shows which phases are open.
+        Line::from(vec![key("  Shift-A"), sep("  agent phases on / off")]),
         // Help-only, and deliberately not in the footer legend: the hint zone
         // clips from the right at 80 columns and has no room left.
         Line::from(vec![key("  Shift-S"), sep("  project summary on / off")]),
@@ -669,7 +669,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
         .title(Span::styled(
-            " Marks (M) ",
+            " Agents (A) ",
             Style::default().fg(theme::TITLE),
         ));
     let inner = block.inner(area);
@@ -699,7 +699,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
 
     let lines: Vec<Line> = if marks.is_empty() {
         vec![Line::from(Span::styled(
-            " no open marks",
+            " no phases in progress",
             Style::default().fg(theme::INACTIVE).italic(),
         ))]
     } else {

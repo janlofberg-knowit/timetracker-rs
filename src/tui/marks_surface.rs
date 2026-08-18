@@ -55,7 +55,7 @@ impl App {
         surface_count(None, self.marks.len(), visible_rows)
     }
 
-    /// `Shift-M`: show or hide the surface.
+    /// `Shift-A`: show or hide the surface.
     ///
     /// Unlike `toggle_pane` this touches no focus, because the surface never has
     /// any: there is nothing to repair when it closes.
