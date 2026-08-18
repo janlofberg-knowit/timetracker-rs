@@ -12,3 +12,22 @@ pub const DURATION_LOW: Color = Color::Rgb(165, 214, 167);  // Light green
 pub const BORDER: Color = Color::Rgb(88, 88, 88);           // Border gray
 pub const TITLE: Color = Color::Rgb(186, 186, 186);         // Light gray
 pub const DAY_HEADER_BG: Color = Color::Rgb(38, 48, 68);    // Dark blue for day separators
+
+/// Thresholds (in hours) for coloring a single time entry's duration.
+pub const ENTRY_DURATION_HIGH_H: i64 = 4;
+pub const ENTRY_DURATION_MED_H: i64 = 2;
+
+/// Thresholds (in hours) for coloring a day's total tracked duration.
+pub const DAY_DURATION_HIGH_H: i64 = 8;
+pub const DAY_DURATION_MED_H: i64 = 4;
+
+/// Maps a duration (in hours) to a color given high/medium thresholds.
+pub fn duration_color(hours: i64, high_threshold: i64, med_threshold: i64) -> Color {
+    if hours >= high_threshold {
+        DURATION_HIGH
+    } else if hours >= med_threshold {
+        DURATION_MED
+    } else {
+        DURATION_LOW
+    }
+}

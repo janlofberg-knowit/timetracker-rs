@@ -424,13 +424,11 @@ fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
             let is_today = *date == Local::now().date_naive();
             let hours = dur.num_hours();
 
-            let dur_color = if hours >= 8 {
-                theme::DURATION_HIGH
-            } else if hours >= 4 {
-                theme::DURATION_MED
-            } else {
-                theme::DURATION_LOW
-            };
+            let dur_color = theme::duration_color(
+                hours,
+                theme::DAY_DURATION_HIGH_H,
+                theme::DAY_DURATION_MED_H,
+            );
 
             let (day_style, date_style) = if is_today {
                 (
@@ -471,13 +469,11 @@ fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
 
 fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
     let hours = entry.duration().num_hours();
-    let dur_color = if hours >= 4 {
-        theme::DURATION_HIGH
-    } else if hours >= 2 {
-        theme::DURATION_MED
-    } else {
-        theme::DURATION_LOW
-    };
+    let dur_color = theme::duration_color(
+        hours,
+        theme::ENTRY_DURATION_HIGH_H,
+        theme::ENTRY_DURATION_MED_H,
+    );
 
     let status_style = if entry.is_active() {
         Style::default().fg(theme::ACTIVE)
