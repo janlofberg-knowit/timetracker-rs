@@ -239,6 +239,14 @@ struct GapFixture {
     hole_minutes: i64,
 }
 
+impl GapFixture {
+    /// The measured span as it is actually logged, through the same floor-15
+    /// rounding `end` applies.
+    fn minutes_rounded(&self) -> i64 {
+        common::round_quarter(self.minutes)
+    }
+}
+
 fn gap_fixture(case: &Case) -> GapFixture {
     let start = now() - 110 * 60;
     let beats = [
@@ -396,4 +404,231 @@ fn an_unvouched_span_over_the_threshold_is_flagged() {
     run.assert_status(65);
     run.assert_stderr_has(&format!("gap ({}-", clock(start)));
     assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+// --- idle and trim (tt-safe-gaps.sh:534-627) -------------------------------
+//
+// These are the cases the shell asserted on `--idle=` / `--trim` argv, which has
+// no in-process counterpart: `cli::log` takes the intervals as values and does the
+// split itself, inside the same store transaction. The epoch pair is what must
+// match, so these read the sandbox's `data.json` instead.
+
+/// The oracle's `two_gap_fixture`: two holes in one phase, so the *order* of the
+/// recorded intervals has something to prove.
+struct TwoGapFixture {
+    holes: [(i64, i64); 2],
+    minutes: i64,
+}
+
+fn two_gap_fixture(case: &Case) -> TwoGapFixture {
+    let start = now() - 150 * 60;
+    let beats = [
+        // The first hole starts here…
+        start + 10 * 60,
+        // …and ends here, 60 minutes later.
+        start + 70 * 60,
+        // The second starts here…
+        start + 80 * 60,
+        // …and ends here, another 60 later.
+        start + 140 * 60,
+    ];
+    case.write_mark("proj.12.plan", start);
+    case.beats_at("proj.12.plan", &beats);
+    TwoGapFixture {
+        holes: [(beats[0], beats[1]), (beats[2], beats[3])],
+        minutes: (beats[3] - start) / 60,
+    }
+}
+
+/// Ported from "every flagged gap becomes an --idle argument, in chronological
+/// order".
+#[test]
+fn every_flagged_gap_becomes_an_idle_interval_in_chronological_order() {
+    let case = Case::new("idle-order");
+    let fixture = two_gap_fixture(&case);
+
+    case.run(&["end", "proj", "12", "plan", "planned the thing", "--full"])
+        .assert_status(0);
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1, "--full never splits");
+    // One interval per fabricated hole — the count comes from the fixture, not
+    // from a number written here.
+    let recorded: Vec<(i64, i64)> = entries[0].idle.iter().map(|gap| gap.epochs()).collect();
+    assert_eq!(recorded, fixture.holes, "the fixture's holes, in order");
+}
+
+/// Ported from "a phase with no flagged gap passes no --idle at all".
+#[test]
+fn a_phase_with_no_flagged_gap_records_none_and_no_trim() {
+    let case = Case::new("idle-none");
+    let step = 600;
+    let start = now() - step * 24;
+    let beats: Vec<i64> = (1..=24).map(|i| start + i * step).collect();
+    case.write_mark("proj.7.impl", start);
+    case.beats_at("proj.7.impl", &beats);
+
+    case.run(&["end", "proj", "7", "impl", "long active session"])
+        .assert_status(0);
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1, "nothing was split");
+    assert!(entries[0].idle.is_empty(), "no silence to record");
+}
+
+/// Ported from "--trim adds the flag and --full does not".
+///
+/// The shell asserted the absence of a `--trim` argument; in process the split is
+/// a call, so what proves it did not happen is the entry still standing whole with
+/// its interval on it.
+#[test]
+fn trim_adds_the_split_and_full_does_not() {
+    let case = Case::new("idle-full-no-trim");
+    let fixture = gap_fixture(&case);
+
+    let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--full"]);
+    run.assert_status(0);
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1, "--full asks for no split");
+    assert_eq!(
+        entries[0]
+            .idle
+            .iter()
+            .map(|gap| gap.epochs())
+            .collect::<Vec<_>>(),
+        vec![fixture.hole],
+        "the silence is recorded, not removed"
+    );
+    assert_eq!(entries[0].seconds(), fixture.minutes_rounded() * 60);
+}
+
+/// Ported from "--trim asks tt to trim, and still records the interval".
+///
+/// The interval *is* passed — `trim: true` never travels with an empty idle
+/// vector — and `split_at_idle` then consumes it: the logged span is already the
+/// span minus every flagged gap, so the recorded interval covers what is left and
+/// the split leaves nothing of it behind. That is exactly what the wrapper's
+/// `--time=<trimmed> --idle=… --trim` argv produces against the real `tt`, so it
+/// is parity rather than a port artefact; see the report on #55.
+#[test]
+fn trim_trims_and_still_records_the_interval() {
+    let case = Case::new("idle-trim");
+    let fixture = gap_fixture(&case);
+
+    let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--trim"]);
+    run.assert_status(0);
+    // The span minus the hole, where `--full` on the same fixture logs the span.
+    assert_eq!(
+        run.logged_minutes(),
+        common::round_quarter(fixture.minutes - fixture.hole_minutes)
+    );
+    // The trim was asked for and acted on, which is what tells this run apart from
+    // the `--full` one above: no interval is left standing on the entry.
+    let entries = case.store().entries;
+    assert!(
+        entries.iter().all(|entry| entry.idle.is_empty()),
+        "the split did not consume the interval: {entries:?}"
+    );
+    assert!(!case.mark_file("proj.12.plan").exists());
+    assert!(!case.beats_file("proj.12.plan").exists());
+}
+
+/// Ported from "explicit minutes beat --trim as well, and record nothing".
+///
+/// Stronger than the shell's form, which could only pass one positional: here the
+/// flag and the override are given *together*, and the override still wins.
+#[test]
+fn explicit_minutes_beat_trim_as_well_and_record_nothing() {
+    let case = Case::new("idle-explicit");
+    gap_fixture(&case);
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "12",
+        "plan",
+        "planned the thing",
+        "30",
+        "--trim",
+    ]);
+    run.assert_status(0);
+    assert_eq!(run.logged_minutes(), common::round_quarter(30));
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1, "nothing was split");
+    // The mark's timestamps were skipped entirely, so there was no silence to find.
+    assert!(entries[0].idle.is_empty(), "an idle interval was recorded");
+}
+
+/// The oracle's `aligned_gap_fixture`: quarter-aligned on purpose, so the `--full`
+/// and `--trim` runs below differ by the hole and not by a rounding artefact.
+struct AlignedGapFixture {
+    hole_minutes: i64,
+}
+
+fn aligned_gap_fixture(case: &Case) -> AlignedGapFixture {
+    let start = now() - 120 * 60;
+    let beats = [start + 30 * 60, start + 120 * 60];
+    case.write_mark("proj.12.plan", start);
+    case.beats_at("proj.12.plan", &beats);
+    AlignedGapFixture {
+        hole_minutes: (beats[1] - beats[0]) / 60,
+    }
+}
+
+/// Ported from "--full logs the whole measured span".
+#[test]
+fn full_logs_the_whole_measured_span() {
+    let case = Case::new("aligned-full");
+    aligned_gap_fixture(&case);
+
+    let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--full"]);
+    run.assert_status(0);
+    assert!(run.logged_minutes() > 0, "no duration was logged");
+}
+
+/// Ported from "--trim logs the span minus every flagged gap".
+///
+/// Two runs of the same fixture in two sandboxes, compared as a **delta**, so
+/// neither figure is written down anywhere — the shell carried `full_logged`
+/// across two cases to do the same thing.
+#[test]
+fn trim_logs_the_span_minus_every_flagged_gap() {
+    let full_case = Case::new("aligned-full-delta");
+    let fixture = aligned_gap_fixture(&full_case);
+    let full = full_case.run(&["end", "proj", "12", "plan", "planned the thing", "--full"]);
+    full.assert_status(0);
+
+    let trim_case = Case::new("aligned-trim-delta");
+    aligned_gap_fixture(&trim_case);
+    let trim = trim_case.run(&["end", "proj", "12", "plan", "planned the thing", "--trim"]);
+    trim.assert_status(0);
+
+    assert_eq!(
+        full.logged_minutes() - trim.logged_minutes(),
+        fixture.hole_minutes,
+        "minutes removed by --trim"
+    );
+}
+
+/// Ported from "--trim on a phase with nothing flagged is a no-op, not a usage
+/// error".
+#[test]
+fn trim_on_a_phase_with_nothing_flagged_is_a_no_op() {
+    let case = Case::new("idle-trim-noop");
+    let span = 30 * 60;
+    let start = now() - span;
+    case.write_mark("proj.7.impl", start);
+    case.beats_at("proj.7.impl", &[start + 10 * 60, start + span]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "nothing to trim", "--trim"]);
+    run.assert_status(0);
+    // No silence means no split: `cli::log`'s clap `requires` makes `--trim` with
+    // nothing to trim a usage error, so `trim: true` must never be passed alone.
+    run.assert_stdout_has(&logged_duration(span / 60));
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 1, "nothing was split");
+    assert!(entries[0].idle.is_empty());
 }

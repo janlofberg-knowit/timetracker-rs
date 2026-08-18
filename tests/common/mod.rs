@@ -274,6 +274,23 @@ impl Run {
         );
     }
 
+    /// The minutes `cli::log` said it logged, read back off its own output.
+    ///
+    /// The in-process stand-in for the oracle's `logged_minutes`, which read
+    /// `--time=<n>m` off the stub's argv: `log` prints the duration it was given,
+    /// **before** any split, which is exactly what the shell's `--time=` was. Lets
+    /// two runs be compared without either figure being written down.
+    pub fn logged_minutes(&self) -> i64 {
+        let tail = self
+            .stdout
+            .split("- Duration: ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no logged duration in {:?}", self.stdout));
+        let (hours, rest) = tail.split_once('h').expect("`<h>h <m>m`");
+        let (minutes, _) = rest.trim_start().split_once('m').expect("`<h>h <m>m`");
+        hours.trim().parse::<i64>().unwrap() * 60 + minutes.trim().parse::<i64>().unwrap()
+    }
+
     pub fn assert_stderr_has(&self, needle: &str) {
         assert!(
             self.stderr.contains(needle),
