@@ -60,12 +60,13 @@ tt today
 
 ---
 
-### `tt list`
+### `tt list [-n <limit>]`
 
-Show the 20 most recent entries across all days.
+Show the most recent entries across all days (defaults to the last 20).
 
 ```sh
 tt list
+tt list -n 50
 ```
 
 ---
@@ -121,3 +122,9 @@ Tags can be added to any entry in two ways:
 2. **Explicit flag** with `tt log --tags tagA,tagB,tagC`
 
 Both methods can be combined and duplicates are automatically removed.
+
+---
+
+## Data storage
+
+Entries are stored as JSON in your OS's standard data directory (via the `directories` crate), e.g. `~/.local/share/tt/data.json` on Linux or `%APPDATA%\tt\data\data.json` on Windows.
