@@ -481,6 +481,11 @@ pub fn active() -> Result<()> {
 }
 /// `tt report` — the rollup surface. Read-only over the store; see `src/report.rs`
 /// for the maths and for why the project axis is the field rather than a tag.
+///
+/// Dispatched ahead of `main`'s migrate preamble, so this is the one command that
+/// migrates for itself — in memory, never written back. A reader needs no lock
+/// either: `save_data` writes a temp file and renames, so a torn store is not
+/// something a reader can observe.
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     all: bool,
@@ -490,7 +495,8 @@ pub fn report(
     project: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let data = load_data()?;
+    let mut data = load_data()?;
+    crate::tracker::migrate(&mut data);
     let today = Local::now().date_naive();
     let scope = report::resolve_scope(today, all, week, since, until, project.as_deref());
     let selected = report::select(&data, &scope, project.as_deref());

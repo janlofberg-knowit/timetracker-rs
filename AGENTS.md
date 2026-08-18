@@ -143,5 +143,8 @@ humans. `tt report --json` is the machine-readable form.
 - Projects come from the **project field**, so `--project NAME` filters on what was
   stored rather than on a tag.
 
+`tt report` is a pure read: it takes no lock and does not touch the store, so a
+rollup never blocks a close that is happening at the same time.
+
 Its overlap counter is a health check on rule 3: if it climbs, logging has drifted
 away from the moments it should be attached to.
