@@ -1,8 +1,9 @@
+use crossterm::event::KeyCode;
 use anyhow::Result;
 use chrono::{Duration, Local};
 use crate::storage::PathStamp;
 use super::App;
-use super::types::{InputMode, ViewMode};
+use super::types::{ConfirmAction, InputMode, PendingConfirm, ViewMode};
 
 impl App {
     /// Record the store's fingerprint, then load it.
@@ -86,6 +87,18 @@ impl App {
             (None, Some(idx)) => Some(idx.min(len.saturating_sub(1))),
             (None, None) => None,
         });
+
+        // `Confirm` is deliberately absent from the guard above (#40 decision 5), so
+        // the reload can carry away the entry a prompt is currently describing. Drop
+        // the prompt when that happens, rather than leaving a modal on screen that
+        // asks about something no longer there. `confirm_pending` re-checks anyway —
+        // this is about the frame the user is looking at, not about correctness.
+        let target_vanished = self
+            .pending_confirm
+            .is_some_and(|pending| self.data.get_entry(pending.entry_id).is_none());
+        if target_vanished {
+            self.cancel_confirm();
+        }
         Ok(())
     }
 
@@ -131,39 +144,36 @@ impl App {
         }
     }
 
-    pub(crate) fn delete_selected(&mut self) -> Result<()> {
-        // Resolve the id from the view, then drop the borrow: the removal itself
-        // happens against the freshly loaded store, not this snapshot.
-        let Some(idx) = self.table_state.selected() else {
-            return Ok(());
-        };
-        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
-            return Ok(());
-        };
-
+    /// Remove one entry by id, then keep the table cursor inside the shorter list.
+    ///
+    /// By id and never by selection: `d` only reaches here through a confirmation
+    /// that captured its target before the prompt went up, and the cursor may have
+    /// moved since — see [`PendingConfirm`].
+    pub(crate) fn delete_entry(&mut self, entry_id: u64) -> Result<()> {
         // An id that is already gone simply matches nothing — not an error.
         self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
 
         let new_len = self.filtered_entries().len();
-        if idx >= new_len && new_len > 0 {
+        let past_the_end = self
+            .table_state
+            .selected()
+            .is_some_and(|idx| idx >= new_len);
+        if past_the_end && new_len > 0 {
             self.table_state.select(Some(new_len - 1));
         }
         Ok(())
     }
 
-    /// `[t]` in the detail popover: trim the selected entry's idle stretches away,
-    /// which splits it into the pieces between them.
+    /// `[t]` in the detail popover, once confirmed: trim the entry's idle stretches
+    /// away, which splits it into the pieces between them.
     ///
-    /// Destructive and unconfirmed, matching `d`. Afterwards the popover stays open
-    /// on the piece that kept the original id — the earliest one — **selected by
-    /// id**: `selected_entry` is positional (`nth` into the re-sorted list), so
-    /// inserting the later pieces would otherwise slide the overlay onto a
+    /// By id for the reason [`delete_entry`](Self::delete_entry) is. Afterwards the
+    /// popover stays open on the piece that kept the original id — the earliest one —
+    /// **selected by id**: `selected_entry` is positional (`nth` into the re-sorted
+    /// list), so inserting the later pieces would otherwise slide the overlay onto a
     /// different entry under the reader. The view can never empty here, since one
     /// entry becomes two or more, so there is no "closed it instead" case.
-    pub(crate) fn trim_selected(&mut self) -> Result<()> {
-        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
-            return Ok(());
-        };
+    pub(crate) fn trim_entry(&mut self, entry_id: u64) -> Result<()> {
         // Nothing to trim comes back as no pieces, which is why the footer only
         // advertises `[t]` when there are intervals: the key is never a surprise
         // no-op the user has to interpret.
@@ -173,6 +183,107 @@ impl App {
         }
         self.select_by_id(entry_id);
         Ok(())
+    }
+
+    /// Raise the confirmation prompt for a destructive action on the selected entry.
+    ///
+    /// **The target id is captured here, now.** `delete_entry` and `trim_entry` are
+    /// given that id rather than re-reading the selection, because `sync_from_store`
+    /// is deliberately *not* guarded for `Confirm` (#40 decision 5): the 250 ms poll
+    /// keeps running while the prompt is up, so an agent's write can re-anchor the
+    /// table cursor underneath it. Guarding the poll instead would freeze the prompt
+    /// on data the store no longer has, and the user would be answering about a
+    /// stale screen — so the poll stays live and the answer is pinned to an id.
+    ///
+    /// Nothing selected means nothing to confirm. A trim with nothing to trim is
+    /// also nothing to confirm: the popover only advertises `[t]` when the entry has
+    /// idle (#39), and a prompt offering to trim an entry into one unchanged piece
+    /// would be a prompt whose yes does nothing.
+    pub(crate) fn request_confirm(&mut self, action: ConfirmAction) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        let entry_id = entry.id;
+        if action == ConfirmAction::Trim && entry.trim_spans().is_empty() {
+            return;
+        }
+        self.pending_confirm = Some(PendingConfirm {
+            action,
+            entry_id,
+            from: self.input_mode,
+        });
+        self.input_mode = InputMode::Confirm;
+    }
+
+    /// Answer the prompt with a keypress — the whole body of the `Confirm` arm, so
+    /// that the key contract is testable instead of living in a `match` no test can
+    /// reach.
+    ///
+    /// Every escape route is a no: `n`, `Esc`, **and `Enter`**. `Enter` already means
+    /// "close this" in the popover, so leaving it as cancel teaches no second meaning
+    /// — and an unlucky `Enter` can then never destroy anything. Anything else is
+    /// ignored and the prompt stays up; the destructive answer always takes a
+    /// deliberate key.
+    pub(crate) fn answer_confirm(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Char(c) if self.confirms_pending(c) => self.confirm_pending()?,
+            KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => self.cancel_confirm(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Whether `c` is a yes to the prompt that is up: `y`, or the very key that
+    /// raised it.
+    ///
+    /// The originating key and not just any repeat, so a `d` pressed on a trim
+    /// prompt and a `t` pressed on a delete prompt are both inert (#40 decision 2).
+    /// It lives here rather than in the event loop's `match` guard because it is a
+    /// fact about the pending action, and because the guard has to be testable.
+    pub(crate) fn confirms_pending(&self, c: char) -> bool {
+        self.pending_confirm
+            .is_some_and(|pending| c == 'y' || c == pending.action.key())
+    }
+
+    /// The yes: perform the pending action on **the captured id and nothing else**.
+    ///
+    /// A captured id that is no longer in the store self-cancels — the prompt
+    /// described an entry that has since been written away, so the honest answer is
+    /// to do nothing rather than to act on whatever took its place.
+    pub(crate) fn confirm_pending(&mut self) -> Result<()> {
+        let Some(pending) = self.pending_confirm.take() else {
+            return Ok(());
+        };
+        if self.data.get_entry(pending.entry_id).is_some() {
+            match pending.action {
+                ConfirmAction::Delete => self.delete_entry(pending.entry_id)?,
+                ConfirmAction::Trim => self.trim_entry(pending.entry_id)?,
+            }
+        }
+        self.close_confirm(pending.from);
+        Ok(())
+    }
+
+    /// The no — and every escape route: `n`, `Esc` and `Enter` all land here, so the
+    /// store is untouched and the screen goes back where it was.
+    pub(crate) fn cancel_confirm(&mut self) {
+        let from = self
+            .pending_confirm
+            .take()
+            .map_or(InputMode::Normal, |pending| pending.from);
+        self.close_confirm(from);
+    }
+
+    /// Leave the prompt for the mode that raised it, downgrading to `Normal` when
+    /// that was the popover and the view it read has since emptied — an empty modal
+    /// is something the user then has to escape from for no reason.
+    fn close_confirm(&mut self, from: InputMode) {
+        self.pending_confirm = None;
+        self.input_mode = if from == InputMode::Detail && self.selected_entry().is_none() {
+            InputMode::Normal
+        } else {
+            from
+        };
     }
 
     /// Put the table cursor on the row with this id, leaving it alone when the
@@ -189,12 +300,16 @@ impl App {
     /// the footer never advertises a key that would do nothing. Lives here rather
     /// than in `render` because it is a fact about the selection, and it is what
     /// the tests assert against.
+    ///
+    /// Both destructive keys carry a trailing `…`, the usual sign that a key opens
+    /// something rather than acts: `d` and `t` now raise a confirmation, and a
+    /// footer promising a bare "delete" would over-report what one keypress does.
     pub(crate) fn detail_hints(&self) -> Vec<(&'static str, &'static str)> {
-        let mut hints = vec![("j/k", "move"), ("e", "edit"), ("d", "delete")];
+        let mut hints = vec![("j/k", "move"), ("e", "edit"), ("d", "delete…")];
         if self.selected_entry().is_some_and(|e| !e.idle.is_empty()) {
             // "trim" is the user-facing verb on every surface, even though the store
             // operation it calls is `split_at_idle`.
-            hints.push(("t", "trim"));
+            hints.push(("t", "trim…"));
         }
         hints.push(("esc", "close"));
         hints

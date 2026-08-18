@@ -21,7 +21,9 @@ mod panes;
 mod summary;
 mod render;
 
-pub use types::{Focus, InputField, InputMode, Pane, SortOrder, ViewMode};
+pub use types::{
+    ConfirmAction, Focus, InputField, InputMode, Pane, PendingConfirm, SortOrder, ViewMode,
+};
 
 pub(crate) struct App {
     pub(crate) data: TimeData,
@@ -43,6 +45,10 @@ pub(crate) struct App {
     pub(crate) selected_projects: Vec<String>,
     pub(crate) selected_tags: Vec<String>,
     pub(crate) editing_entry_id: Option<u64>,
+    /// The destructive action `InputMode::Confirm` is asking about, if any: which
+    /// action, which entry, and which mode to go back to. Beside the mode rather
+    /// than inside it, for the reason `InputMode::Confirm` documents.
+    pub(crate) pending_confirm: Option<PendingConfirm>,
     pub(crate) sort_order: SortOrder,
     /// Cursor position within the currently active input field (char index, not byte index).
     pub(crate) cursor_pos: usize,
@@ -109,6 +115,7 @@ impl App {
             selected_projects: Vec::new(),
             selected_tags: Vec::new(),
             editing_entry_id: None,
+            pending_confirm: None,
             sort_order: SortOrder::NewestFirst,
             cursor_pos: 0,
             show_projects: false,
@@ -224,7 +231,9 @@ pub fn run_tui() -> Result<()> {
                             // crossterm reports Shift-Tab as its own code, not Tab
                             // with a SHIFT modifier.
                             KeyCode::BackTab => app.cycle_focus_back(),
-                            KeyCode::Char('d') => app.delete_selected()?,
+                            // Confirmed, like the popover's `d`: this is the
+                            // destructive key's one meaning everywhere it appears.
+                            KeyCode::Char('d') => app.request_confirm(ConfirmAction::Delete),
                             KeyCode::Char('s') => app.stop_active()?,
                             KeyCode::Char('r') => app.reload()?,
                             KeyCode::Char('a') => app.start_adding(),
@@ -331,27 +340,31 @@ pub fn run_tui() -> Result<()> {
                             // The form is modal too, so it replaces the popover rather
                             // than nesting inside it — `start_editing` sets the mode.
                             KeyCode::Char('e') => app.start_editing(),
-                            // Unconfirmed, matching the table: inventing a
-                            // confirmation that exists only here would make the same
-                            // key mean two different things. The popover then reports
-                            // whatever the selection fell to, and closes if the delete
-                            // emptied the view.
-                            KeyCode::Char('d') => {
-                                app.delete_selected()?;
-                                if app.selected_entry().is_none() {
-                                    app.input_mode = InputMode::Normal;
-                                }
-                            }
-                            // Unconfirmed for the same reason as `d`, and `t` rather
+                            // Confirmed here **because the table confirms it too**.
+                            // The rule this arm used to protect — one key must not
+                            // mean two different things — is what forced the choice:
+                            // a confirmation invented only for the popover would have
+                            // broken it, and so would leaving the popover unconfirmed
+                            // once the table asks. Confirming both honours it. After
+                            // the delete the popover reports whatever the selection
+                            // fell to, and closes if the view emptied.
+                            KeyCode::Char('d') => app.request_confirm(ConfirmAction::Delete),
+                            // Confirmed for the same reason as `d`, and `t` rather
                             // than the better-mnemonic `s` because a slip outside
                             // this modal hits `go_to_today()` rather than
                             // `stop_active()` — harmless navigation instead of a
                             // stopped timer. Bound here only: the table's `t` still
                             // means today. The popover stays open on the piece that
                             // kept the id, so there is no "emptied the view" case.
-                            KeyCode::Char('t') => app.trim_selected()?,
+                            KeyCode::Char('t') => app.request_confirm(ConfirmAction::Trim),
                             _ => {}
                         },
+                        // The one modal that asks a question. Which key is a yes
+                        // depends on which action is pending — the originating key
+                        // repeated, or `y` — so the whole answer lives in
+                        // `answer_confirm` rather than here, where no test could
+                        // reach it.
+                        InputMode::Confirm => app.answer_confirm(key.code)?,
                     }
                 }
             }
@@ -471,6 +484,20 @@ mod tests {
             .collect()
     }
 
+    /// `d` pressed and answered — the two real `App` calls the event loop makes,
+    /// nothing re-implemented. Whichever mode the app is in is the mode the prompt
+    /// is raised from, so this drives the table's `d` and the popover's `d` alike.
+    fn press_d_then(app: &mut App, answer: KeyCode) {
+        app.request_confirm(ConfirmAction::Delete);
+        app.answer_confirm(answer).unwrap();
+    }
+
+    /// `t` pressed and answered, the same way.
+    fn press_t_then(app: &mut App, answer: KeyCode) {
+        app.request_confirm(ConfirmAction::Trim);
+        app.answer_confirm(answer).unwrap();
+    }
+
     fn select(app: &mut App, description: &str) {
         let idx = app
             .filtered_entries()
@@ -489,7 +516,7 @@ mod tests {
         let mut app = App::new().unwrap();
         agent_write("probe");
         select(&mut app, "doomed");
-        app.delete_selected().unwrap();
+        press_d_then(&mut app, KeyCode::Char('d'));
 
         let data = on_disk();
         assert_eq!(descriptions(&data), vec!["keep", "probe"]);
@@ -512,7 +539,7 @@ mod tests {
         .unwrap();
         agent_write("probe");
 
-        app.delete_selected().unwrap();
+        press_d_then(&mut app, KeyCode::Char('d'));
 
         let data = on_disk();
         assert_eq!(descriptions(&data), vec!["keep", "probe"]);
@@ -1458,23 +1485,19 @@ mod tests {
         assert!(app.input_mode == InputMode::EditingEntry);
         assert_eq!(app.editing_entry_id, Some(ids[0]));
 
-        // `d` deletes it and the popover stays open on the new selection.
+        // `d` asks, the repeated `d` answers, and the popover stays open on the new
+        // selection. Driven through the real methods the arm calls — this test used
+        // to carry a closure copy of the arm and so agreed only with itself.
         app.input_mode = InputMode::Detail;
-        let delete = |app: &mut App| {
-            app.delete_selected().unwrap();
-            if app.selected_entry().is_none() {
-                app.input_mode = InputMode::Normal;
-            }
-        };
-        delete(&mut app);
+        press_d_then(&mut app, KeyCode::Char('d'));
         assert!(app.input_mode == InputMode::Detail);
         assert_eq!(app.filtered_entries().len(), 2);
         assert!(app.selected_entry().is_some());
 
         // …and the delete that empties the view closes it instead of leaving an
         // empty modal behind.
-        delete(&mut app);
-        delete(&mut app);
+        press_d_then(&mut app, KeyCode::Char('y'));
+        press_d_then(&mut app, KeyCode::Char('d'));
         assert_eq!(app.filtered_entries().len(), 0);
         assert!(app.input_mode == InputMode::Normal);
     }
@@ -1499,7 +1522,7 @@ mod tests {
         select(&mut app, "long session");
         app.open_detail();
         assert!(
-            app.detail_hints().contains(&("t", "trim")),
+            app.detail_hints().contains(&("t", "trim…")),
             "the footer hid the hint on an entry that has idle"
         );
         let before = app
@@ -1511,7 +1534,7 @@ mod tests {
             .iter()
             .fold(chrono::Duration::zero(), |acc, gap| acc + gap.duration());
 
-        app.trim_selected().unwrap();
+        press_t_then(&mut app, KeyCode::Char('t'));
 
         assert!(app.input_mode == InputMode::Detail, "the trim closed it");
         assert_eq!(
@@ -1535,7 +1558,7 @@ mod tests {
         // still carries a stretch it excludes — so the hint is gone too.
         assert!(pieces.iter().all(|e| e.idle.is_empty()));
         assert!(
-            !app.detail_hints().contains(&("t", "trim")),
+            !app.detail_hints().contains(&("t", "trim…")),
             "the footer advertises a trim that would now do nothing"
         );
         assert!(
@@ -1554,12 +1577,12 @@ mod tests {
         select(&mut app, "no idle here");
         app.open_detail();
         assert!(
-            !app.detail_hints().contains(&("t", "trim")),
+            !app.detail_hints().contains(&("t", "trim…")),
             "the footer advertised a no-op"
         );
         let before = serde_json::to_string(&on_disk()).unwrap();
 
-        app.trim_selected().unwrap();
+        press_t_then(&mut app, KeyCode::Char('t'));
 
         assert!(app.input_mode == InputMode::Detail);
         assert_eq!(selected_description(&app), "no idle here");
@@ -1589,6 +1612,483 @@ mod tests {
         assert_eq!(on_disk().entries.len(), 1, "the table's `t` split an entry");
     }
 
+    /// Raising the prompt is not the act: nothing reaches the store until an answer,
+    /// and the entry the prompt is about is pinned by id there and then.
+    #[test]
+    fn requesting_a_confirmation_records_the_selected_id_and_writes_nothing() {
+        let _guard = env_guard();
+        sandbox("confirm-request");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        let before = serde_json::to_string(&on_disk()).unwrap();
+
+        app.request_confirm(ConfirmAction::Delete);
+
+        assert!(app.input_mode == InputMode::Confirm);
+        let pending = app.pending_confirm.expect("a pending confirmation");
+        assert_eq!(pending.action, ConfirmAction::Delete);
+        assert_eq!(pending.entry_id, 1, "the prompt pinned the selected entry");
+        assert!(pending.from == InputMode::Normal, "raised from the table");
+        assert_eq!(
+            serde_json::to_string(&on_disk()).unwrap(),
+            before,
+            "asking the question wrote to the store"
+        );
+    }
+
+    /// The whole reason the id is captured. Answering must destroy the entry the
+    /// prompt *named*, not whatever the cursor has since come to rest on.
+    #[test]
+    fn a_confirmed_delete_acts_on_the_captured_id_not_the_current_selection() {
+        let _guard = env_guard();
+        sandbox("confirm-captured");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        app.request_confirm(ConfirmAction::Delete);
+        // The cursor moves out from under the prompt.
+        app.next();
+        assert_ne!(app.selected_entry().map(|e| e.id), Some(1));
+
+        app.confirm_pending().unwrap();
+
+        assert_eq!(descriptions(&on_disk()), vec!["keep"]);
+        assert!(app.pending_confirm.is_none());
+        assert!(app.input_mode == InputMode::Normal);
+    }
+
+    /// `sync_from_store` is deliberately live while the prompt is up, and it drops
+    /// the cursor onto a *different* entry when its anchor leaves the view — here by
+    /// an outside edit that moves the pending entry to yesterday. The captured id is
+    /// what makes the answer land on the entry the prompt described anyway.
+    #[test]
+    fn the_poll_moving_the_cursor_under_the_prompt_does_not_move_the_target() {
+        let _guard = env_guard();
+        sandbox("confirm-poll-moves");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                dated(1, "doomed", "tt", &["tt"], today),
+                dated(2, "bystander", "tt", &["tt"], today),
+            ],
+            3,
+        );
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        app.request_confirm(ConfirmAction::Delete);
+
+        // An outside edit walks the pending entry out of the day view. Its anchor is
+        // gone, so the cursor falls back to a position — a different entry.
+        storage::with_data(|data| {
+            let e = data.entries.iter_mut().find(|e| e.id == 1).unwrap();
+            e.start_time -= chrono::Duration::days(1);
+            e.end_time = Some(e.start_time + chrono::Duration::hours(1));
+            Ok(())
+        })
+        .unwrap();
+        app.sync_from_store().unwrap();
+        assert_eq!(
+            app.selected_entry().map(|e| e.id),
+            Some(2),
+            "the fixture no longer reproduces the cursor moving under the prompt"
+        );
+        assert!(app.input_mode == InputMode::Confirm, "the poll closed it");
+
+        app.confirm_pending().unwrap();
+
+        assert_eq!(
+            descriptions(&on_disk()),
+            vec!["bystander"],
+            "the confirm destroyed an entry the prompt never named"
+        );
+    }
+
+    /// A prompt whose subject has been written away answers itself: nothing happens,
+    /// and the screen goes back where it came from. Failing safe beats acting on
+    /// whatever took the entry's place.
+    #[test]
+    fn a_confirm_whose_target_vanished_performs_nothing() {
+        let _guard = env_guard();
+        sandbox("confirm-vanished");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Delete);
+
+        // Someone else removes it while the prompt is on screen.
+        storage::with_data(|data| {
+            data.entries.retain(|e| e.id != 1);
+            Ok(())
+        })
+        .unwrap();
+        app.sync_from_store().unwrap();
+        // The poll itself drops the prompt, so the frame never asks about an entry
+        // that is not there.
+        assert!(app.pending_confirm.is_none());
+        assert!(
+            app.input_mode == InputMode::Detail,
+            "the popover still has a row"
+        );
+
+        // …and a confirm arriving on a prompt that is already gone is inert too.
+        app.confirm_pending().unwrap();
+        assert_eq!(descriptions(&on_disk()), vec!["keep"]);
+    }
+
+    /// Cancel puts the screen back where the prompt was raised from, and every one of
+    /// `n` / `Esc` / `Enter` reaches this same method.
+    #[test]
+    fn cancelling_restores_the_originating_mode_and_leaves_the_store_alone() {
+        let _guard = env_guard();
+        sandbox("confirm-cancel");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        let before = serde_json::to_string(&on_disk()).unwrap();
+
+        // From the table.
+        app.request_confirm(ConfirmAction::Delete);
+        app.cancel_confirm();
+        assert!(app.input_mode == InputMode::Normal);
+        assert!(app.pending_confirm.is_none());
+        assert_eq!(selected_description(&app), "doomed", "the cursor moved");
+
+        // From the popover, which reopens on the same entry.
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Delete);
+        app.cancel_confirm();
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(selected_description(&app), "doomed");
+
+        assert_eq!(
+            serde_json::to_string(&on_disk()).unwrap(),
+            before,
+            "a cancelled confirmation wrote to the store"
+        );
+    }
+
+    /// A confirmed trim behaves as `[t]` did: it splits, and the popover stays on the
+    /// piece that kept the id.
+    #[test]
+    fn a_confirmed_trim_splits_the_captured_entry_and_stays_on_the_first_piece() {
+        let _guard = env_guard();
+        sandbox("confirm-trim");
+        seed(vec![with_idle(4, 180, &[(30, 45), (100, 130)])], 5);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Trim);
+        assert_eq!(
+            app.pending_confirm.map(|p| (p.action, p.entry_id)),
+            Some((ConfirmAction::Trim, 4))
+        );
+        assert_eq!(on_disk().entries.len(), 1, "the prompt trimmed on its own");
+
+        app.confirm_pending().unwrap();
+
+        assert_eq!(
+            on_disk().entries.len(),
+            3,
+            "two holes should give three pieces"
+        );
+        assert!(
+            app.input_mode == InputMode::Detail,
+            "the trim closed the popover"
+        );
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(4));
+    }
+
+    /// The prompt knows which action it is about, so the *other* destructive key is
+    /// not an answer to it.
+    #[test]
+    fn only_y_or_the_originating_key_is_a_yes() {
+        let _guard = env_guard();
+        sandbox("confirm-keys");
+        seed(vec![with_idle(4, 180, &[(30, 45)])], 5);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        assert!(!app.confirms_pending('y'), "no prompt, no yes");
+
+        app.request_confirm(ConfirmAction::Delete);
+        assert!(app.confirms_pending('d'));
+        assert!(app.confirms_pending('y'));
+        assert!(!app.confirms_pending('t'), "`t` confirmed a delete");
+        assert!(!app.confirms_pending('n'));
+        app.cancel_confirm();
+
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Trim);
+        assert!(app.confirms_pending('t'));
+        assert!(app.confirms_pending('y'));
+        assert!(!app.confirms_pending('d'), "`d` confirmed a trim");
+    }
+
+    /// One rendered frame, as lines of text — so the prompts are asserted against
+    /// what actually reaches the screen rather than against the strings that went in.
+    fn frame_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The prompt has to name the entry: the failure it prevents is a cursor on the
+    /// wrong row, which only the subject line catches.
+    #[test]
+    fn the_delete_prompt_names_the_entry_it_would_destroy() {
+        let _guard = env_guard();
+        sandbox("confirm-render-delete");
+        let today = Local::now().date_naive();
+        seed(
+            vec![dated(12, "pane cursor markers", "tt", &["tt"], today)],
+            13,
+        );
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "pane cursor markers");
+        app.request_confirm(ConfirmAction::Delete);
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+
+        assert!(
+            screen.contains("Delete entry #12?"),
+            "the title did not ask about the captured entry:\n{screen}"
+        );
+        assert!(
+            screen.contains("pane cursor markers (tt)"),
+            "the prompt did not name the entry:\n{screen}"
+        );
+        let duration = app.data.get_entry(12).unwrap().format_duration();
+        assert!(
+            screen.contains(&duration),
+            "the prompt did not state the duration {duration}:\n{screen}"
+        );
+        // Exactly the keys the `Confirm` arm binds, and no others.
+        assert!(screen.contains("d / y yes"), "hint row:\n{screen}");
+        assert!(
+            screen.contains("n / esc / enter cancel"),
+            "hint row:\n{screen}"
+        );
+        assert!(!screen.contains("t / y"), "a delete prompt offered `t`");
+    }
+
+    /// The trim prompt states the outcome, which is knowable before anything is
+    /// written — and reads it from the same helper the write uses.
+    #[test]
+    fn the_trim_prompt_states_the_pieces_and_what_is_removed() {
+        let _guard = env_guard();
+        sandbox("confirm-render-trim");
+        seed(vec![with_idle(14, 110, &[(25, 45), (85, 100)])], 15);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        app.open_detail();
+        app.request_confirm(ConfirmAction::Trim);
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+
+        assert!(
+            screen.contains("Trim entry #14?"),
+            "the title did not ask about a trim:\n{screen}"
+        );
+        // Two holes, so three pieces: 0-25, 45-85, 100-110.
+        assert!(
+            screen.contains("3 pieces: 0h 25m, 0h 40m, 0h 10m"),
+            "the prompt did not state the pieces:\n{screen}"
+        );
+        assert!(
+            screen.contains("0h 35m removed"),
+            "the prompt did not state what it removes:\n{screen}"
+        );
+        assert!(screen.contains("t / y yes"), "hint row:\n{screen}");
+        assert!(
+            !screen.contains("split"),
+            "the user-facing verb is trim, never split:\n{screen}"
+        );
+    }
+
+    /// The three copy surfaces that describe `d` and `t` must not promise that one
+    /// keypress destroys anything.
+    #[test]
+    fn the_key_hints_say_the_destructive_keys_ask_first() {
+        let _guard = env_guard();
+        sandbox("confirm-render-hints");
+        seed(vec![with_idle(4, 180, &[(30, 45)])], 5);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+
+        // The footer legend, which clips from the right at 80 columns — so it gets a
+        // one-column `…` and nothing more.
+        let footer = frame_lines(&mut app, 200, 30).join("\n");
+        assert!(footer.contains("d: del…"), "footer legend:\n{footer}");
+
+        // The help popup, which has the room to say it in words.
+        app.input_mode = InputMode::Help;
+        let help = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(
+            help.contains("delete selected entry (asks first)"),
+            "help popup:\n{help}"
+        );
+
+        // And the popover footer, whose every hint is bound in the `Detail` arm.
+        app.input_mode = InputMode::Detail;
+        let popover = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(popover.contains("d delete…"), "popover hints:\n{popover}");
+        assert!(popover.contains("t trim…"), "popover hints:\n{popover}");
+    }
+
+    /// Every key the `Confirm` arm binds, driven through the arm's own body. `d` and
+    /// `t` are the same key contract from either side, so both are exercised here.
+    #[test]
+    fn each_answer_key_does_exactly_what_the_hint_row_says() {
+        let _guard = env_guard();
+        sandbox("confirm-answer-keys");
+
+        // Yes, by the originating key and by `y`.
+        for yes in [KeyCode::Char('d'), KeyCode::Char('y')] {
+            seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+            let mut app = App::new().unwrap();
+            select(&mut app, "doomed");
+            press_d_then(&mut app, yes);
+            assert_eq!(
+                descriptions(&on_disk()),
+                vec!["keep"],
+                "{yes:?} was not taken as a yes"
+            );
+            assert!(app.input_mode == InputMode::Normal);
+        }
+
+        // No, by every route out — and `Enter` among them, so the key that closes the
+        // popover can never destroy anything.
+        for no in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
+            seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+            let mut app = App::new().unwrap();
+            select(&mut app, "doomed");
+            app.open_detail();
+            press_d_then(&mut app, no);
+            assert_eq!(
+                descriptions(&on_disk()),
+                vec!["keep", "doomed"],
+                "{no:?} destroyed something"
+            );
+            assert!(
+                app.input_mode == InputMode::Detail,
+                "{no:?} left the popover"
+            );
+            assert!(app.pending_confirm.is_none());
+        }
+
+        // The other destructive key is not an answer, and an unrelated key is not
+        // either: the prompt stays up rather than being dismissed by a stray press.
+        for inert in [KeyCode::Char('t'), KeyCode::Char('j'), KeyCode::Char('q')] {
+            seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+            let mut app = App::new().unwrap();
+            select(&mut app, "doomed");
+            press_d_then(&mut app, inert);
+            assert_eq!(
+                descriptions(&on_disk()),
+                vec!["keep", "doomed"],
+                "{inert:?} confirmed a delete"
+            );
+            assert!(
+                app.input_mode == InputMode::Confirm,
+                "{inert:?} closed the prompt"
+            );
+            assert!(app.pending_confirm.is_some());
+        }
+    }
+
+    /// The trim side of the same contract: `t` confirms a trim, `d` does not.
+    #[test]
+    fn the_trim_prompt_takes_t_and_y_and_ignores_d() {
+        let _guard = env_guard();
+        sandbox("confirm-trim-keys");
+
+        for yes in [KeyCode::Char('t'), KeyCode::Char('y')] {
+            seed(vec![with_idle(4, 180, &[(30, 45), (100, 130)])], 5);
+            let mut app = App::new().unwrap();
+            select(&mut app, "long session");
+            app.open_detail();
+            press_t_then(&mut app, yes);
+            assert_eq!(on_disk().entries.len(), 3, "{yes:?} was not taken as a yes");
+            assert!(app.input_mode == InputMode::Detail);
+            assert_eq!(app.selected_entry().map(|e| e.id), Some(4));
+        }
+
+        seed(vec![with_idle(4, 180, &[(30, 45), (100, 130)])], 5);
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        app.open_detail();
+        press_t_then(&mut app, KeyCode::Char('d'));
+        assert_eq!(on_disk().entries.len(), 1, "`d` confirmed a trim");
+        assert!(app.input_mode == InputMode::Confirm);
+    }
+
+    /// `t` outside the popover is still navigation and `s` never grew a prompt —
+    /// only the three destructive keys were wired.
+    #[test]
+    fn the_keys_that_were_not_wired_still_mean_what_they_did() {
+        let _guard = env_guard();
+        sandbox("confirm-unwired-keys");
+        seed(
+            vec![with_idle(4, 180, &[(30, 45)]), entry(9, "running")],
+            10,
+        );
+
+        let mut app = App::new().unwrap();
+        app.previous_period();
+
+        // What the `Normal` arm's `t` calls.
+        app.go_to_today();
+        assert_eq!(app.selected_date, Local::now().date_naive());
+        assert!(
+            app.pending_confirm.is_none(),
+            "the table's `t` raised a prompt"
+        );
+        assert_eq!(on_disk().entries.len(), 2, "the table's `t` split an entry");
+
+        // …and what its `s` calls, which acts at once and asks nothing.
+        app.stop_active().unwrap();
+        assert!(app.pending_confirm.is_none(), "`s` raised a prompt");
+        assert!(app.input_mode == InputMode::Normal);
+    }
+
+    /// `t` on an entry with nothing to trim raises no prompt at all — the popover
+    /// hides `[t]` in that case (#39), and a prompt whose yes does nothing would be
+    /// worse than the silent no-op it replaced.
+    #[test]
+    fn a_trim_with_nothing_to_trim_raises_no_prompt() {
+        let _guard = env_guard();
+        sandbox("confirm-trim-noop");
+        seed(vec![entry(0, "no idle here")], 1);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "no idle here");
+        app.open_detail();
+
+        app.request_confirm(ConfirmAction::Trim);
+
+        assert!(app.pending_confirm.is_none());
+        assert!(app.input_mode == InputMode::Detail);
+    }
+
     /// `Detail` is deliberately *not* in `sync_from_store`'s guarded set: there is no
     /// half-typed input to clobber, and `sync_from_store` re-anchors the cursor on the
     /// selected entry's id, so a write that lands elsewhere leaves the popover where
@@ -1597,7 +2097,7 @@ mod tests {
     /// That anchor is `sync_from_store`'s own, not a property of the popover:
     /// `selected_entry` is purely positional (`nth` into the re-sorted list), so any
     /// code path that inserts rows *without* re-anchoring does slide the overlay onto
-    /// a different entry — which is exactly why `trim_selected` re-selects by id.
+    /// a different entry — which is exactly why `trim_entry` re-selects by id.
     #[test]
     fn an_outside_write_reaches_the_open_detail_popover_without_moving_it() {
         let _guard = env_guard();

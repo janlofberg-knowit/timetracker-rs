@@ -200,6 +200,69 @@ impl TimeEntry {
     pub fn matches_search(&self, needle_lower: &str) -> bool {
         self.search_haystack().contains(needle_lower)
     }
+
+    /// The spans this entry would be left as if its idle stretches were trimmed
+    /// away, earliest first — and an empty vec whenever nothing would change.
+    ///
+    /// Pure and read-only, so it can be asked *before* the mutation: the trim
+    /// confirmation prompt states its outcome from this, and
+    /// [`TimeData::split_at_idle`](TimeData::split_at_idle) then writes exactly
+    /// these spans. One definition of what a trim does (#35 decision 1) — a second
+    /// copy of this arithmetic in the renderer is what this method exists to
+    /// prevent.
+    ///
+    /// Each stored interval is clamped to the entry's own span and dropped if that
+    /// leaves it empty; what remains is sorted and overlapping neighbours are
+    /// merged, so an interval reaching past an endpoint or overlapping the next one
+    /// cuts **one** hole instead of leaving a zero-length piece wedged between two
+    /// of them. The spans are then the complement of those holes within the span, so
+    /// a hole touching an endpoint contributes nothing and zero-length pieces fall
+    /// out rather than being special-cased.
+    ///
+    /// Empty means "no trim": no `end_time` (a running entry has no end to split
+    /// against, and only `tt log` records idle), no idle left after clamping, or
+    /// idle covering the whole span — in the last case the entry is left as it is,
+    /// since deleting what the owner logged is not a trim.
+    pub fn trim_spans(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+        let span_start = self.start_time;
+        let Some(span_end) = self.end_time else {
+            return Vec::new();
+        };
+
+        let mut gaps: Vec<IdleInterval> = self
+            .idle
+            .iter()
+            .map(|gap| IdleInterval {
+                start: gap.start.clamp(span_start, span_end),
+                end: gap.end.clamp(span_start, span_end),
+            })
+            .filter(|gap| gap.end > gap.start)
+            .collect();
+        gaps.sort_by_key(|gap| gap.start);
+        let mut holes: Vec<IdleInterval> = Vec::new();
+        for gap in gaps {
+            match holes.last_mut() {
+                Some(last) if gap.start <= last.end => last.end = last.end.max(gap.end),
+                _ => holes.push(gap),
+            }
+        }
+        if holes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut spans: Vec<(DateTime<Local>, DateTime<Local>)> = Vec::new();
+        let mut cursor = span_start;
+        for hole in &holes {
+            if hole.start > cursor {
+                spans.push((cursor, hole.start));
+            }
+            cursor = hole.end;
+        }
+        if span_end > cursor {
+            spans.push((cursor, span_end));
+        }
+        spans
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -360,68 +423,26 @@ impl TimeData {
     /// later pieces take fresh ids from `next_id`, so a caller holding the id still
     /// has something to point at afterwards. Pieces inherit description, project and
     /// tags, and keep only the idle intervals falling inside them — after a split on
-    /// every interval, none. Zero-length pieces (a gap touching an endpoint) are
-    /// dropped, and if that would leave no pieces at all the entry is left untouched
-    /// rather than deleted.
+    /// every interval, none.
     ///
     /// Pure over `&mut self` with no I/O: the caller owns the store transaction.
     /// Returns the resulting pieces' ids, earliest first, or an empty vec when
     /// nothing changed.
+    ///
+    /// The *pieces* are not computed here: [`TimeEntry::trim_spans`] owns that
+    /// arithmetic — the clamp, the merge, the complement, the running-entry guard and
+    /// every "nothing would change" case — so the trim confirmation can state the
+    /// outcome from the same definition this writes. This method is the mutation and
+    /// the id policy only.
     pub fn split_at_idle(&mut self, id: u64) -> Vec<u64> {
         let Some(entry) = self.get_entry(id) else {
             return Vec::new();
         };
-        // A running entry has no end to split against, and only `tt log` records
-        // idle, so this is a guard rather than a case.
-        let Some(span_end) = entry.end_time else {
-            return Vec::new();
-        };
-        let span_start = entry.start_time;
-        let template = entry.clone();
-
-        // Clamp to the span and merge, so an interval reaching past an endpoint or
-        // overlapping its neighbour cuts one hole instead of leaving a zero-length
-        // piece wedged between two of them.
-        let mut gaps: Vec<IdleInterval> = template
-            .idle
-            .iter()
-            .map(|gap| IdleInterval {
-                start: gap.start.clamp(span_start, span_end),
-                end: gap.end.clamp(span_start, span_end),
-            })
-            .filter(|gap| gap.end > gap.start)
-            .collect();
-        gaps.sort_by_key(|gap| gap.start);
-        let mut holes: Vec<IdleInterval> = Vec::new();
-        for gap in gaps {
-            match holes.last_mut() {
-                Some(last) if gap.start <= last.end => last.end = last.end.max(gap.end),
-                _ => holes.push(gap),
-            }
-        }
-        if holes.is_empty() {
-            return Vec::new();
-        }
-
-        // The pieces are the complement of the holes within the span. A hole
-        // touching an endpoint contributes nothing, which is how zero-length pieces
-        // are dropped rather than special-cased.
-        let mut pieces: Vec<(DateTime<Local>, DateTime<Local>)> = Vec::new();
-        let mut cursor = span_start;
-        for hole in &holes {
-            if hole.start > cursor {
-                pieces.push((cursor, hole.start));
-            }
-            cursor = hole.end;
-        }
-        if span_end > cursor {
-            pieces.push((cursor, span_end));
-        }
-        // Idle covering the whole span would leave nothing: keep the entry as it is,
-        // since deleting what the owner logged is not a trim.
+        let pieces = entry.trim_spans();
         if pieces.is_empty() {
             return Vec::new();
         }
+        let template = entry.clone();
 
         let mut ids = Vec::with_capacity(pieces.len());
         for (i, (piece_start, piece_end)) in pieces.into_iter().enumerate() {
@@ -678,6 +699,86 @@ mod tests {
             .iter()
             .fold(Duration::zero(), |acc, e| acc + e.duration());
         assert_eq!(after, original - idle_total);
+    }
+
+    /// `trim_spans` as minute offsets from `base`, so a case reads as the shape it
+    /// is testing rather than as timestamps.
+    fn trim_offsets(span_minutes: i64, gaps: &[(i64, i64)]) -> Vec<(i64, i64)> {
+        logged_with_idle(span_minutes, gaps).entries[0]
+            .trim_spans()
+            .into_iter()
+            .map(|(from, to)| {
+                (
+                    from.signed_duration_since(base()).num_minutes(),
+                    to.signed_duration_since(base()).num_minutes(),
+                )
+            })
+            .collect()
+    }
+
+    /// The helper the trim confirmation reads before anything is written, and the
+    /// one `split_at_idle` then writes — so these cases pin the shared definition of
+    /// what a trim does, not a second copy of it.
+    #[test]
+    fn trim_spans_cuts_the_span_at_every_hole() {
+        // One hole in the middle: two spans.
+        assert_eq!(trim_offsets(120, &[(50, 80)]), vec![(0, 50), (80, 120)]);
+        // Two holes: three spans.
+        assert_eq!(
+            trim_offsets(180, &[(30, 45), (100, 130)]),
+            vec![(0, 30), (45, 100), (130, 180)]
+        );
+        // Unsorted input is sorted first, so the order of the stored intervals
+        // cannot change the answer.
+        assert_eq!(
+            trim_offsets(180, &[(100, 130), (30, 45)]),
+            vec![(0, 30), (45, 100), (130, 180)]
+        );
+    }
+
+    #[test]
+    fn trim_spans_drops_the_empty_piece_at_an_endpoint() {
+        assert_eq!(trim_offsets(90, &[(0, 20)]), vec![(20, 90)]);
+        assert_eq!(trim_offsets(90, &[(70, 90)]), vec![(0, 70)]);
+    }
+
+    /// Overlapping and touching neighbours merge into one hole, so the complement
+    /// never contains a zero-length piece wedged between two of them.
+    #[test]
+    fn trim_spans_merges_overlapping_intervals_into_one_hole() {
+        assert_eq!(
+            trim_offsets(120, &[(30, 60), (50, 80)]),
+            vec![(0, 30), (80, 120)]
+        );
+        // Abutting exactly, and one interval swallowing another, are the same hole.
+        assert_eq!(
+            trim_offsets(120, &[(30, 60), (60, 80)]),
+            vec![(0, 30), (80, 120)]
+        );
+        assert_eq!(
+            trim_offsets(120, &[(30, 90), (40, 50)]),
+            vec![(0, 30), (90, 120)]
+        );
+    }
+
+    /// Empty means "no trim", and it is the answer to every case where nothing
+    /// would change — so a caller has one thing to check.
+    #[test]
+    fn trim_spans_is_empty_when_nothing_would_change() {
+        assert!(trim_offsets(90, &[]).is_empty(), "no idle at all");
+        assert!(
+            trim_offsets(90, &[(0, 90)]).is_empty(),
+            "idle covering the whole span leaves the entry alone"
+        );
+        assert!(
+            trim_offsets(90, &[(-30, 0)]).is_empty(),
+            "an interval clamped to nothing outside the span"
+        );
+
+        // A running entry has no end to split against.
+        let mut running = logged_with_idle(90, &[(30, 45)]);
+        running.entries[0].end_time = None;
+        assert!(running.entries[0].trim_spans().is_empty());
     }
 
     #[test]
