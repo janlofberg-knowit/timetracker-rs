@@ -218,7 +218,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // survive a narrow terminal too.
     // Hand-counted against the spans below; update it whenever they change, or the
     // legend loses its last characters to the clipping zone on its left.
-    const KEYS_WIDTH: u16 = 24; // " | P/T/M | Tab | ?: help"
+    const KEYS_WIDTH: u16 = 24; // " | P/T/A | Tab | ?: help"
     let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -251,8 +251,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // A surface's key is accented while that surface is open and dim while it is
     // hidden, so this legend says both that the surfaces exist and which are
-    // showing. `M` joins `P`/`T` as the third `Shift`-letter toggle; `Tab` is
-    // separated off after them because it cycles the panes only — the marks
+    // showing. `A` joins `P`/`T` as the third `Shift`-letter toggle; `Tab` is
+    // separated off after them because it cycles the panes only — the Agents
     // surface is display-only and deliberately not on the focus ring.
     let key_style =
         |on: bool| Style::default().fg(if on { theme::ACCENT } else { theme::INACTIVE });
@@ -263,7 +263,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("/", Style::default().fg(theme::BORDER)),
         Span::styled("T", key_style(app.show_tags)),
         Span::styled("/", Style::default().fg(theme::BORDER)),
-        Span::styled("M", key_style(app.show_marks)),
+        Span::styled("A", key_style(app.show_marks)),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
         Span::styled("Tab", key_style(panes_open)),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
@@ -370,6 +370,14 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  d"), sep("        delete selected entry (asks first)")]),
         Line::from(vec![key("  s"), sep("        stop active entry")]),
         Line::from(vec![key("  Enter"), sep("    entry detail")]),
+        // Written as a path rather than a key, because `t` on its own is already
+        // listed under Navigation as "go to today": the trim is modal, live only
+        // while the detail popover is open. Help-only, like `Shift-S` below — the
+        // footer hints it conditionally instead, and only when there is idle to cut.
+        Line::from(vec![
+            key("  Enter, t"),
+            sep(" trim idle from the entry (asks first)"),
+        ]),
         Line::from(Span::raw("")),
         heading("  Search & Filter"),
         // This section's key column is two wider than the rest so `Shift-Tab`,

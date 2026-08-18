@@ -12,7 +12,7 @@
 mod common;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
-use common::{Case, StoreRow};
+use common::{Case, StoreRow, stamp};
 
 /// Midnight-anchored epochs, so a fabricated row lands on a date this test can
 /// name. Uses the local zone because the store's dates are local.
@@ -404,4 +404,73 @@ fn all_reports_every_entry_regardless_of_date() {
     assert!(run.stdout.contains("tt/1"), "{:?}", run.stdout);
     assert!(run.stdout.contains("tt/2"), "{:?}", run.stdout);
     run.assert_stdout_has("1h 0m");
+}
+
+#[test]
+fn report_leaves_the_store_untouched_byte_for_byte() {
+    // It is a read, and it used to be a write: `main`'s migrate preamble locked the
+    // store exclusively and rewrote `data.json` before every command, so a rollup
+    // could block a live `tt agent end` over a file it only wanted to look at.
+    let case = Case::new("report-read-only");
+    case.write_store(&[agent_row(
+        "did the thing",
+        "tt",
+        &["tt/12", "impl", "agent"],
+        today(),
+        9,
+        30,
+    )]);
+
+    let path = case.data_dir().join("data.json");
+    let before = std::fs::read(&path).expect("the fabricated store");
+    let before_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    case.run_bare(&["report"]).assert_status(0);
+
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the store was rewritten by a read"
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        before_mtime,
+        "the store's mtime moved, so something wrote it"
+    );
+    // And no lock file was left behind by a writer that never needed to be one.
+    assert!(
+        !case.data_dir().join("data.lock").exists(),
+        "a read took the store's exclusive lock"
+    );
+}
+
+#[test]
+fn a_pre_project_store_still_reports_its_inferred_projects() {
+    // The other half of dispatching ahead of the preamble: `report` migrates its own
+    // in-memory copy, so a store written before the `project` field existed still
+    // rolls up under the project inferred from its tags — without that inference
+    // being written back.
+    let case = Case::new("report-legacy-store");
+    let start = epoch_on(today(), 9);
+    case.write_raw_store(&format!(
+        r#"{{"entries":[{{"id":1,"description":"premium brand primitives","project":null,"tags":["vinge","vinge/12","impl"],"start_time":"{}","end_time":"{}","idle":[]}}],"next_id":2,"schema_version":0}}"#,
+        stamp(start),
+        stamp(start + 45 * 60)
+    ));
+
+    let run = case.run_bare(&["report"]);
+    run.assert_status(0);
+    assert!(
+        run.stdout.contains("vinge"),
+        "the inferred project is the axis: {:?}",
+        run.stdout
+    );
+    run.assert_stdout_has("0h 45m");
+
+    // Inferred for the reader only: the file is still at version 0.
+    let stored = std::fs::read_to_string(case.data_dir().join("data.json")).unwrap();
+    assert!(
+        stored.contains(r#""schema_version":0"#),
+        "the migration was written back: {stored}"
+    );
 }

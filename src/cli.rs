@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
 
 use crate::duration;
@@ -301,6 +301,15 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
+/// Record a finished entry, back-dated from its end.
+///
+/// `ended_at` is where the entry's timeline is pinned. `None` means now, which is
+/// what the `tt log` CLI surface always passes — it has no flag for this and gains
+/// none. `agent end` passes the mark's **last heartbeat** instead, because the
+/// `idle` intervals it hands over are absolute epochs read off that mark: anchored
+/// at `now` the two timelines are displaced by `now - last beat`, so the recorded
+/// silence lands outside the entry it belongs to and `--trim` cuts in the wrong
+/// place.
 pub fn log(
     description: String,
     time_str: String,
@@ -308,9 +317,10 @@ pub fn log(
     project: Option<String>,
     idle: Vec<IdleInterval>,
     trim: bool,
+    ended_at: Option<DateTime<Local>>,
 ) -> Result<()> {
     let dur = duration::parse(&time_str);
-    let end_time = Local::now();
+    let end_time = ended_at.unwrap_or_else(Local::now);
     let start_time = end_time - dur;
 
     let (desc, mut tags) = parse_tags(&description);
@@ -319,7 +329,10 @@ pub fn log(
             tags.push(tag);
         }
     }
-    with_data(|data| {
+    // What the store ended up holding, which is not `dur` whenever a trim cut
+    // something away. Taken out of the locked closure rather than recomputed after
+    // it, so the figure printed is the one that was written.
+    let stored = with_data(|data| {
         // The id is kept rather than discarded: the intervals go on the entry that
         // was just created, inside the same lock, so nothing outside this process
         // ever has to name it.
@@ -342,9 +355,20 @@ pub fn log(
         // rejected alternatives (no id-printing output for a wrapper to parse, no
         // `--last`-style target).
         if trim {
-            data.split_at_idle(entry_id);
+            let pieces = data.split_at_idle(entry_id);
+            if !pieces.is_empty() {
+                // The complement of the holes, so the pieces sum to less than
+                // `dur` — by exactly the silence that fell inside the entry.
+                return Ok(pieces
+                    .iter()
+                    .filter_map(|id| data.get_entry(*id))
+                    .map(|piece| piece.duration())
+                    .sum());
+            }
+            // An empty vec is `trim_spans` declining: nothing to cut, or idle
+            // covering the whole span, which leaves the entry standing whole.
         }
-        Ok(())
+        Ok(dur)
     })?;
 
     let tags_display = if tags.is_empty() {
@@ -359,7 +383,7 @@ pub fn log(
         desc,
         project_display(project.as_ref()),
         tags_display,
-        duration::format(dur)
+        duration::format(stored)
     );
     Ok(())
 }
@@ -457,6 +481,11 @@ pub fn active() -> Result<()> {
 }
 /// `tt report` — the rollup surface. Read-only over the store; see `src/report.rs`
 /// for the maths and for why the project axis is the field rather than a tag.
+///
+/// Dispatched ahead of `main`'s migrate preamble, so this is the one command that
+/// migrates for itself — in memory, never written back. A reader needs no lock
+/// either: `save_data` writes a temp file and renames, so a torn store is not
+/// something a reader can observe.
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     all: bool,
@@ -466,7 +495,8 @@ pub fn report(
     project: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let data = load_data()?;
+    let mut data = load_data()?;
+    crate::tracker::migrate(&mut data);
     let today = Local::now().date_naive();
     let scope = report::resolve_scope(today, all, week, since, until, project.as_deref());
     let selected = report::select(&data, &scope, project.as_deref());
@@ -571,7 +601,7 @@ mod tests {
                 project,
                 idle,
                 trim,
-            } => log(description, time, tags, project, idle, trim).unwrap(),
+            } => log(description, time, tags, project, idle, trim, None).unwrap(),
             _ => panic!("parse_log produced something other than a Log command"),
         }
     }

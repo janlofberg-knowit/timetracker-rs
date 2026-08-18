@@ -196,7 +196,16 @@ fn item(
         std::process::exit(64);
     };
     let minutes = whole_minutes(minutes);
-    log_entry(project, issue, phase, summary, minutes, Vec::new(), false)
+    log_entry(
+        project,
+        issue,
+        phase,
+        summary,
+        minutes,
+        Vec::new(),
+        false,
+        None,
+    )
 }
 
 /// A minutes argument as the wrapper accepted it, or exit 64.
@@ -225,6 +234,14 @@ fn whole_minutes(raw: &str) -> i64 {
 ///
 /// `extra_tags` is deliberately empty — every tag is already in the description,
 /// so `parse_tags` produces exactly the set the wrapper's `--description=` did.
+///
+/// `ended_at` is the mark's last heartbeat for a mark-derived close and `None`
+/// wherever there is no mark timeline to pin to — the explicit-minutes path and
+/// `item`, both of which record no silence and so have nothing to line up with.
+// Eight: the four naming fields, then the four the entry needs. Grouping them into
+// a struct would only move the same list one indirection away, and every caller
+// already has all eight to hand.
+#[allow(clippy::too_many_arguments)]
 fn log_entry(
     project: &str,
     issue: &str,
@@ -233,6 +250,7 @@ fn log_entry(
     minutes: i64,
     idle: Vec<IdleInterval>,
     trim: bool,
+    ended_at: Option<DateTime<Local>>,
 ) -> Result<()> {
     cli::log(
         description(project, issue, phase, summary),
@@ -241,6 +259,7 @@ fn log_entry(
         Some(project.to_string()),
         idle,
         trim,
+        ended_at,
     )
 }
 
@@ -279,6 +298,9 @@ fn end(
     let dir = mark_dir()?;
     let mut idle = Vec::new();
     let mut split_at_idle = false;
+    // Where the entry gets pinned. Stays `None` on the explicit-minutes path,
+    // which ignores the mark's timestamps entirely and records no silence.
+    let mut anchor = None;
 
     let minutes = match minutes {
         Some(raw) => whole_minutes(raw),
@@ -298,10 +320,24 @@ fn end(
                 .unwrap_or_else(|| Local::now().timestamp())
                 .max(marked.started);
             let measured = (ended - marked.started) / 60;
+            // Every mark-derived close is anchored here, `--full` and `--trim`
+            // alike: the gaps below are epochs on this timeline, so the entry has
+            // to end where the timeline does.
+            anchor = Some(instant(ended)?);
 
             // Computed for every mark-derived close, `--full` included: the
             // intervals go on the entry even when the full span is logged.
-            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, max_gap_minutes());
+            //
+            // Which threshold applies is the *evidence* question: silence between
+            // heartbeats is a walk-away, but a mark with no heartbeats at all is a
+            // phase that was never instrumented, which is a different claim and
+            // gets the longer allowance.
+            let threshold = if marked.beats.is_empty() {
+                max_unvouched_minutes()
+            } else {
+                max_gap_minutes()
+            };
+            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, threshold);
             if gaps.is_empty() {
                 measured
             } else {
@@ -313,16 +349,23 @@ fn end(
                     .iter()
                     .map(|&(from, to)| Ok(IdleInterval::new(instant(from)?, instant(to)?)))
                     .collect::<Result<Vec<_>>>()?;
-                // What `--trim` logs: the span minus *every* over-threshold gap,
-                // not just the worst one the refusal names.
+                // What `--trim` ends up storing: the span minus *every*
+                // over-threshold gap, not just the worst one the refusal names.
+                // Reported, never logged — the subtraction is `split_at_idle`'s.
                 let silent: i64 = gaps.iter().map(|(from, to)| (to - from) / 60).sum();
                 let trimmed = (measured - silent).max(0);
 
                 if full {
                     measured
                 } else if trim {
+                    // The **measured** span, not `trimmed`: `split_at_idle` cuts
+                    // the same gaps out of the entry, and handing it a span that
+                    // already had them removed subtracted them twice — the entry
+                    // collapsed to a fragment while stdout claimed the trimmed
+                    // figure. One subtraction, done on absolute times inside the
+                    // entry the anchor put them in.
                     split_at_idle = true;
-                    trimmed
+                    measured
                 } else {
                     refuse(project, issue, phase, &gaps, measured, trimmed);
                 }
@@ -330,7 +373,16 @@ fn end(
         }
     };
 
-    log_entry(project, issue, phase, summary, minutes, idle, split_at_idle)?;
+    log_entry(
+        project,
+        issue,
+        phase,
+        summary,
+        minutes,
+        idle,
+        split_at_idle,
+        anchor,
+    )?;
     // Cleared only once the entry has actually been recorded — and on *every*
     // successful close, the explicit-minutes path included. A refusal returns
     // above, leaving the mark and its beats in place so the phase can still be
@@ -347,9 +399,9 @@ fn end(
 /// session wants `--full`.
 ///
 /// The figures are **unrounded**, as the wrapper's are: rounding happens later,
-/// on the way to `cli::log`. And `has an <n>m gap` is ungrammatical for most `n`;
-/// that is reproduced verbatim rather than fixed, because these messages are the
-/// contract an agent reads (#58 owns the wart).
+/// on the way to `cli::log`. The article is picked per figure by [`article`] — the
+/// wrapper said `has an <n>m gap` for every `n` — but the line's *shape* is left
+/// exactly as it was, because these messages are the contract an agent reads.
 fn refuse(
     project: &str,
     issue: &str,
@@ -368,8 +420,9 @@ fn refuse(
     }
 
     eprintln!(
-        "tt: {} has an {}m gap ({}-{})",
+        "tt: {} has {} {}m gap ({}-{})",
         phase_name(project, issue, phase),
+        article(worst.0),
         worst.0,
         clock(worst.1),
         clock(worst.2)
@@ -379,17 +432,54 @@ fn refuse(
     std::process::exit(65);
 }
 
-/// How long a silence has to be to count, in minutes.
+/// `"a"` or `"an"` for a minute count, read the way it is spoken.
+///
+/// Only the leading digit decides, because that is the word the article attaches
+/// to: `8` is the one digit that opens with a vowel sound, so `8`, `80` and `800`
+/// all take `an`. The two exceptions are the teens that are read as one word —
+/// `11` ("an eleven") and `18` ("an eighteen") — and only those two exactly:
+/// `110` is "a hundred and ten" and `180` is "a hundred and eighty".
+fn article(minutes: i64) -> &'static str {
+    if minutes == 11 || minutes == 18 || minutes.abs().to_string().starts_with('8') {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// How long a silence *between heartbeats* has to be to count, in minutes.
 ///
 /// `TT_MAX_GAP_MINUTES` with a documented default of 45, matching
-/// `bin/tt-safe:51`: set-but-empty means unset, and so does an unparseable value.
-/// The wrapper's `TODO` about moving this into a settings file is noted and not
-/// acted on — an env var plus a documented default is parity.
+/// `bin/tt-safe:51`. The wrapper's `TODO` about moving this into a settings file is
+/// noted and not acted on — an env var plus a documented default is parity.
 fn max_gap_minutes() -> i64 {
-    std::env::var("TT_MAX_GAP_MINUTES")
+    env_minutes("TT_MAX_GAP_MINUTES", 45)
+}
+
+/// How long an **unvouched** phase — a mark that produced no heartbeat at all —
+/// may run before the close is refused.
+///
+/// `TT_MAX_UNVOUCHED_MINUTES`, default 120. Longer than the interior-silence
+/// threshold on purpose, because the two are different claims: a hole between
+/// beats is positive evidence that work stopped, while no beats at all is the
+/// absence of instrumentation — a session that compacted, or an operator who uses
+/// `begin`/`end` without `touch`. Judging both at 45 made the ordinary short
+/// unmeasured phase ask a question it had no information to answer. 120 is also the
+/// wrapper's original number, adopted for the reason above rather than restored by
+/// reflex: it still forces a human call on a long unmeasured span.
+fn max_unvouched_minutes() -> i64 {
+    env_minutes("TT_MAX_UNVOUCHED_MINUTES", 120)
+}
+
+/// One minutes-valued environment override, or its default.
+///
+/// Set-but-empty means unset, and so does an unparseable value — the wrapper's
+/// reading, and the forgiving one: a threshold is not worth refusing to run over.
+fn env_minutes(name: &str, default: i64) -> i64 {
+    std::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(45)
+        .unwrap_or(default)
 }
 
 /// One epoch as an instant, or a real error naming it.
@@ -462,8 +552,8 @@ fn strip_stray_tags(summary: &str) -> String {
 /// stored tags to build its phase breakdown.
 ///
 /// Deliberately **not** used to validate the `phase` argument: `bin/tt-safe`
-/// accepts any word, and tightening that is a behaviour change (#58), not part
-/// of giving the list one home.
+/// accepts any word, and tightening that is a behaviour change nobody has asked
+/// for — ruled out of scope on #58 — not part of giving the list one home.
 pub const PHASES: [&str; 7] = ["plan", "impl", "qa", "review", "docs", "spike", "ops"];
 
 /// The description `cli::log` is given: the summary plus the convention's tags.
@@ -491,6 +581,22 @@ fn description(project: &str, issue: &str, phase: &str, summary: &str) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_article_follows_how_the_number_is_spoken() {
+        // Every number opening on the digit 8, whatever its magnitude.
+        for minutes in [8, 80, 85, 800] {
+            assert_eq!(article(minutes), "an", "{minutes}");
+        }
+        // The two teens read as one vowel-initial word.
+        assert_eq!(article(11), "an");
+        assert_eq!(article(18), "an");
+        // And their multiples, which are not: "a hundred and ten", "a hundred and
+        // eighty". This is the case a naive `starts_with("1")`-style rule breaks.
+        for minutes in [7, 45, 70, 110, 118, 180, 1, 0] {
+            assert_eq!(article(minutes), "a", "{minutes}");
+        }
+    }
 
     #[test]
     fn rounding_goes_up_to_the_nearest_quarter() {

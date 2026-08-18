@@ -89,8 +89,15 @@ in the application's own cache directory; `TT_MARK_DIR` overrides it.
 `touch` matters twice over: `end` measures start → last touch, not start → now, so
 idle time after the work finished is not counted — and the heartbeats it appends are
 what let a long phase log without a question. `end` refuses on a *silent gap*, never
-on length, so an unbeaten stretch over `TT_MAX_GAP_MINUTES` (default 45) is what gets
-flagged.
+on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES` (default 45) is
+what gets flagged.
+
+A phase that produced **no heartbeat at all** is judged on its own threshold instead,
+`TT_MAX_UNVOUCHED_MINUTES` (default 120). No beats is the absence of instrumentation —
+a session that compacted, or `begin`/`end` without any `touch` — where a hole between
+beats is positive evidence that work stopped, so the unmeasured phase gets the longer
+allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
+a human.
 
 Because phases across repos are timed concurrently, `tt agent list` routinely shows
 marks that belong to *other* sessions. **Only act on marks for the project you are
@@ -104,7 +111,9 @@ The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
 - **exit 65, silent gap over threshold** — the heartbeats show a stretch with no sign
   of work in it, and the message names that stretch's length and clock interval, then
   quotes what `--full` and what `--trim` would log. Length alone is never the
-  complaint: a long session that kept heartbeating logs silently.
+  complaint: a long session that kept heartbeating logs silently. Which threshold
+  applied depends on the evidence — 45 minutes between beats, 120 for a phase that
+  never beat at all.
 
   **Ask the operator about the named gap — never pick between `--full` and `--trim`
   yourself**, and reach for neither by reflex; only the person who was there knows
@@ -113,11 +122,12 @@ The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
   minutes as a trailing argument — which wins over both flags. `--trim` never fires on
   its own and is never a default.
 
-  Either way the flagged gaps are recorded on the entry (`tt log --idle=<start>-<end>`,
-  one per gap), so `--full` keeps the evidence rather than discarding it, and the
-  intervals can be trimmed later from the TUI's detail popover with `[t]`. `--trim` is
+  `--full` records the flagged gaps on the entry (`tt log --idle=<start>-<end>`, one
+  per gap), so the evidence survives rather than being discarded, and the intervals
+  can be trimmed later from the TUI's detail popover with `[t]`. `--trim` is
   **destructive and unconfirmed**: it splits the entry into the pieces between the
-  gaps.
+  gaps there and then, so the silence is gone and what it reports back is what it
+  stored — a smaller figure than the span it was given.
 - **exit 64, no mark** — never marked, or the mark was lost. Use `item` with a
   duration you can justify, or ask. A missing summary is the same exit code.
 
@@ -132,6 +142,9 @@ humans. `tt report --json` is the machine-readable form.
   would be nothing to narrow but the single default day.
 - Projects come from the **project field**, so `--project NAME` filters on what was
   stored rather than on a tag.
+
+`tt report` is a pure read: it takes no lock and does not touch the store, so a
+rollup never blocks a close that is happening at the same time.
 
 Its overlap counter is a health check on rule 3: if it climbs, logging has drifted
 away from the moments it should be attached to.

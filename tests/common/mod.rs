@@ -180,6 +180,17 @@ impl Case {
         .unwrap();
     }
 
+    /// Lay a `data.json` into the sandbox verbatim.
+    ///
+    /// [`Case::write_store`] always stamps `schema_version: 1`, which is what the
+    /// rollup cases want; this is for the ones that need a store from *before* the
+    /// project field existed, so the migration has something to do.
+    pub fn write_raw_store(&self, json: &str) {
+        let dir = self.data_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("data.json"), json).unwrap();
+    }
+
     /// The sandbox's own store directory — where `data.json` and `data.lock` land
     /// if anything at all reaches the store.
     pub fn data_dir(&self) -> PathBuf {
@@ -264,7 +275,7 @@ pub struct StoreRow {
 }
 
 /// An epoch second as the store's RFC 3339 local timestamp.
-fn stamp(epoch: i64) -> String {
+pub fn stamp(epoch: i64) -> String {
     DateTime::<chrono::Utc>::from_timestamp(epoch, 0)
         .expect("a real epoch")
         .with_timezone(&Local)

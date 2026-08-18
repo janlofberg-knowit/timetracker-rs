@@ -116,7 +116,9 @@ impl Mark {
 
 /// Narrowest label column `tt agent list` will use, so a single short mark still
 /// reads as a column rather than as a sentence. `src/tui/render.rs` keeps its own
-/// copy for the surface's rows; whether the two rows should converge is #58's.
+/// copy for the surface's rows. Converging the two was considered and ruled out of
+/// scope on #58: sharing the constant buys a cross-module dependency for a figure
+/// that is a presentation choice on each surface.
 const LABEL_WIDTH: usize = 18;
 
 /// The rows `tt agent list` prints, one per mark, without the CLI's indent.
