@@ -159,10 +159,7 @@ pub fn rollup(entries: &[&TimeEntry]) -> Rollup {
 /// — which is neither stable under editing nor testable. Alphabetical ties are
 /// both, at the cost of two equal-length adjacent rows swapping against the
 /// script's output.
-fn by_seconds_desc<'a, T>(
-    map: &'a BTreeMap<String, T>,
-    seconds: impl Fn(&T) -> i64,
-) -> Vec<&'a str> {
+fn by_seconds_desc<T>(map: &BTreeMap<String, T>, seconds: impl Fn(&T) -> i64) -> Vec<&str> {
     let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
     keys.sort_by(|a, b| {
         seconds(&map[*b])
