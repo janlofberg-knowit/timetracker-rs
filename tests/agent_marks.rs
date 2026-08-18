@@ -252,7 +252,7 @@ fn list_shows_an_open_mark_as_a_house_style_row() {
     assert_eq!(
         run.stdout,
         format!(
-            "\u{1F4CC} Open marks:\n\n  proj/23 impl       - since {} (0h 10m)\n",
+            "\u{1F916} Open marks:\n\n  proj/23 impl       - since {} (0h 10m)\n",
             clock(start)
         ),
         "the header, the blank line and one padded row"

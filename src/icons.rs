@@ -6,4 +6,4 @@ pub const LOGGED: &str = "📝";
 pub const WARNING: &str = "⚠️";
 pub const CALENDAR: &str = "📅";
 pub const LIST: &str = "📋";
-pub const MARKS: &str = "📌";
+pub const MARKS: &str = "🤖";
