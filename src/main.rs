@@ -5,6 +5,7 @@ mod cli;
 mod duration;
 mod icons;
 mod marks;
+mod report;
 mod storage;
 mod tracker;
 mod tui;
