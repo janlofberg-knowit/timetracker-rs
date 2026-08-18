@@ -144,6 +144,22 @@ impl Case {
         serde_json::from_str(&body).expect("data.json should parse")
     }
 
+    /// Fabricate a heartbeat sequence at absolute epochs — the oracle's
+    /// `beats_at`. Written directly rather than beaten out in real time, so a
+    /// four-hour phase costs a test nothing.
+    pub fn beats_at(&self, key: &str, beats: &[i64]) {
+        let file = self.beats_file(key);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let body: String = beats.iter().map(|beat| format!("{beat}\n")).collect();
+        fs::write(file, body).unwrap();
+    }
+
+    /// Fabricate the legacy pre-`beats/` single heartbeat, `<mark>.last`. Nothing
+    /// writes this any more; `end` still reads it (#55) and `cancel` clears it.
+    pub fn write_legacy_beat(&self, key: &str, beat: i64) {
+        fs::write(self.mark_file(&format!("{key}.last")), format!("{beat}\n")).unwrap();
+    }
+
     /// Regular files directly in the mark directory — the beats subdirectory is
     /// not one, which is the property `list` relies on.
     pub fn mark_count(&self) -> usize {
