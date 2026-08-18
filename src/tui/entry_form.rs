@@ -359,12 +359,9 @@ impl App {
         if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
             return Some(nd);
         }
-        // MM-DD
-        if s.len() == 5 && s.contains('-') {
-            let with_year = format!("{}-{}", current_year, s);
-            if let Ok(nd) = NaiveDate::parse_from_str(&with_year, "%Y-%m-%d") {
-                return Some(nd);
-            }
+        // MM-DD - assumes current year
+        if let Ok(nd) = NaiveDate::parse_from_str(&format!("{}-{}", current_year, s), "%Y-%m-%d") {
+            return Some(nd);
         }
         None
     }
