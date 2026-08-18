@@ -94,17 +94,8 @@ pub enum Commands {
     },
 }
 
-/// The agent layer's commands, ported from `bin/tt-safe`.
-///
-/// The first nested subcommand in this CLI, and nested rather than flat on
-/// purpose: the positionals are the wrapper's verbatim, so every call site in the
-/// agent instructions is a textual `tt-safe ` → `tt agent ` swap, and the verbs
-/// stay visibly one namespace instead of a handful of top-level commands that
-/// only an agent ever types.
-///
-/// Most of them touch mark files and nothing else; the ones that log an entry say
-/// so through [`AgentCommands::touches_store`], which decides where in `main` they
-/// dispatch.
+/// The agent layer's commands. Most touch mark files only; the ones that log an
+/// entry say so through [`AgentCommands::touches_store`].
 #[derive(Subcommand)]
 pub enum AgentCommands {
     /// Open a mark for a phase, keeping the start of one already open
@@ -164,17 +155,10 @@ pub enum AgentCommands {
 }
 
 impl AgentCommands {
-    /// Whether this subcommand creates or reads a `tt` entry.
+    /// Whether this subcommand creates or reads a `tt` entry, which decides
+    /// which side of `main`'s migrate preamble it dispatches on.
     ///
-    /// `main` returns the ones that do **not** ahead of its
-    /// `storage::with_data(migrate)` preamble, so a heartbeat never takes the
-    /// store's exclusive lock — the same thing `bin/tt-safe` skips its own lock
-    /// for the mark verbs to achieve. The ones that do have to dispatch *after*
-    /// it, or they would write an unmigrated store.
-    ///
-    /// An exhaustive `match` rather than a `matches!`, deliberately: a new
-    /// subcommand cannot be added without deciding which side of the preamble it
-    /// belongs on.
+    /// Exhaustive on purpose: a new subcommand must decide.
     pub fn touches_store(&self) -> bool {
         match self {
             AgentCommands::Begin { .. }
@@ -186,13 +170,8 @@ impl AgentCommands {
     }
 }
 
-/// Parse one `--idle` value: `<start>-<end>` in epoch seconds.
-///
-/// Epoch seconds rather than clock times because the only producer is `tt-safe`,
-/// whose heartbeats are unix timestamps already (#12) — no timezone or format to
-/// agree on. A malformed value is a parse error, never a silently dropped
-/// interval: an interval that vanishes would make a trim quietly do less than the
-/// caller asked.
+/// Parse one `--idle` value: `<start>-<end>` in epoch seconds. A malformed value
+/// is an error, never a silently dropped interval.
 fn parse_idle(value: &str) -> Result<IdleInterval, String> {
     let (start, end) = value
         .split_once('-')
@@ -220,9 +199,7 @@ fn parse_idle(value: &str) -> Result<IdleInterval, String> {
 }
 
 /// Render a project for a single-line listing: ` (demo)`, or nothing when unset.
-///
-/// `--project` sets the field only — it never adds or rewrites a tag — so the
-/// project is displayed separately from the tag list everywhere.
+/// The project is a field, never a tag, so it prints separately from the tags.
 fn project_display(project: Option<&String>) -> String {
     match project {
         Some(p) => format!(" ({})", p),
@@ -235,8 +212,7 @@ pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
     let (desc, tags) = parse_tags(&raw_desc);
     let start_time = Local::now();
 
-    // The active check and the insert share one lock, so two concurrent starts
-    // cannot both find nothing active
+    // One lock for the check and the insert, so two starts cannot both see nothing.
     let already_tracking = with_data(|data| {
         if let Some(active) = data.active_entry() {
             return Ok(Some((active.description.clone(), active.start_time)));
@@ -281,7 +257,6 @@ pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
 
 pub fn stop() -> Result<()> {
     let stopped = with_data(|data| {
-        // Get info before stopping
         let info = data.active_entry().map(|e| {
             (e.description.clone(), e.format_duration())
         });
@@ -301,15 +276,9 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-/// Record a finished entry, back-dated from its end.
-///
-/// `ended_at` is where the entry's timeline is pinned. `None` means now, which is
-/// what the `tt log` CLI surface always passes — it has no flag for this and gains
-/// none. `agent end` passes the mark's **last heartbeat** instead, because the
-/// `idle` intervals it hands over are absolute epochs read off that mark: anchored
-/// at `now` the two timelines are displaced by `now - last beat`, so the recorded
-/// silence lands outside the entry it belongs to and `--trim` cuts in the wrong
-/// place.
+/// Record a finished entry, back-dated from its end. `ended_at` pins the
+/// timeline and must be the mark's last heartbeat whenever `idle` intervals are
+/// passed, or the recorded silence lands outside the entry.
 pub fn log(
     description: String,
     time_str: String,
@@ -329,13 +298,8 @@ pub fn log(
             tags.push(tag);
         }
     }
-    // What the store ended up holding, which is not `dur` whenever a trim cut
-    // something away. Taken out of the locked closure rather than recomputed after
-    // it, so the figure printed is the one that was written.
+    // Taken out of the closure, so the figure printed is the one written.
     let stored = with_data(|data| {
-        // The id is kept rather than discarded: the intervals go on the entry that
-        // was just created, inside the same lock, so nothing outside this process
-        // ever has to name it.
         let entry_id = data
             .add_entry(
                 desc.clone(),
@@ -348,25 +312,18 @@ pub fn log(
         if let Some(entry) = data.entries.iter_mut().find(|e| e.id == entry_id) {
             entry.idle = idle;
         }
-        // Deliberately inside the same closure as the insert: `with_data` is one
-        // lock, one load, one save, so creating the entry and splitting it are a
-        // single atomic store write and the id never leaves the process. Do not
-        // lift this into a second store call or a second command — see #35's
-        // rejected alternatives (no id-printing output for a wrapper to parse, no
-        // `--last`-style target).
+        // Do not lift this out of the closure: the insert and the split are one
+        // store transaction.
         if trim {
             let pieces = data.split_at_idle(entry_id);
             if !pieces.is_empty() {
-                // The complement of the holes, so the pieces sum to less than
-                // `dur` — by exactly the silence that fell inside the entry.
                 return Ok(pieces
                     .iter()
                     .filter_map(|id| data.get_entry(*id))
                     .map(|piece| piece.duration())
                     .sum());
             }
-            // An empty vec is `trim_spans` declining: nothing to cut, or idle
-            // covering the whole span, which leaves the entry standing whole.
+            // An empty vec is `trim_spans` declining, which leaves the entry whole.
         }
         Ok(dur)
     })?;
@@ -479,13 +436,8 @@ pub fn active() -> Result<()> {
 
     Ok(())
 }
-/// `tt report` — the rollup surface. Read-only over the store; see `src/report.rs`
-/// for the maths and for why the project axis is the field rather than a tag.
-///
-/// Dispatched ahead of `main`'s migrate preamble, so this is the one command that
-/// migrates for itself — in memory, never written back. A reader needs no lock
-/// either: `save_data` writes a temp file and renames, so a torn store is not
-/// something a reader can observe.
+/// `tt report` — the rollup surface; see `src/report.rs` for the maths. Dispatched
+/// ahead of `main`'s preamble, so it migrates its own in-memory copy, unwritten.
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     all: bool,
@@ -521,9 +473,7 @@ mod tests {
     use clap::Parser;
     use std::path::PathBuf;
 
-    /// `--until` on its own had nothing to narrow but the single default day, and
-    /// `bin/tt-report:198-207` silently discarded it. A usage error is the honest
-    /// version of that.
+    /// `--until` alone is a usage error, not a silently discarded bound.
     #[test]
     fn until_requires_a_scope_to_narrow() {
         assert!(
@@ -568,9 +518,8 @@ mod tests {
         );
     }
 
-    /// Point `HOME` at a fresh scratch dir so the store resolves inside it. The
-    /// real store is written continuously by live agent sessions and must never be
-    /// touched by a test.
+    /// Point `HOME` at a fresh scratch dir: the real store is live and must never
+    /// be touched by a test.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-cli-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -584,8 +533,6 @@ mod tests {
         dir
     }
 
-    /// The `Log` variant as clap parses it from a real argument vector — so the
-    /// flags are exercised through the same path the binary uses.
     fn parse_log(args: &[&str]) -> Commands {
         let mut argv = vec!["tt", "log"];
         argv.extend_from_slice(args);
@@ -707,8 +654,7 @@ mod tests {
             "one piece per span left"
         );
         let idle_total: i64 = gaps.iter().map(|(from, to)| to - from).sum();
-        // Summed as durations, not as truncated seconds: the span's endpoints carry
-        // sub-second parts that per-piece truncation would lose.
+        // Summed as durations: per-piece truncation would lose the sub-second parts.
         let logged = data
             .entries
             .iter()
@@ -718,9 +664,6 @@ mod tests {
             duration::parse("2h") - chrono::Duration::seconds(idle_total),
             "the pieces do not sum to the span minus the idle stretches"
         );
-        // The earliest piece kept the original id and the later ones took fresh
-        // ones in sequence, which is what an insert and a split sharing one load
-        // produce — the split never re-read the store.
         let ids: Vec<u64> = data.entries.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![0, 1, 2]);
         assert_eq!(data.next_id, 3, "no id was spent twice");
@@ -728,8 +671,6 @@ mod tests {
             data.entries.iter().all(|e| e.idle.is_empty()),
             "a piece kept an interval it excludes"
         );
-        // One `with_data`, so one temp-file write and rename: nothing half-written
-        // is left beside the store.
         let store = storage::get_data_path().unwrap();
         assert!(
             store.starts_with(&dir) && store.exists(),

@@ -1,22 +1,12 @@
 //! The `tt agent` commands: the agent layer's phase marks.
 //!
-//! Presentation only. Every fact about the mark files themselves lives in
-//! [`crate::marks`], which owns the format for both the reader and the writer;
-//! this module turns the four subcommands into calls on it and prints what the
-//! shell wrapper printed.
+//! Presentation only; [`crate::marks`] owns every fact about the mark files.
 //!
-//! **The mark commands touch no store.** A mark is not an entry, so `begin`,
-//! `touch`, `cancel` and `list` never read `data.json`, take the store lock or
-//! call `storage::with_data`, and `main` dispatches them *ahead* of its migration
-//! preamble to keep that true. `item` and `end` are the complement: they create
-//! an entry through [`crate::cli::log`], so they dispatch *after* the preamble.
-//! See `AgentCommands::touches_store`.
+//! **`begin`, `touch`, `cancel` and `list` must touch no store** — `main`
+//! dispatches them ahead of its migrate preamble. `item` and `end` log an entry
+//! through [`crate::cli::log`] and dispatch after it.
 //!
-//! The messages are `bin/tt-safe`'s, verbatim apart from the `tt-safe: ` prefix
-//! becoming `tt: `, because the caller of these commands is an agent following
-//! prose instructions and a changed wording is a changed contract. The one
-//! deliberate divergence in the whole port is `list`'s row format, which follows
-//! `tt`'s house style rather than the wrapper's — see [`list`].
+//! The messages are a contract: their caller is an agent following prose.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
@@ -79,26 +69,20 @@ pub fn run(command: &AgentCommands) -> Result<()> {
     }
 }
 
-/// The mark directory, or a real error rather than a silent no-op: a `begin`
-/// that quietly recorded nothing would lose the phase's start.
+/// The mark directory, or an error — a `begin` must never silently record
+/// nothing.
 fn mark_dir() -> Result<std::path::PathBuf> {
     marks::mark_dir().context("could not determine a cache directory for the marks")
 }
 
-/// The phase as the wrapper's messages name it: `<project>/<issue> <phase>`,
-/// with the `-` sentinel left in place. Only `list` collapses it, because only
-/// `list` is reading names back rather than echoing the ones it was given.
+/// The phase as the messages name it: `<project>/<issue> <phase>`, with the `-`
+/// sentinel left in place. Only `list` collapses it.
 fn phase_name(project: &str, issue: &str, phase: &str) -> String {
     format!("{}/{} {}", project, issue, phase)
 }
 
 /// `tt agent begin <project> <issue|-> <phase>`: open a mark, or keep the one
-/// already open.
-///
-/// Idempotent by design and not by accident: an agent that lost its context
-/// re-begins the phase it is already inside, and the original start is the thing
-/// worth keeping. Saying so on stderr with exit 0 means a re-begin is not an
-/// error the caller has to handle.
+/// already open. Idempotent: the original start wins, on stderr, exit 0.
 fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
     let dir = mark_dir()?;
     match marks::begin_in(&dir, project, issue, phase)? {
@@ -108,8 +92,7 @@ fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
             start.format("%H:%M")
         ),
         Begin::AlreadyOpen(start) => {
-            // `??:??` for a mark whose contents are not a timestamp, exactly as
-            // the wrapper's `fmt_time` falls back.
+            // `??:??` for a mark whose contents are not a timestamp.
             let since = start.map_or_else(
                 || "??:??".to_string(),
                 |start| start.format("%H:%M").to_string(),
@@ -124,11 +107,8 @@ fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent touch <project> <issue|-> <phase>`: record one heartbeat.
-///
-/// Exits 64 on an unmarked phase, which is `bin/tt-safe`'s code for a usage
-/// error and the one exit code the oracle asserts here. `main` returns
-/// `Result`, and anyhow exits 1, so the code has to be set explicitly.
+/// `tt agent touch <project> <issue|-> <phase>`: record one heartbeat. Exits 64
+/// on an unmarked phase; anyhow would exit 1, so the code is set explicitly.
 fn touch(project: &str, issue: &str, phase: &str) -> Result<()> {
     let dir = mark_dir()?;
     match marks::touch_in(&dir, project, issue, phase)? {
@@ -144,9 +124,7 @@ fn touch(project: &str, issue: &str, phase: &str) -> Result<()> {
 }
 
 /// `tt agent cancel <project> <issue|-> <phase>`: drop a mark without logging.
-///
-/// Succeeds whether or not there was anything to drop: the caller wants the
-/// phase gone, and it already is.
+/// Succeeds whether or not there was anything to drop.
 fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
     let dir = mark_dir()?;
     marks::cancel_in(&dir, project, issue, phase)?;
@@ -154,16 +132,9 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent list`: every open mark, newest first.
-///
-/// The house style, not `tt-safe marks`' terse row: a `{} Open marks:` header in
-/// the shape of `cli::list`'s `{} All entries:`, a blank line, and rows at the
-/// two-column indent the entry lists reserve for their status glyph. Owner
-/// ruling, 2026-08-18 — the port's one deliberate divergence from the shell
-/// oracle, because a `tt` subcommand should look like `tt`.
-///
-/// The empty case is a bare `No open marks.` with no emoji, matching
-/// `No entries yet.` — and, as it happens, the wrapper's own line exactly.
+/// `tt agent list`: every open mark, newest first, in `cli::list`'s shape —
+/// header, blank line, rows at the status-glyph indent, or a bare
+/// `No open marks.`
 fn list() -> Result<()> {
     let marks = marks::open_marks();
     if marks.is_empty() {
@@ -179,11 +150,7 @@ fn list() -> Result<()> {
 }
 
 /// `tt agent item <project> <issue|-> <phase> <summary> <minutes>`: log one
-/// finished piece of work in one call, with no mark involved.
-///
-/// The whole of `bin/tt-safe`'s `item`: the convention's three tags, the
-/// 15-minute rounding, and nothing else. No mark file is read, written or
-/// cleared — a phase short enough to report in one call never needed one.
+/// finished piece of work in one call. No mark file is read, written or cleared.
 fn item(
     project: &str,
     issue: &str,
@@ -208,16 +175,9 @@ fn item(
     )
 }
 
-/// A minutes argument as the wrapper accepted it, or exit 64.
-///
-/// Hand-parsed rather than typed as an integer in the clap surface: clap answers
-/// a non-numeric positional with exit **2** and its own usage block, where the
-/// wrapper says `minutes must be a whole number, got '<x>'` and exits 64
-/// (`bin/tt-safe:144-147`) — and the caller here is an agent following prose
-/// instructions, for which a changed message is a changed contract.
-///
-/// Bash's `case "$m" in ''|*[!0-9]*)` is stricter than `parse`: no sign, no
-/// whitespace, no `+`.
+/// A minutes argument, or exit 64 with `minutes must be a whole number, got
+/// '<x>'` — hand-parsed because clap would exit 2 with its own usage block.
+/// Stricter than `parse`: no sign, no whitespace, no `+`.
 fn whole_minutes(raw: &str) -> i64 {
     let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
     match digits.then(|| raw.parse().ok()).flatten() {
@@ -229,18 +189,9 @@ fn whole_minutes(raw: &str) -> i64 {
     }
 }
 
-/// Log the entry both `item` and `end` end at: the convention's description, the
-/// rounded duration, the project as a real field, and whatever silence was found.
-///
-/// `extra_tags` is deliberately empty — every tag is already in the description,
-/// so `parse_tags` produces exactly the set the wrapper's `--description=` did.
-///
-/// `ended_at` is the mark's last heartbeat for a mark-derived close and `None`
-/// wherever there is no mark timeline to pin to — the explicit-minutes path and
-/// `item`, both of which record no silence and so have nothing to line up with.
-// Eight: the four naming fields, then the four the entry needs. Grouping them into
-// a struct would only move the same list one indirection away, and every caller
-// already has all eight to hand.
+/// Log the entry both `item` and `end` end at. `extra_tags` stays empty: every
+/// tag is already in the description. `ended_at` is the mark's last heartbeat for
+/// a mark-derived close and `None` where there is no mark timeline to pin to.
 #[allow(clippy::too_many_arguments)]
 fn log_entry(
     project: &str,
@@ -264,19 +215,11 @@ fn log_entry(
 }
 
 /// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`:
-/// close a marked phase and log what it actually cost.
+/// close a marked phase, measured to its **last heartbeat** and never to now. A
+/// flagged silence with nothing said about it **refuses** the close.
 ///
-/// `bin/tt-safe`'s `cmd_end` (`:262-352`). The phase is measured to its **last
-/// heartbeat**, never to now, so time spent idle after the work finished is not
-/// billed; any interior silence longer than `TT_MAX_GAP_MINUTES` is flagged, and
-/// with nothing said about it the close is **refused** rather than guessed at.
-/// Steady heartbeats are direct evidence the work was still happening, so length
-/// alone proves nothing — what is suspicious is a silence inside the phase.
-///
-/// Resolution order is the wrapper's: an explicit minutes argument wins over both
-/// flags and skips the mark's timestamps entirely, recording no silence and
-/// computing no gaps; `--full` logs the measured span with the silence recorded
-/// but not removed; `--trim` logs the span minus every flagged gap.
+/// Explicit minutes win over both flags and skip the mark's timestamps entirely;
+/// `--full` logs the measured span, `--trim` the span minus every flagged gap.
 fn end(
     project: &str,
     issue: &str,
@@ -287,8 +230,7 @@ fn end(
     trim: bool,
 ) -> Result<()> {
     let Some(summary) = summary else {
-        // Hand-checked rather than a required positional: clap would answer a
-        // missing one with exit 2, and 64 is the code the wrapper's callers know.
+        // Hand-checked: a required positional would exit 2, not 64.
         eprintln!(
             "tt: need a summary: tt agent end <project> <issue|-> <phase> <summary> [minutes]"
         );
@@ -298,8 +240,7 @@ fn end(
     let dir = mark_dir()?;
     let mut idle = Vec::new();
     let mut split_at_idle = false;
-    // Where the entry gets pinned. Stays `None` on the explicit-minutes path,
-    // which ignores the mark's timestamps entirely and records no silence.
+    // Stays `None` on the explicit-minutes path, which reads no timestamps.
     let mut anchor = None;
 
     let minutes = match minutes {
@@ -313,25 +254,18 @@ fn end(
                 std::process::exit(64);
             };
 
-            // Clamped up to the start, so a heartbeat behind the mark (a clock
-            // stepping back) reads as a zero-length phase and not a negative one.
+            // Clamped, so a heartbeat behind the mark is a zero-length phase.
             let ended = marked
                 .ended
                 .unwrap_or_else(|| Local::now().timestamp())
                 .max(marked.started);
             let measured = (ended - marked.started) / 60;
-            // Every mark-derived close is anchored here, `--full` and `--trim`
-            // alike: the gaps below are epochs on this timeline, so the entry has
-            // to end where the timeline does.
+            // The gaps below are epochs on this timeline, so the entry has to
+            // end where the timeline does.
             anchor = Some(instant(ended)?);
 
-            // Computed for every mark-derived close, `--full` included: the
-            // intervals go on the entry even when the full span is logged.
-            //
-            // Which threshold applies is the *evidence* question: silence between
-            // heartbeats is a walk-away, but a mark with no heartbeats at all is a
-            // phase that was never instrumented, which is a different claim and
-            // gets the longer allowance.
+            // A mark with heartbeats is judged against the interior-silence
+            // threshold, a mark with none against the longer unvouched one.
             let threshold = if marked.beats.is_empty() {
                 max_unvouched_minutes()
             } else {
@@ -341,29 +275,22 @@ fn end(
             if gaps.is_empty() {
                 measured
             } else {
-                // One interval per flagged gap, in the chronological order
-                // `gaps_over` emits them — recorded whether or not the caller
-                // trimmed, because recording the silence is what lets the TUI
-                // show it and trim it later. `--full` keeps the evidence.
+                // One interval per flagged gap, recorded whether or not the
+                // caller trimmed, so the TUI can still trim it later.
                 idle = gaps
                     .iter()
                     .map(|&(from, to)| Ok(IdleInterval::new(instant(from)?, instant(to)?)))
                     .collect::<Result<Vec<_>>>()?;
-                // What `--trim` ends up storing: the span minus *every*
-                // over-threshold gap, not just the worst one the refusal names.
-                // Reported, never logged — the subtraction is `split_at_idle`'s.
+                // Every over-threshold gap, not just the worst one the refusal
+                // names. Reported, never logged: `split_at_idle` subtracts.
                 let silent: i64 = gaps.iter().map(|(from, to)| (to - from) / 60).sum();
                 let trimmed = (measured - silent).max(0);
 
                 if full {
                     measured
                 } else if trim {
-                    // The **measured** span, not `trimmed`: `split_at_idle` cuts
-                    // the same gaps out of the entry, and handing it a span that
-                    // already had them removed subtracted them twice — the entry
-                    // collapsed to a fragment while stdout claimed the trimmed
-                    // figure. One subtraction, done on absolute times inside the
-                    // entry the anchor put them in.
+                    // The measured span, not `trimmed`: `split_at_idle` cuts the
+                    // same gaps, and a pre-trimmed span subtracts them twice.
                     split_at_idle = true;
                     measured
                 } else {
@@ -383,25 +310,14 @@ fn end(
         split_at_idle,
         anchor,
     )?;
-    // Cleared only once the entry has actually been recorded — and on *every*
-    // successful close, the explicit-minutes path included. A refusal returns
-    // above, leaving the mark and its beats in place so the phase can still be
-    // closed once the human call is made.
+    // Cleared only once the entry is recorded, on every successful close; a
+    // refusal returned above with the mark and its beats left in place.
     marks::cancel_in(&dir, project, issue, phase)?;
     Ok(())
 }
 
-/// Refuse the close, naming the worst hole, and exit 65.
-///
-/// A total says "this looks odd"; an interval says which stretch to check, which
-/// is the only actionable form. Both figures go on one line so neither answer is
-/// privileged — the caller decides which is true, and a long genuinely-active
-/// session wants `--full`.
-///
-/// The figures are **unrounded**, as the wrapper's are: rounding happens later,
-/// on the way to `cli::log`. The article is picked per figure by [`article`] — the
-/// wrapper said `has an <n>m gap` for every `n` — but the line's *shape* is left
-/// exactly as it was, because these messages are the contract an agent reads.
+/// Refuse the close, naming the worst hole, and exit 65. Both the silent total
+/// and the interval go on one line, **unrounded**.
 fn refuse(
     project: &str,
     issue: &str,
@@ -432,13 +348,8 @@ fn refuse(
     std::process::exit(65);
 }
 
-/// `"a"` or `"an"` for a minute count, read the way it is spoken.
-///
-/// Only the leading digit decides, because that is the word the article attaches
-/// to: `8` is the one digit that opens with a vowel sound, so `8`, `80` and `800`
-/// all take `an`. The two exceptions are the teens that are read as one word —
-/// `11` ("an eleven") and `18` ("an eighteen") — and only those two exactly:
-/// `110` is "a hundred and ten" and `180` is "a hundred and eighty".
+/// `"a"` or `"an"` for a minute count, read the way it is spoken: `an` for any
+/// number opening on `8`, and for `11` and `18` exactly.
 fn article(minutes: i64) -> &'static str {
     if minutes == 11 || minutes == 18 || minutes.abs().to_string().starts_with('8') {
         "an"
@@ -448,33 +359,20 @@ fn article(minutes: i64) -> &'static str {
 }
 
 /// How long a silence *between heartbeats* has to be to count, in minutes.
-///
-/// `TT_MAX_GAP_MINUTES` with a documented default of 45, matching
-/// `bin/tt-safe:51`. The wrapper's `TODO` about moving this into a settings file is
-/// noted and not acted on — an env var plus a documented default is parity.
+/// `TT_MAX_GAP_MINUTES`, default 45.
 fn max_gap_minutes() -> i64 {
     env_minutes("TT_MAX_GAP_MINUTES", 45)
 }
 
-/// How long an **unvouched** phase — a mark that produced no heartbeat at all —
-/// may run before the close is refused.
-///
-/// `TT_MAX_UNVOUCHED_MINUTES`, default 120. Longer than the interior-silence
-/// threshold on purpose, because the two are different claims: a hole between
-/// beats is positive evidence that work stopped, while no beats at all is the
-/// absence of instrumentation — a session that compacted, or an operator who uses
-/// `begin`/`end` without `touch`. Judging both at 45 made the ordinary short
-/// unmeasured phase ask a question it had no information to answer. 120 is also the
-/// wrapper's original number, adopted for the reason above rather than restored by
-/// reflex: it still forces a human call on a long unmeasured span.
+/// How long an **unvouched** phase — a mark with no heartbeat at all — may run
+/// before the close is refused. `TT_MAX_UNVOUCHED_MINUTES`, default 120, longer
+/// than the interior-silence threshold.
 fn max_unvouched_minutes() -> i64 {
     env_minutes("TT_MAX_UNVOUCHED_MINUTES", 120)
 }
 
-/// One minutes-valued environment override, or its default.
-///
-/// Set-but-empty means unset, and so does an unparseable value — the wrapper's
-/// reading, and the forgiving one: a threshold is not worth refusing to run over.
+/// One minutes-valued environment override, or its default. Set-but-empty and
+/// unparseable both mean unset.
 fn env_minutes(name: &str, default: i64) -> i64 {
     std::env::var(name)
         .ok()
@@ -482,14 +380,13 @@ fn env_minutes(name: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
-/// One epoch as an instant, or a real error naming it.
 fn instant(epoch: i64) -> Result<DateTime<Local>> {
     DateTime::from_timestamp(epoch, 0)
         .map(|instant| instant.with_timezone(&Local))
         .with_context(|| format!("{epoch} is not a valid timestamp"))
 }
 
-/// One epoch as `HH:MM`, or `??:??` — the wrapper's `fmt_time` fallback.
+/// One epoch as `HH:MM`, or `??:??` when it is not a valid instant.
 fn clock(epoch: i64) -> String {
     instant(epoch).map_or_else(
         |_| "??:??".to_string(),
@@ -499,33 +396,16 @@ fn clock(epoch: i64) -> String {
 
 // --- the shared convention -------------------------------------------------
 //
-// `item` and `end` both log an entry, and they must log it the same way: the same
-// rounding, the same stray-`#` stripping and the same three tags. The convention
-// therefore lives here once, in the module that owns the agent layer's
-// presentation, rather than being spelled out in each handler.
+// `item` and `end` must log an entry the same way, so the rounding, the stray-`#`
+// stripping and the three tags live here once.
 
-/// Round minutes up to the nearest quarter hour, never below 15.
-///
-/// `((m + 7) / 15) * 15` on integers, `bin/tt-safe:110`'s `round_quarter`
-/// verbatim: the `+ 7` makes it round to the *nearest* quarter with the halfway
-/// point going up, and the floor makes a two-minute errand cost a quarter of an
-/// hour, because a quarter hour is the smallest unit anybody bills.
+/// Round minutes to the nearest quarter hour, halfway up, never below 15.
 fn round_quarter(minutes: i64) -> i64 {
     (((minutes + 7) / 15) * 15).max(15)
 }
 
-/// Strip a `#` run that begins a word, keeping the word and the whitespace it
-/// followed.
-///
-/// `bin/tt-safe:123`'s `sed -E 's/(^|[[:space:]])#+/\1/g'`. [`parse_tags`]
-/// harvests every whitespace-delimited word starting with `#`, so a summary that
-/// merely mentions "#12" would silently become a tag — and since the store
-/// migration infers a project from the tags, a stray numeric one can even be
-/// picked as the project (#11). A **mid-word** `#` is deliberately left alone,
-/// because `parse_tags` ignores it and `C#`/`F#` are real words.
-///
-/// The double space this can leave behind is invisible in the stored description:
-/// `parse_tags` splits on whitespace and re-joins on single spaces.
+/// Strip a `#` run that begins a word, so a summary mentioning "#12" does not
+/// become a tag. A **mid-word** `#` is left alone: `C#` and `F#` are real words.
 ///
 /// [`parse_tags`]: crate::tracker::parse_tags
 fn strip_stray_tags(summary: &str) -> String {
@@ -533,8 +413,7 @@ fn strip_stray_tags(summary: &str) -> String {
     let mut at_word_start = true;
     for c in summary.chars() {
         if c == '#' && at_word_start {
-            // The whole run goes, and the position stays a word start so the
-            // rest of it goes too — `#+` in the sed is greedy for that reason.
+            // The whole run goes, and the position stays a word start.
             continue;
         }
         at_word_start = c.is_ascii_whitespace();
@@ -543,32 +422,15 @@ fn strip_stray_tags(summary: &str) -> String {
     stripped
 }
 
-/// The phase vocabulary, in the order the docs list it.
-///
-/// The convention's third axis: `plan` for planning, `impl` for the code, then
-/// `qa`, `review`, `docs`, `spike` and `ops`. It lives here beside
-/// [`description`] because that is what writes the phase into a tag, and a
-/// vocabulary with two homes drifts — `src/report.rs` reads it back off the
-/// stored tags to build its phase breakdown.
-///
-/// Deliberately **not** used to validate the `phase` argument: `bin/tt-safe`
-/// accepts any word, and tightening that is a behaviour change nobody has asked
-/// for — ruled out of scope on #58 — not part of giving the list one home.
+/// The phase vocabulary, in the order the docs list it. `src/report.rs` reads it
+/// back off the stored tags, so it must stay the one list. Not used to validate
+/// the `phase` argument: any word is accepted.
 pub const PHASES: [&str; 7] = ["plan", "impl", "qa", "review", "docs", "spike", "ops"];
 
-/// The description `cli::log` is given: the summary plus the convention's tags.
-///
-/// One string rather than a `Vec` of `extra_tags` because `cli::log` runs
-/// `parse_tags` on its `description` (`src/cli.rs:237`), so this reproduces the
-/// wrapper's `--description=` argv exactly — same tags, same order, same stored
-/// prose.
-///
-/// Three tags, deliberately sparse, one per axis the `project` field cannot
-/// express: the item (`<project>/<issue>`, omitted entirely for the `-`
-/// sentinel), the phase, and `#agent` marking the entry as written by an agent
-/// rather than by hand. There is **no bare `#<project>` tag**: the project is a
-/// real field with its own axis, and duplicating it only made the tag list name
-/// every project twice (`bin/tt-safe:150-154`).
+/// The description `cli::log` is given: the summary, then one tag per axis the
+/// `project` field cannot express — the item (omitted for the `-` sentinel), the
+/// phase, and `#agent`. There is **no bare `#<project>` tag**; `cli::log` runs
+/// `parse_tags` over this string to build the entry's tags.
 fn description(project: &str, issue: &str, phase: &str, summary: &str) -> String {
     let mut description = strip_stray_tags(summary);
     if issue != "-" {
@@ -591,8 +453,7 @@ mod tests {
         // The two teens read as one vowel-initial word.
         assert_eq!(article(11), "an");
         assert_eq!(article(18), "an");
-        // And their multiples, which are not: "a hundred and ten", "a hundred and
-        // eighty". This is the case a naive `starts_with("1")`-style rule breaks.
+        // And their multiples, which are not: "a hundred and ten".
         for minutes in [7, 45, 70, 110, 118, 180, 1, 0] {
             assert_eq!(article(minutes), "a", "{minutes}");
         }
@@ -600,7 +461,6 @@ mod tests {
 
     #[test]
     fn rounding_goes_up_to_the_nearest_quarter() {
-        // The halfway point rounds up, and each side of it lands where it should.
         assert_eq!(round_quarter(37), 30);
         assert_eq!(round_quarter(38), 45);
         assert_eq!(round_quarter(43), 45);
@@ -609,8 +469,7 @@ mod tests {
 
     #[test]
     fn rounding_never_goes_below_a_quarter_hour() {
-        // A quarter hour is the smallest unit anybody bills, so a two-minute
-        // errand costs one — and zero minutes is still a quarter, not nothing.
+        // A two-minute errand costs a quarter, and so does zero.
         assert_eq!(round_quarter(0), 15);
         assert_eq!(round_quarter(2), 15);
         assert_eq!(round_quarter(7), 15);
@@ -619,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_word_starting_with_a_hash_keeps_the_word_and_loses_the_hash() {
-        // What #11 was about: `parse_tags` would harvest `#12` as a tag.
+        // Without the strip, `parse_tags` would harvest `#12` as a tag.
         assert_eq!(strip_stray_tags("closed #12 at last"), "closed 12 at last");
         assert_eq!(strip_stray_tags("#12 closed"), "12 closed");
         // A run goes whole, and the whitespace it followed survives.
