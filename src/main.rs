@@ -28,8 +28,8 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Start { description, project } => cli::start(description, project),
         Commands::Stop => cli::stop(),
-        Commands::Log { description, time, tags, project, idle } => {
-            cli::log(description, time, tags, project, idle)
+        Commands::Log { description, time, tags, project, idle, trim } => {
+            cli::log(description, time, tags, project, idle, trim)
         }
         Commands::Today => cli::today(),
         Commands::List => cli::list(),

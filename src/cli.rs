@@ -46,6 +46,12 @@ pub enum Commands {
         /// logged duration.
         #[arg(long, value_parser = parse_idle)]
         idle: Vec<IdleInterval>,
+        /// Trim the recorded idle stretches out of the entry, splitting it into the
+        /// pieces between them. Destructive and unconfirmed; requires `--idle`, so
+        /// asking for a trim with nothing to trim is a usage error rather than a
+        /// silent no-op.
+        #[arg(long, requires = "idle")]
+        trim: bool,
     },
     /// Show all entries for today
     Today,
@@ -180,6 +186,7 @@ pub fn log(
     extra_tags: Vec<String>,
     project: Option<String>,
     idle: Vec<IdleInterval>,
+    trim: bool,
 ) -> Result<()> {
     let dur = duration::parse(&time_str);
     let end_time = Local::now();
@@ -206,6 +213,15 @@ pub fn log(
             .id;
         if let Some(entry) = data.entries.iter_mut().find(|e| e.id == entry_id) {
             entry.idle = idle;
+        }
+        // Deliberately inside the same closure as the insert: `with_data` is one
+        // lock, one load, one save, so creating the entry and splitting it are a
+        // single atomic store write and the id never leaves the process. Do not
+        // lift this into a second store call or a second command — see #35's
+        // rejected alternatives (no id-printing output for a wrapper to parse, no
+        // `--last`-style target).
+        if trim {
+            data.split_at_idle(entry_id);
         }
         Ok(())
     })?;
@@ -358,7 +374,8 @@ mod tests {
                 tags,
                 project,
                 idle,
-            } => log(description, time, tags, project, idle).unwrap(),
+                trim,
+            } => log(description, time, tags, project, idle, trim).unwrap(),
             _ => panic!("parse_log produced something other than a Log command"),
         }
     }
@@ -436,6 +453,96 @@ mod tests {
             ]);
             assert!(parsed.is_err(), "`{bad}` parsed instead of failing");
         }
+    }
+
+    #[test]
+    fn trim_splits_the_logged_entry_in_the_same_command() {
+        let _guard = env_guard();
+        let dir = sandbox("log-trim");
+        // Two holes inside a two-hour span, so a correct trim leaves three pieces.
+        let end = Local::now().timestamp();
+        let start = end - 7200;
+        let gaps = [(start + 600, start + 1500), (start + 4000, start + 5800)];
+
+        run_log(parse_log(&[
+            "-d",
+            "long session",
+            "-t",
+            "2h",
+            &format!("--idle={}-{}", gaps[0].0, gaps[0].1),
+            &format!("--idle={}-{}", gaps[1].0, gaps[1].1),
+            "--trim",
+        ]));
+
+        let data = storage::load_data().unwrap();
+        assert_eq!(
+            data.entries.len(),
+            gaps.len() + 1,
+            "one piece per span left"
+        );
+        let idle_total: i64 = gaps.iter().map(|(from, to)| to - from).sum();
+        // Summed as durations, not as truncated seconds: the span's endpoints carry
+        // sub-second parts that per-piece truncation would lose.
+        let logged = data
+            .entries
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, e| acc + e.duration());
+        assert_eq!(
+            logged,
+            duration::parse("2h") - chrono::Duration::seconds(idle_total),
+            "the pieces do not sum to the span minus the idle stretches"
+        );
+        // The earliest piece kept the original id and the later ones took fresh
+        // ones in sequence, which is what an insert and a split sharing one load
+        // produce — the split never re-read the store.
+        let ids: Vec<u64> = data.entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(data.next_id, 3, "no id was spent twice");
+        assert!(
+            data.entries.iter().all(|e| e.idle.is_empty()),
+            "a piece kept an interval it excludes"
+        );
+        // One `with_data`, so one temp-file write and rename: nothing half-written
+        // is left beside the store.
+        let store = storage::get_data_path().unwrap();
+        assert!(
+            store.starts_with(&dir) && store.exists(),
+            "the sandbox store"
+        );
+        assert!(
+            !store.with_extension("json.tmp").exists(),
+            "a temp store file survived the command"
+        );
+    }
+
+    #[test]
+    fn idle_without_trim_leaves_a_single_entry() {
+        let _guard = env_guard();
+        sandbox("log-no-trim");
+        let end = Local::now().timestamp();
+        let start = end - 3600;
+
+        run_log(parse_log(&[
+            "-d",
+            "left alone",
+            "-t",
+            "60m",
+            &format!("--idle={}-{}", start + 600, start + 1200),
+        ]));
+
+        let data = storage::load_data().unwrap();
+        assert_eq!(data.entries.len(), 1, "recording is not trimming");
+        assert_eq!(data.entries[0].duration(), duration::parse("60m"));
+        assert_eq!(data.entries[0].idle.len(), 1, "the interval is still there");
+    }
+
+    #[test]
+    fn trim_without_idle_is_a_usage_error() {
+        let parsed = Cli::try_parse_from(["tt", "log", "-d", "x", "-t", "5m", "--trim"]);
+        assert!(
+            parsed.is_err(),
+            "--trim alone parsed, so it would be a silent no-op"
+        );
     }
 
     #[test]
