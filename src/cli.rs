@@ -39,7 +39,11 @@ pub enum Commands {
     /// Show all entries for today
     Today,
     /// Show all entries
-    List,
+    List {
+        /// Maximum number of entries to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Open interactive TUI
     Tui,
     /// Show current status
@@ -163,7 +167,7 @@ pub fn today() -> Result<()> {
     Ok(())
 }
 
-pub fn list() -> Result<()> {
+pub fn list(limit: usize) -> Result<()> {
     let data = load_data()?;
 
     if data.entries.is_empty() {
@@ -172,7 +176,7 @@ pub fn list() -> Result<()> {
     }
 
     println!("{} All entries:\n", icons::LIST);
-    for entry in data.entries.iter().rev().take(20) {
+    for entry in data.entries.iter().rev().take(limit) {
         let status = if entry.is_active() { entry.status_icon() } else { "  " };
         let tags_display = if entry.tags.is_empty() {
             String::new()

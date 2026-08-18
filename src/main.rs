@@ -18,7 +18,7 @@ fn main() -> Result<()> {
         Commands::Stop => cli::stop(),
         Commands::Log { description, time, tags } => cli::log(description, time, tags),
         Commands::Today => cli::today(),
-        Commands::List => cli::list(),
+        Commands::List { limit } => cli::list(limit),
         Commands::Tui => tui::run_tui(),
         Commands::Status => cli::status(),
         Commands::Active => cli::active(),
