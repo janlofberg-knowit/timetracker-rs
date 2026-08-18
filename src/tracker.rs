@@ -15,6 +15,30 @@ pub struct TimeEntry {
     pub tags: Vec<String>,
     pub start_time: DateTime<Local>,
     pub end_time: Option<DateTime<Local>>,
+    /// Silent stretches inside this entry's span, as `tt log --idle` recorded them.
+    ///
+    /// `#[serde(default)]` and no schema bump: absent means empty means the
+    /// duration is unchanged, so there is nothing to backfill.
+    #[serde(default)]
+    pub idle: Vec<IdleInterval>,
+}
+
+/// One silent stretch inside an entry — a heartbeat gap `tt-safe` already judged
+/// too long (#12), recorded so it can be shown and trimmed away later.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub struct IdleInterval {
+    pub start: DateTime<Local>,
+    pub end: DateTime<Local>,
+}
+
+impl IdleInterval {
+    pub fn new(start: DateTime<Local>, end: DateTime<Local>) -> Self {
+        Self { start, end }
+    }
+
+    pub fn duration(&self) -> Duration {
+        self.end.signed_duration_since(self.start)
+    }
 }
 
 /// Parse tags (words starting with #) from text and return (clean_text, tags)
@@ -224,6 +248,7 @@ impl TimeData {
             tags,
             start_time,
             end_time,
+            idle: Vec::new(),
         };
         self.next_id += 1;
         self.entries.push(entry);
@@ -306,6 +331,123 @@ impl TimeData {
     pub fn get_entry(&self, id: u64) -> Option<&TimeEntry> {
         self.entries.iter().find(|e| e.id == id)
     }
+
+    /// Split the entry with `id` on **every** idle interval it carries, so the
+    /// silent stretches drop out of the timeline.
+    ///
+    /// Takes no intervals — it reads the entry's stored `idle`, which is the reason
+    /// that field exists. It splits on all of them because threshold policy lives
+    /// entirely in `tt-safe`, which only ever records gaps it has already judged too
+    /// long (#12); `tt` holds no opinion about what counts as a gap.
+    ///
+    /// The store mechanic is a **split** while the user-facing verb is **trim**
+    /// (`tt log --trim`, the popover's `[t]`). That is a deliberate distinction, not
+    /// an inconsistency: one entry becomes two or more and every endpoint stays
+    /// true, which "trim" would misdescribe.
+    ///
+    /// The first (earliest) piece keeps the original id via an in-place update and
+    /// later pieces take fresh ids from `next_id`, so a caller holding the id still
+    /// has something to point at afterwards. Pieces inherit description, project and
+    /// tags, and keep only the idle intervals falling inside them — after a split on
+    /// every interval, none. Zero-length pieces (a gap touching an endpoint) are
+    /// dropped, and if that would leave no pieces at all the entry is left untouched
+    /// rather than deleted.
+    ///
+    /// Pure over `&mut self` with no I/O: the caller owns the store transaction.
+    /// Returns the resulting pieces' ids, earliest first, or an empty vec when
+    /// nothing changed.
+    pub fn split_at_idle(&mut self, id: u64) -> Vec<u64> {
+        let Some(entry) = self.get_entry(id) else {
+            return Vec::new();
+        };
+        // A running entry has no end to split against, and only `tt log` records
+        // idle, so this is a guard rather than a case.
+        let Some(span_end) = entry.end_time else {
+            return Vec::new();
+        };
+        let span_start = entry.start_time;
+        let template = entry.clone();
+
+        // Clamp to the span and merge, so an interval reaching past an endpoint or
+        // overlapping its neighbour cuts one hole instead of leaving a zero-length
+        // piece wedged between two of them.
+        let mut gaps: Vec<IdleInterval> = template
+            .idle
+            .iter()
+            .map(|gap| IdleInterval {
+                start: gap.start.clamp(span_start, span_end),
+                end: gap.end.clamp(span_start, span_end),
+            })
+            .filter(|gap| gap.end > gap.start)
+            .collect();
+        gaps.sort_by_key(|gap| gap.start);
+        let mut holes: Vec<IdleInterval> = Vec::new();
+        for gap in gaps {
+            match holes.last_mut() {
+                Some(last) if gap.start <= last.end => last.end = last.end.max(gap.end),
+                _ => holes.push(gap),
+            }
+        }
+        if holes.is_empty() {
+            return Vec::new();
+        }
+
+        // The pieces are the complement of the holes within the span. A hole
+        // touching an endpoint contributes nothing, which is how zero-length pieces
+        // are dropped rather than special-cased.
+        let mut pieces: Vec<(DateTime<Local>, DateTime<Local>)> = Vec::new();
+        let mut cursor = span_start;
+        for hole in &holes {
+            if hole.start > cursor {
+                pieces.push((cursor, hole.start));
+            }
+            cursor = hole.end;
+        }
+        if span_end > cursor {
+            pieces.push((cursor, span_end));
+        }
+        // Idle covering the whole span would leave nothing: keep the entry as it is,
+        // since deleting what the owner logged is not a trim.
+        if pieces.is_empty() {
+            return Vec::new();
+        }
+
+        let mut ids = Vec::with_capacity(pieces.len());
+        for (i, (piece_start, piece_end)) in pieces.into_iter().enumerate() {
+            let inside: Vec<IdleInterval> = template
+                .idle
+                .iter()
+                .copied()
+                .filter(|gap| gap.start >= piece_start && gap.end <= piece_end)
+                .collect();
+            if i == 0 {
+                // In place, so the earliest piece keeps the original id.
+                let first = self
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.id == id)
+                    .expect("the entry resolved above");
+                first.start_time = piece_start;
+                first.end_time = Some(piece_end);
+                first.idle = inside;
+                ids.push(id);
+            } else {
+                let new_id = self.next_id;
+                self.next_id += 1;
+                self.entries.push(TimeEntry {
+                    id: new_id,
+                    description: template.description.clone(),
+                    project: template.project.clone(),
+                    tags: template.tags.clone(),
+                    start_time: piece_start,
+                    end_time: Some(piece_end),
+                    idle: inside,
+                });
+                ids.push(new_id);
+            }
+        }
+        ids
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +466,7 @@ mod tests {
             tags: tags(entry_tags),
             start_time: Local::now(),
             end_time: None,
+            idle: Vec::new(),
         }
     }
 
@@ -383,6 +526,179 @@ mod tests {
         assert_eq!(data.entries[1].project.as_deref(), Some("loremind"));
         assert_eq!(data.entries[2].project.as_deref(), Some("explicit"));
         assert_eq!(data.entries[3].project, None);
+    }
+
+    /// A fixed wall clock, so every assertion below can be derived from the
+    /// fixture's own offsets rather than from a literal.
+    fn base() -> DateTime<Local> {
+        NaiveDate::from_ymd_opt(2026, 8, 18)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+    }
+
+    /// One logged entry of `span_minutes`, carrying idle intervals given as
+    /// minute offsets from its start.
+    fn logged_with_idle(span_minutes: i64, gaps: &[(i64, i64)]) -> TimeData {
+        let start = base();
+        TimeData {
+            entries: vec![TimeEntry {
+                id: 7,
+                description: "logged span".to_string(),
+                project: Some("tt".to_string()),
+                tags: tags(&["tt", "tt/36"]),
+                start_time: start,
+                end_time: Some(start + Duration::minutes(span_minutes)),
+                idle: gaps
+                    .iter()
+                    .map(|(from, to)| {
+                        IdleInterval::new(
+                            start + Duration::minutes(*from),
+                            start + Duration::minutes(*to),
+                        )
+                    })
+                    .collect(),
+            }],
+            next_id: 8,
+            schema_version: 1,
+        }
+    }
+
+    /// The entry spans, as (minutes from `base`, minutes from `base`) pairs.
+    fn spans(data: &TimeData) -> Vec<(i64, i64)> {
+        data.entries
+            .iter()
+            .map(|e| {
+                (
+                    e.start_time.signed_duration_since(base()).num_minutes(),
+                    e.end_time
+                        .unwrap()
+                        .signed_duration_since(base())
+                        .num_minutes(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn splitting_on_one_idle_interval_gives_two_pieces_excluding_it() {
+        let mut data = logged_with_idle(120, &[(50, 80)]);
+
+        let ids = data.split_at_idle(7);
+
+        assert_eq!(ids.len(), 2, "one hole in the middle cuts the span in two");
+        assert_eq!(ids[0], 7, "the earliest piece keeps the original id");
+        assert_eq!(ids[1], 8, "the later piece takes the next id");
+        assert_eq!(data.next_id, 9);
+        assert_eq!(spans(&data), vec![(0, 50), (50 + 30, 120)]);
+        // Every piece inherits the entry's identity and carries no idle of its own.
+        for entry in &data.entries {
+            assert_eq!(entry.description, "logged span");
+            assert_eq!(entry.project.as_deref(), Some("tt"));
+            assert_eq!(entry.tags, tags(&["tt", "tt/36"]));
+            assert!(entry.idle.is_empty(), "a piece kept a hole it excludes");
+        }
+    }
+
+    #[test]
+    fn splitting_on_two_idle_intervals_gives_three_pieces() {
+        let mut data = logged_with_idle(180, &[(30, 45), (100, 130)]);
+
+        let ids = data.split_at_idle(7);
+
+        assert_eq!(ids, vec![7, 8, 9]);
+        assert_eq!(spans(&data), vec![(0, 30), (45, 100), (130, 180)]);
+    }
+
+    #[test]
+    fn an_idle_interval_touching_an_endpoint_gives_one_piece_not_an_empty_one() {
+        let mut leading = logged_with_idle(90, &[(0, 20)]);
+        assert_eq!(leading.split_at_idle(7), vec![7]);
+        assert_eq!(spans(&leading), vec![(20, 90)]);
+        assert_eq!(
+            leading.next_id, 8,
+            "no fresh id was spent on an empty piece"
+        );
+
+        let mut trailing = logged_with_idle(90, &[(70, 90)]);
+        assert_eq!(trailing.split_at_idle(7), vec![7]);
+        assert_eq!(spans(&trailing), vec![(0, 70)]);
+        assert_eq!(trailing.next_id, 8);
+    }
+
+    #[test]
+    fn idle_covering_the_whole_span_leaves_the_entry_untouched() {
+        let mut data = logged_with_idle(90, &[(0, 90)]);
+        let before = serde_json::to_string(&data).unwrap();
+
+        assert!(data.split_at_idle(7).is_empty());
+
+        assert_eq!(serde_json::to_string(&data).unwrap(), before);
+        assert_eq!(spans(&data), vec![(0, 90)], "the logged entry survived");
+    }
+
+    #[test]
+    fn an_entry_with_no_idle_is_not_split() {
+        let mut data = logged_with_idle(90, &[]);
+        let before = serde_json::to_string(&data).unwrap();
+
+        assert!(data.split_at_idle(7).is_empty());
+        assert!(data.split_at_idle(999).is_empty(), "an unknown id");
+
+        assert_eq!(serde_json::to_string(&data).unwrap(), before);
+    }
+
+    #[test]
+    fn the_pieces_sum_to_the_span_minus_the_idle_intervals() {
+        let gaps = [(20, 35), (60, 61), (100, 140)];
+        let mut data = logged_with_idle(180, &gaps);
+        let original = data.entries[0].duration();
+        let idle_total = data.entries[0]
+            .idle
+            .iter()
+            .fold(Duration::zero(), |acc, gap| acc + gap.duration());
+
+        data.split_at_idle(7);
+
+        let after = data
+            .entries
+            .iter()
+            .fold(Duration::zero(), |acc, e| acc + e.duration());
+        assert_eq!(after, original - idle_total);
+    }
+
+    #[test]
+    fn a_store_written_before_idle_existed_loads_and_stays_at_schema_version_1() {
+        let json = r#"{
+            "entries": [
+                {
+                    "id": 1,
+                    "description": "legacy entry",
+                    "project": "tt",
+                    "tags": ["tt", "impl"],
+                    "start_time": "2026-08-18T09:00:00+02:00",
+                    "end_time": "2026-08-18T10:00:00+02:00"
+                }
+            ],
+            "next_id": 2,
+            "schema_version": 1
+        }"#;
+
+        let mut data: TimeData = serde_json::from_str(json).unwrap();
+
+        assert!(data.entries[0].idle.is_empty(), "absent means empty");
+        assert_eq!(data.entries[0].duration(), Duration::hours(1));
+        migrate(&mut data);
+        assert_eq!(data.schema_version, 1, "no version bump, no migration");
+
+        // …and round-trips: the new field is written, and reading it back changes
+        // nothing about the entry.
+        let round_tripped: TimeData =
+            serde_json::from_str(&serde_json::to_string(&data).unwrap()).unwrap();
+        assert!(round_tripped.entries[0].idle.is_empty());
+        assert_eq!(round_tripped.schema_version, 1);
     }
 
     #[test]

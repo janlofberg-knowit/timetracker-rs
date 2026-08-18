@@ -422,6 +422,7 @@ mod tests {
             tags: Vec::new(),
             start_time: Local::now(),
             end_time: None,
+            idle: Vec::new(),
         }
     }
 
@@ -823,6 +824,7 @@ mod tests {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             start_time: start,
             end_time: Some(start + chrono::Duration::minutes(minutes)),
+            idle: Vec::new(),
         }
     }
 
@@ -1894,6 +1896,7 @@ mod tests {
                     tags: vec!["impl".to_string()],
                     start_time: start,
                     end_time: Some(start + chrono::Duration::hours(2)),
+                    idle: Vec::new(),
                 },
                 dated(7, "unrelated", "vinge", &["ops"], today),
             ],
