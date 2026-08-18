@@ -327,7 +327,17 @@ fn end(
 
             // Computed for every mark-derived close, `--full` included: the
             // intervals go on the entry even when the full span is logged.
-            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, max_gap_minutes());
+            //
+            // Which threshold applies is the *evidence* question: silence between
+            // heartbeats is a walk-away, but a mark with no heartbeats at all is a
+            // phase that was never instrumented, which is a different claim and
+            // gets the longer allowance.
+            let threshold = if marked.beats.is_empty() {
+                max_unvouched_minutes()
+            } else {
+                max_gap_minutes()
+            };
+            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, threshold);
             if gaps.is_empty() {
                 measured
             } else {
@@ -437,17 +447,39 @@ fn article(minutes: i64) -> &'static str {
     }
 }
 
-/// How long a silence has to be to count, in minutes.
+/// How long a silence *between heartbeats* has to be to count, in minutes.
 ///
 /// `TT_MAX_GAP_MINUTES` with a documented default of 45, matching
-/// `bin/tt-safe:51`: set-but-empty means unset, and so does an unparseable value.
-/// The wrapper's `TODO` about moving this into a settings file is noted and not
-/// acted on — an env var plus a documented default is parity.
+/// `bin/tt-safe:51`. The wrapper's `TODO` about moving this into a settings file is
+/// noted and not acted on — an env var plus a documented default is parity.
 fn max_gap_minutes() -> i64 {
-    std::env::var("TT_MAX_GAP_MINUTES")
+    env_minutes("TT_MAX_GAP_MINUTES", 45)
+}
+
+/// How long an **unvouched** phase — a mark that produced no heartbeat at all —
+/// may run before the close is refused.
+///
+/// `TT_MAX_UNVOUCHED_MINUTES`, default 120. Longer than the interior-silence
+/// threshold on purpose, because the two are different claims: a hole between
+/// beats is positive evidence that work stopped, while no beats at all is the
+/// absence of instrumentation — a session that compacted, or an operator who uses
+/// `begin`/`end` without `touch`. Judging both at 45 made the ordinary short
+/// unmeasured phase ask a question it had no information to answer. 120 is also the
+/// wrapper's original number, adopted for the reason above rather than restored by
+/// reflex: it still forces a human call on a long unmeasured span.
+fn max_unvouched_minutes() -> i64 {
+    env_minutes("TT_MAX_UNVOUCHED_MINUTES", 120)
+}
+
+/// One minutes-valued environment override, or its default.
+///
+/// Set-but-empty means unset, and so does an unparseable value — the wrapper's
+/// reading, and the forgiving one: a threshold is not worth refusing to run over.
+fn env_minutes(name: &str, default: i64) -> i64 {
+    std::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(45)
+        .unwrap_or(default)
 }
 
 /// One epoch as an instant, or a real error naming it.

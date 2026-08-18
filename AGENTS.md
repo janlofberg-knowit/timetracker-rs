@@ -89,8 +89,15 @@ in the application's own cache directory; `TT_MARK_DIR` overrides it.
 `touch` matters twice over: `end` measures start → last touch, not start → now, so
 idle time after the work finished is not counted — and the heartbeats it appends are
 what let a long phase log without a question. `end` refuses on a *silent gap*, never
-on length, so an unbeaten stretch over `TT_MAX_GAP_MINUTES` (default 45) is what gets
-flagged.
+on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES` (default 45) is
+what gets flagged.
+
+A phase that produced **no heartbeat at all** is judged on its own threshold instead,
+`TT_MAX_UNVOUCHED_MINUTES` (default 120). No beats is the absence of instrumentation —
+a session that compacted, or `begin`/`end` without any `touch` — where a hole between
+beats is positive evidence that work stopped, so the unmeasured phase gets the longer
+allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
+a human.
 
 Because phases across repos are timed concurrently, `tt agent list` routinely shows
 marks that belong to *other* sessions. **Only act on marks for the project you are
@@ -104,7 +111,9 @@ The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
 - **exit 65, silent gap over threshold** — the heartbeats show a stretch with no sign
   of work in it, and the message names that stretch's length and clock interval, then
   quotes what `--full` and what `--trim` would log. Length alone is never the
-  complaint: a long session that kept heartbeating logs silently.
+  complaint: a long session that kept heartbeating logs silently. Which threshold
+  applied depends on the evidence — 45 minutes between beats, 120 for a phase that
+  never beat at all.
 
   **Ask the operator about the named gap — never pick between `--full` and `--trim`
   yourself**, and reach for neither by reflex; only the person who was there knows

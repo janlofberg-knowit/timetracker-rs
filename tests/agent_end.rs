@@ -417,20 +417,72 @@ fn a_beats_file_supersedes_a_stale_legacy_last() {
     run.assert_stdout_has(&logged_duration((last - start) / 60));
 }
 
-/// Ported from "an unvouched span over the threshold is flagged".
+/// Ported from "an unvouched span over the threshold is flagged", and rethought
+/// (#89): an unvouched phase gets its own, longer threshold.
 ///
-/// A mark with no heartbeats at all is judged as one silence across its whole
-/// span, which is the honest reading of a phase that produced no evidence.
+/// A mark with no heartbeats at all is still judged as one silence across its whole
+/// span — that part is the honest reading — but no beats is the *absence* of
+/// instrumentation, not evidence that work stopped, so 90 minutes of it now logs
+/// where a 90-minute hole between beats would not.
 #[test]
-fn an_unvouched_span_over_the_threshold_is_flagged() {
-    let case = Case::new("gaps-unvouched");
-    let start = now() - 90 * 60;
+fn an_unvouched_span_under_the_unvouched_threshold_logs() {
+    let case = Case::new("gaps-unvouched-under");
+    let span = 90;
+    case.write_mark("proj.7.impl", now() - span * 60);
+
+    let run = case.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// The other side of the same threshold: long enough with nothing to show for it
+/// and the close is still refused, naming the whole span as the gap.
+#[test]
+fn an_unvouched_span_over_the_unvouched_threshold_is_flagged() {
+    let case = Case::new("gaps-unvouched-over");
+    let start = now() - 150 * 60;
     case.write_mark("proj.7.impl", start);
 
     let run = case.run(&["end", "proj", "7", "impl", "no evidence either way"]);
     run.assert_status(65);
     run.assert_stderr_has(&format!("gap ({}-", clock(start)));
     assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+/// A phase that *did* beat is still judged at the interior-silence threshold, so
+/// the longer allowance cannot be reached by beating once. 46 minutes, one over.
+#[test]
+fn a_beaten_phase_is_still_judged_at_the_interior_threshold() {
+    let case = Case::new("gaps-beaten-boundary");
+    let start = now() - 60 * 60;
+    let beats = [start + 5 * 60, start + 51 * 60, start + 60 * 60];
+    case.write_mark("proj.7.impl", start);
+    case.beats_at("proj.7.impl", &beats);
+
+    let run = case.run(&["end", "proj", "7", "impl", "beat, then went quiet"]);
+    run.assert_status(65);
+    run.assert_stderr_has(&format!(
+        "has a 46m gap ({}-{})",
+        clock(beats[0]),
+        clock(beats[1])
+    ));
+}
+
+/// The unvouched threshold is configurable in its own right, like the other one.
+#[test]
+fn the_unvouched_threshold_is_configurable() {
+    let case = Case::new("gaps-unvouched-threshold");
+    let span = 30;
+    case.write_mark("proj.7.impl", now() - span * 60);
+
+    // Passed explicitly, since the harness clears the environment. Below the 120
+    // default this span would log; at 10 it is refused.
+    let run = case.run_with_env(
+        &["end", "proj", "7", "impl", "half an hour of nothing"],
+        &[("TT_MAX_UNVOUCHED_MINUTES", "10")],
+    );
+    run.assert_status(65);
+    run.assert_stderr_has(&format!("{span}m gap"));
 }
 
 // --- idle and trim (tt-safe-gaps.sh:534-627) -------------------------------
