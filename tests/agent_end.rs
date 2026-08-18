@@ -11,8 +11,8 @@
 //! from the fixture rather than written down.
 //!
 //! Sandboxing is [`common`]'s and is asserted before the binary runs: a throwaway
-//! `HOME` *and* `TT_MARK_DIR`, so the live store, the live lock and the wrapper's
-//! `~/.cache/tt-safe/marks` are never touched.
+//! `HOME` *and* `TT_MARK_DIR`, so the live store, the live lock and the live mark
+//! directory are never touched.
 
 mod common;
 
@@ -384,37 +384,6 @@ fn the_threshold_is_configurable() {
     );
     run.assert_status(65);
     run.assert_stderr_has(&format!("{}m gap", span / 60));
-}
-
-/// Ported from "a legacy .last heartbeat is read as a single beat".
-#[test]
-fn a_legacy_last_heartbeat_is_read_as_a_single_beat() {
-    let case = Case::new("gaps-legacy");
-    let start = now() - 40 * 60;
-    let last = start + 10 * 60;
-    case.write_mark("proj.7.impl", start);
-    case.write_legacy_beat("proj.7.impl", last);
-
-    let run = case.run(&["end", "proj", "7", "impl", "upgraded mid-phase"]);
-    run.assert_status(0);
-    // Measured start → the legacy heartbeat, not start → now.
-    run.assert_stdout_has(&logged_duration((last - start) / 60));
-    assert!(!case.mark_file("proj.7.impl.last").exists());
-}
-
-/// Ported from "a beats file supersedes a stale legacy .last".
-#[test]
-fn a_beats_file_supersedes_a_stale_legacy_last() {
-    let case = Case::new("gaps-beats-win");
-    let start = now() - 40 * 60;
-    case.write_mark("proj.7.impl", start);
-    case.write_legacy_beat("proj.7.impl", start + 5 * 60);
-    let last = start + 35 * 60;
-    case.beats_at("proj.7.impl", &[start + 20 * 60, last]);
-
-    let run = case.run(&["end", "proj", "7", "impl", "beats win"]);
-    run.assert_status(0);
-    run.assert_stdout_has(&logged_duration((last - start) / 60));
 }
 
 /// Ported from "an unvouched span over the threshold is flagged", and rethought

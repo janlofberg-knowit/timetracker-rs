@@ -163,61 +163,17 @@ fn cancel_removes_the_mark_and_leaves_the_others() {
     assert!(case.mark_file("other.9.plan").is_file());
 }
 
-/// Ported from "cancel clears the beats file and any legacy heartbeat".
+/// `cancel` clears the mark and its `beats/` entry together.
 #[test]
-fn cancel_clears_the_beats_file_and_any_legacy_heartbeat() {
+fn cancel_clears_the_mark_and_its_beats_file() {
     let case = Case::new("cancel-clears-beats");
     case.write_mark("proj.7.impl", now());
-    fs::write(case.mark_file("proj.7.impl.last"), format!("{}\n", now())).unwrap();
     case.run(&["touch", "proj", "7", "impl"]).assert_status(0);
     assert!(case.beats_file("proj.7.impl").is_file());
 
     case.run(&["cancel", "proj", "7", "impl"]).assert_status(0);
     assert!(!case.mark_file("proj.7.impl").exists());
-    assert!(!case.mark_file("proj.7.impl.last").exists());
     assert!(!case.beats_file("proj.7.impl").exists());
-}
-
-// --- the one-shot migration, end to end -----------------------------------
-
-/// The wrapper's directory is carried across once, by the real binary, at the
-/// real default location — with `HOME` sandboxed, so the old directory read here
-/// is the sandbox's own and never the live one.
-#[test]
-fn the_wrappers_marks_are_carried_over_once_and_the_old_directory_stays() {
-    let case = Case::new("migration");
-    let old = case.home.join(".cache/tt-safe/marks");
-    fs::create_dir_all(old.join("beats")).unwrap();
-    let start = now() - 15 * 60;
-    fs::write(old.join("proj.7.impl"), format!("{start}\n")).unwrap();
-    fs::write(old.join("beats/proj.7.impl"), format!("{}\n", now())).unwrap();
-
-    let first = case.run_in_cache(&["list"]);
-    first.assert_status(0);
-    first.assert_stderr_has("carried 2 mark files over");
-    // The migrated mark is open, with its original start.
-    first.assert_stdout_has("proj/7 impl");
-    first.assert_stdout_has("(0h 15m)");
-
-    let cache = case.home.join("Library/Caches/com.timetracker.tt");
-    assert!(cache.join(".marks-migrated").is_file(), "the sentinel");
-    // A sibling of the mark directory, so `list` can never read it as a mark.
-    assert!(!cache.join("marks/.marks-migrated").exists());
-    // The old directory is left completely in place.
-    assert!(old.join("proj.7.impl").is_file());
-
-    // Second run: nothing is carried, and a mark cancelled in between is not
-    // resurrected from the wrapper's lingering copy.
-    case.run_in_cache(&["cancel", "proj", "7", "impl"])
-        .assert_status(0);
-    let second = case.run_in_cache(&["list"]);
-    second.assert_status(0);
-    assert!(
-        !second.stderr.contains("carried"),
-        "migration ran twice: {:?}",
-        second.stderr
-    );
-    second.assert_stdout_has("No open marks.");
 }
 
 // --- list (tt-safe-gaps.sh:321-398, `marks`) -------------------------------
@@ -332,7 +288,7 @@ fn list_shows_a_mark_whose_phase_is_literally_last() {
 
     let run = case.run(&["list"]);
     run.assert_status(0);
-    // A name filter would hide this; the reader tests it structurally instead.
+    // A name filter would hide this; the reader has none.
     run.assert_stdout_has("proj last");
 }
 

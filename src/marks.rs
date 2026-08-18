@@ -14,36 +14,18 @@
 //!   contain `.` or `_` and the name is **not** losslessly splittable.
 //! - The content is a single unix-seconds start timestamp.
 //! - Heartbeats live in a `beats/` **subdirectory** of the mark directory, one
-//!   append-only file per mark under the same name — never as a
-//!   `<mark>.<suffix>` sibling. A mark can still have one legacy sibling,
-//!   `<mark>.last`, from before `beats/` existed; nothing writes it any more and
-//!   `cancel` clears it.
+//!   append-only file per mark under the same name.
 //!
 //! Only the start timestamp is read. See [`open_marks_in`] for why the heartbeats
 //! are deliberately left alone.
 
 use chrono::{DateTime, Local, TimeDelta};
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::duration;
-
-/// Suffixes that turn a mark's name into one of its sibling files.
-///
-/// Exactly one: `.last`, the single-value heartbeat `touch` overwrote before
-/// `beats/` existed. It is real — migration carries it, `cancel` clears it and
-/// `end` still reads it as a one-beat sequence — so the reader has to know it is
-/// not a mark.
-///
-/// A `.beats` sibling was listed here in anticipation of the append-only
-/// heartbeat, but that landed as a `beats/` **subdirectory** instead
-/// (see [`beats_path`]), so nothing has ever written the sibling form and nothing
-/// will. It is dropped rather than left as dead weight that implies a file shape
-/// this module does not have.
-const SIBLING_SUFFIXES: [&str; 1] = [".last"];
 
 /// One open phase mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,28 +151,13 @@ pub fn rows_at(marks: &[Mark], now: DateTime<Local>) -> Vec<String> {
 /// The directory the marks live in: `$TT_MARK_DIR` when set, else `marks` inside
 /// this app's own cache directory.
 ///
-/// `tt` writes these files itself now, so they belong under the app's own
-/// directories rather than in the wrapper's `~/.cache/tt-safe/`. `TT_MARK_DIR`
-/// stays as the override — every sandboxed test depends on it, and the wrapper
-/// still honours the same variable — and "set but empty" is no setting at all,
-/// as in the shell.
+/// `TT_MARK_DIR` is the override every sandboxed test depends on, and "set but
+/// empty" is no setting at all.
 ///
 /// `None` only when there is no home directory to resolve at all, which is a
 /// caller's error to report rather than a path to guess at.
 pub fn mark_dir() -> Option<PathBuf> {
-    let dir = resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), cache_dir())?;
-
-    // Carry the wrapper's older directory across, once — but only when the
-    // default location is the one in use. An explicit `TT_MARK_DIR` is a caller
-    // naming a specific directory (a test sandbox, nearly always), and it must
-    // never quietly gain files from a directory it did not name.
-    if let Some(cache) = cache_dir()
-        && dir == cache.join("marks")
-        && let Some(old) = legacy_mark_dir()
-    {
-        migrate_marks_once(&cache, &old, &dir);
-    }
-    Some(dir)
+    resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), cache_dir())
 }
 
 /// This app's cache directory — `$HOME/Library/Caches/com.timetracker.tt` on
@@ -210,99 +177,6 @@ fn resolve_mark_dir(mark_dir: Option<OsString>, cache: Option<PathBuf>) -> Optio
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => Some(cache?.join("marks")),
     }
-}
-
-/// The wrapper's older mark directory, `~/.cache/tt-safe/marks`, kept only as the
-/// source of the one-shot migration below.
-///
-/// The only place that path still appears. `bin/tt-safe` writes it until the agent
-/// instructions are switched over, so it is read once and then never again — and
-/// never removed here, which is a separate change the owner confirms.
-fn legacy_mark_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("HOME")?).join(".cache/tt-safe/marks"))
-}
-
-/// Carry the wrapper's marks into `new` exactly once, then leave the old
-/// directory alone forever.
-///
-/// **One-shot, and that is the design rather than bookkeeping.** The obvious
-/// alternative — copy anything in the old directory that is not in the new one, on
-/// every command — is idempotent but wrong: the wrapper keeps writing its own
-/// directory until the agent instructions are switched over, so both can be live
-/// at once, and a mark that `tt agent cancel` deliberately removed would be
-/// *resurrected* from the wrapper's lingering copy. The sentinel makes the copy
-/// land whenever the switch happens to occur, and never again.
-///
-/// The sentinel is a **sibling** of the mark directory, not a file inside it, so
-/// nothing can ever read it as a mark — [`open_marks_in`] would skip a dotfile as
-/// unparseable, but the invariant should not rest on that.
-///
-/// Failure is silent and never fails the command: a missing or unreadable old
-/// directory is the normal case, and a mark that could not be copied is worth less
-/// than the `begin` the caller actually asked for. Returns how many files were
-/// copied, so a test can assert the count the message names.
-fn migrate_marks_once(cache: &Path, old: &Path, new: &Path) -> usize {
-    let sentinel = cache.join(".marks-migrated");
-    if sentinel.exists() {
-        return 0;
-    }
-
-    let copied =
-        copy_regular_files(old, new) + copy_regular_files(&old.join("beats"), &new.join("beats"));
-
-    // Written even when nothing was copied: what happened once is the *switch*,
-    // and a migration that found an empty directory has still happened.
-    if fs::create_dir_all(cache).is_ok() {
-        let _ = fs::write(&sentinel, "");
-    }
-    if copied > 0 {
-        eprintln!(
-            "tt: carried {} mark file{} over from {}",
-            copied,
-            if copied == 1 { "" } else { "s" },
-            old.display()
-        );
-    }
-    copied
-}
-
-/// Copy every regular file from `from` into `to` without ever overwriting one,
-/// and return how many arrived.
-///
-/// A mark's contents are a bare epoch, so a copy is exactly faithful and an open
-/// mark survives with its original start. `create_new` rather than
-/// exists-then-copy so a file appearing underneath the copy is left alone rather
-/// than truncated. Subdirectories are skipped — `beats/` is copied by its own
-/// call, and nothing else belongs there.
-fn copy_regular_files(from: &Path, to: &Path) -> usize {
-    let Ok(entries) = fs::read_dir(from) else {
-        return 0;
-    };
-
-    let mut copied = 0;
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        if fs::create_dir_all(to).is_err() {
-            return copied;
-        }
-        let Ok(mut source) = fs::File::open(entry.path()) else {
-            continue;
-        };
-        let target = to.join(entry.file_name());
-        let Ok(mut destination) = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
-        else {
-            continue;
-        };
-        if io::copy(&mut source, &mut destination).is_ok() {
-            copied += 1;
-        }
-    }
-    copied
 }
 
 /// Every open mark, newest first. A missing or empty mark directory is an empty
@@ -334,11 +208,9 @@ pub fn open_marks_in(dir: &Path) -> Vec<Mark> {
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .map(|e| e.file_name())
         .collect();
-    let present: HashSet<&OsString> = names.iter().collect();
 
     let mut marks: Vec<Mark> = names
         .iter()
-        .filter(|name| !is_sibling_of_a_mark(name, &present))
         .filter_map(|name| read_mark(dir, name))
         .collect();
 
@@ -349,25 +221,6 @@ pub fn open_marks_in(dir: &Path) -> Vec<Mark> {
             .then_with(|| (&a.project, &a.issue, &a.phase).cmp(&(&b.project, &b.issue, &b.phase)))
     });
     marks
-}
-
-/// Whether `name` is a mark's sibling rather than a mark in its own right.
-///
-/// Decided **structurally**: only a file whose name is some *other* file's name
-/// plus a known sibling suffix counts. Do not "simplify" this into a suffix test
-/// on the whole filename — that is the shape of `tt-safe`'s own `cmd_marks`
-/// (`case "$mark" in *.last) continue ;; esac`) and it is a real bug, filed as
-/// #16: a mark whose phase is literally `last` produces `proj.-.last`, which a
-/// plain suffix test hides. Aligning this reader with the shell would reproduce
-/// that bug in the TUI.
-fn is_sibling_of_a_mark(name: &OsString, present: &HashSet<&OsString>) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    SIBLING_SUFFIXES.iter().any(|suffix| {
-        name.strip_suffix(suffix)
-            .is_some_and(|stem| !stem.is_empty() && present.contains(&OsString::from(stem)))
-    })
 }
 
 /// The instant a mark file holds, or `None` when it holds anything else.
@@ -476,15 +329,9 @@ pub fn mark_path(dir: &Path, key: &str) -> PathBuf {
 /// [`mark_key`] always builds `<project>.<issue>.<phase>`, every mark filename
 /// contains at least two dots, so no mark can ever be named `beats` — which is
 /// what lets [`open_marks_in`] separate marks from heartbeats with a file-type
-/// test instead of a name filter (see #16).
+/// test instead of a name filter.
 pub fn beats_path(dir: &Path, key: &str) -> PathBuf {
     dir.join("beats").join(key)
-}
-
-/// The legacy pre-beats heartbeat for `key`: `tt-safe touch` overwrote a single
-/// value into it before `beats/` existed. Never written here, only cleared.
-fn legacy_beat_path(dir: &Path, key: &str) -> PathBuf {
-    dir.join(format!("{key}.last"))
 }
 
 /// Open a mark for one phase, or report the one already open.
@@ -536,17 +383,12 @@ pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
 
 /// Drop a mark and every heartbeat belonging to it.
 ///
-/// All three paths are cleared — the mark, the legacy `.last` beat and the
-/// `beats/` entry — so an upgraded session leaves nothing behind, and each is
-/// allowed to be absent: cancelling a phase that was never begun is not an error.
-/// The `beats/` directory itself stays, since other phases' beats live in it.
+/// Both paths are cleared — the mark and its `beats/` entry — and each is allowed
+/// to be absent: cancelling a phase that was never begun is not an error. The
+/// `beats/` directory itself stays, since other phases' beats live in it.
 pub fn cancel_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<()> {
     let key = mark_key(project, issue, phase);
-    for path in [
-        mark_path(dir, &key),
-        legacy_beat_path(dir, &key),
-        beats_path(dir, &key),
-    ] {
+    for path in [mark_path(dir, &key), beats_path(dir, &key)] {
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -607,12 +449,6 @@ fn all_digits(text: &str) -> bool {
 /// Read a marked phase back: its start, its heartbeats and the instant to measure
 /// to, or `None` when the phase is not marked at all.
 ///
-/// The beats source follows `bin/tt-safe:284-286`: normally the `beats/` file,
-/// but when that file does **not exist** and the legacy `<mark>.last` sibling
-/// does, the legacy single value is read as a one-beat sequence. An existing but
-/// **empty** `beats/` file therefore wins over `.last` — a session that has
-/// upgraded is not dragged back to the pre-`beats/` heartbeat.
-///
 /// A mark whose contents are not a timestamp is an error naming the path, not a
 /// silent zero: the shell does bash arithmetic on a non-number there, no oracle
 /// case pins the result, and a clean error beats reproducing garbage.
@@ -636,13 +472,7 @@ pub fn read_phase_in(
         })?
         .timestamp();
 
-    let beats_file = beats_path(dir, &key);
-    let legacy = legacy_beat_path(dir, &key);
-    let source = if !beats_file.exists() && legacy.exists() {
-        legacy
-    } else {
-        beats_file
-    };
+    let source = beats_path(dir, &key);
 
     // A missing or unreadable beats file is not an error: it leaves the single
     // start→end interval to judge, which is the honest reading of a phase that
@@ -752,13 +582,10 @@ mod tests {
     }
 
     #[test]
-    fn a_phase_literally_called_last_is_a_mark_and_a_real_last_sibling_is_not() {
+    fn a_phase_literally_called_last_is_a_mark() {
         let dir = sandbox("phase-last");
-        // The mark `tt-safe marks` itself cannot see — see #16.
         write(&dir, "proj.-.last", "1000100\n");
-        // A genuine heartbeat sibling: `tt.8.impl` exists alongside it.
         write(&dir, "tt.8.impl", "1000200\n");
-        write(&dir, "tt.8.impl.last", "1000250\n");
 
         assert_eq!(
             labels(&open_marks_in(&dir)),
@@ -771,8 +598,7 @@ mod tests {
 
     /// Heartbeats are a subdirectory, so they are excluded by the file-type
     /// filter and not by their name — which is why a mark whose *phase* is
-    /// `beats` is still listed. There is no `<mark>.beats` sibling to skip: that
-    /// form was never written and is no longer a sibling suffix.
+    /// `beats` is still listed.
     #[test]
     fn the_beats_subdirectory_is_not_a_mark_but_a_beats_phase_is() {
         let dir = sandbox("beats");
@@ -1018,7 +844,7 @@ mod tests {
         write(&dir, "vinge.-.plan", &format!("{}\n", now));
         // Nothing to split: a bare project.
         write(&dir, "solo", &format!("{}\n", now));
-        // A phase literally called `last` is a mark, not a sibling (#16).
+        // A phase literally called `last` is a mark.
         write(&dir, "proj.-.last", &format!("{}\n", now));
 
         let rows = rows_at(&open_marks_in(&dir), at(now));
@@ -1070,118 +896,6 @@ mod tests {
             rows_at(&open_marks_in(&dir), Local::now()),
             Vec::<String>::new()
         );
-    }
-
-    // --- migration --------------------------------------------------------
-    //
-    // Two scratch directories per case, and the real `~/.cache/tt-safe/marks` is
-    // never opened: every case passes both locations in explicitly.
-
-    /// An old-and-new pair: the cache root, the new mark dir inside it, and a
-    /// stand-in for the wrapper's directory.
-    fn migration_sandbox(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let root = sandbox(name);
-        let cache = root.join("cache");
-        let new = cache.join("marks");
-        let old = root.join("old-marks");
-        fs::create_dir_all(&new).unwrap();
-        fs::create_dir_all(old.join("beats")).unwrap();
-        (cache, old, new)
-    }
-
-    #[test]
-    fn migration_carries_a_mark_its_beats_and_a_legacy_heartbeat() {
-        let (cache, old, new) = migration_sandbox("migrate-carries");
-        write(&old, "proj.7.impl", "1000200\n");
-        write(&old, "proj.7.impl.last", "1000250\n");
-        write(&old.join("beats"), "proj.7.impl", "1000210\n1000220\n");
-
-        assert_eq!(migrate_marks_once(&cache, &old, &new), 3, "files carried");
-
-        assert_eq!(
-            fs::read_to_string(new.join("proj.7.impl")).unwrap(),
-            "1000200\n"
-        );
-        assert_eq!(
-            fs::read_to_string(new.join("proj.7.impl.last")).unwrap(),
-            "1000250\n"
-        );
-        assert_eq!(
-            fs::read_to_string(new.join("beats/proj.7.impl")).unwrap(),
-            "1000210\n1000220\n"
-        );
-        // An open mark survives with its original start, since the content is a
-        // bare epoch and the copy is byte-for-byte.
-        assert_eq!(
-            labels(&open_marks_in(&new)),
-            vec![("proj".into(), Some("7".into()), "impl".into())]
-        );
-        // The old directory is left completely in place — removing it is a
-        // separate change the owner confirms.
-        assert!(old.join("proj.7.impl").is_file());
-        assert!(cache.join(".marks-migrated").is_file(), "the sentinel");
-        // The sentinel is a sibling of the mark directory, so nothing lists it.
-        assert!(!new.join(".marks-migrated").exists());
-    }
-
-    #[test]
-    fn migration_happens_once_and_never_resurrects_a_cancelled_mark() {
-        let (cache, old, new) = migration_sandbox("migrate-once");
-        write(&old, "proj.7.impl", "1000200\n");
-        assert_eq!(migrate_marks_once(&cache, &old, &new), 1);
-
-        // The wrapper is still live in the window before the docs switch over, so
-        // its copy lingers — and `tt agent cancel` has deliberately dropped the
-        // mark from the new directory in the meantime.
-        fs::remove_file(new.join("proj.7.impl")).unwrap();
-        write(&old, "other.9.plan", "1000300\n");
-
-        assert_eq!(migrate_marks_once(&cache, &old, &new), 0, "copied again");
-        assert!(
-            !new.join("proj.7.impl").exists(),
-            "a cancelled mark was resurrected from the old directory"
-        );
-        assert!(
-            !new.join("other.9.plan").exists(),
-            "a later mark was copied"
-        );
-        assert_eq!(open_marks_in(&new), Vec::new());
-    }
-
-    #[test]
-    fn migration_never_overwrites_a_destination() {
-        let (cache, old, new) = migration_sandbox("migrate-no-overwrite");
-        write(&old, "proj.7.impl", "1000200\n");
-        write(&old.join("beats"), "proj.7.impl", "1000210\n");
-        // The same phase, already open in the new directory with a later start.
-        write(&new, "proj.7.impl", "1000900\n");
-        fs::create_dir_all(new.join("beats")).unwrap();
-        write(&new.join("beats"), "proj.7.impl", "1000950\n");
-
-        assert_eq!(
-            migrate_marks_once(&cache, &old, &new),
-            0,
-            "nothing to carry"
-        );
-        assert_eq!(
-            fs::read_to_string(new.join("proj.7.impl")).unwrap(),
-            "1000900\n"
-        );
-        assert_eq!(
-            fs::read_to_string(new.join("beats/proj.7.impl")).unwrap(),
-            "1000950\n"
-        );
-    }
-
-    #[test]
-    fn a_missing_old_directory_migrates_silently() {
-        let (cache, old, new) = migration_sandbox("migrate-missing");
-        fs::remove_dir_all(&old).unwrap();
-
-        assert_eq!(migrate_marks_once(&cache, &old, &new), 0);
-        // The switch still happened, so it never happens again.
-        assert!(cache.join(".marks-migrated").is_file());
-        assert_eq!(open_marks_in(&new), Vec::new());
     }
 
     // --- writer -----------------------------------------------------------
@@ -1292,19 +1006,16 @@ mod tests {
     }
 
     #[test]
-    fn cancel_clears_the_mark_its_legacy_beat_and_its_beats_but_not_a_sibling_phase() {
+    fn cancel_clears_the_mark_and_its_beats_but_not_a_sibling_phase() {
         let dir = sandbox("cancel");
         begin_in(&dir, "tt", "8", "impl").unwrap();
         touch_in(&dir, "tt", "8", "impl").unwrap();
-        // The pre-beats heartbeat, from a session that predates `beats/`.
-        write(&dir, "tt.8.impl.last", "1000250\n");
         begin_in(&dir, "other", "9", "plan").unwrap();
         touch_in(&dir, "other", "9", "plan").unwrap();
 
         cancel_in(&dir, "tt", "8", "impl").unwrap();
 
         assert!(!dir.join("tt.8.impl").exists());
-        assert!(!dir.join("tt.8.impl.last").exists());
         assert!(!dir.join("beats/tt.8.impl").exists());
         assert!(
             dir.join("beats").is_dir(),
@@ -1415,32 +1126,6 @@ mod tests {
         // The leading field of `1000600 note` is a bare timestamp, so the beat
         // counts — but the *line* is not, so it is no instant to measure to.
         assert_eq!(phase.beats, vec![1_000_600]);
-        assert_eq!(phase.ended, None);
-    }
-
-    #[test]
-    fn a_legacy_last_heartbeat_is_read_as_a_single_beat() {
-        let dir = sandbox("phase-legacy");
-        write(&dir, "proj.7.impl", "1000000\n");
-        write(&dir, "proj.7.impl.last", "1000600\n");
-
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
-        assert_eq!(phase.beats, vec![1_000_600]);
-        assert_eq!(phase.ended, Some(1_000_600));
-    }
-
-    #[test]
-    fn an_empty_beats_file_supersedes_a_legacy_last_heartbeat() {
-        let dir = sandbox("phase-empty-beats");
-        write(&dir, "proj.7.impl", "1000000\n");
-        write(&dir, "proj.7.impl.last", "1000600\n");
-        fs::create_dir_all(dir.join("beats")).unwrap();
-        write(&dir, "beats/proj.7.impl", "");
-
-        // Existence, not content: an upgraded session is never dragged back to
-        // the pre-`beats/` heartbeat.
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
-        assert_eq!(phase.beats, Vec::<i64>::new());
         assert_eq!(phase.ended, None);
     }
 

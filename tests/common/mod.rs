@@ -62,8 +62,7 @@ impl Case {
     }
 
     /// Run `tt agent <args>` with **no** `TT_MARK_DIR`, so the default location
-    /// inside the sandboxed `HOME`'s cache directory is exercised — including the
-    /// one-shot migration, which only runs for the default.
+    /// inside the sandboxed `HOME`'s cache directory is exercised.
     pub fn run_in_cache(&self, args: &[&str]) -> Run {
         let mut argv = vec!["agent"];
         argv.extend_from_slice(args);
@@ -217,12 +216,6 @@ impl Case {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         let body: String = beats.iter().map(|beat| format!("{beat}\n")).collect();
         fs::write(file, body).unwrap();
-    }
-
-    /// Fabricate the legacy pre-`beats/` single heartbeat, `<mark>.last`. Nothing
-    /// writes this any more; `end` still reads it (#55) and `cancel` clears it.
-    pub fn write_legacy_beat(&self, key: &str, beat: i64) {
-        fs::write(self.mark_file(&format!("{key}.last")), format!("{beat}\n")).unwrap();
     }
 
     /// Regular files directly in the mark directory — the beats subdirectory is
