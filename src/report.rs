@@ -676,4 +676,40 @@ mod tests {
             "filtered on the field, not on a tag"
         );
     }
+
+    #[test]
+    fn the_json_payload_keeps_the_scripts_keys_with_integer_seconds() {
+        let agent_shaped = entry(1, Some("vinge"), &["vinge/6", "plan", "agent"], (9, 0), 30);
+        let fieldless = entry(2, None, &["plan"], (9, 15), 15);
+        let rolled = rollup(&[&agent_shaped, &fieldless]);
+
+        let json = serde_json::to_value(to_json(&rolled, "Today, 2026-08-18"))
+            .expect("the payload serialises");
+
+        // The script's own keys, unchanged.
+        assert_eq!(json["total_seconds"], 45 * 60);
+        assert_eq!(json["overlaps"], 1, "the two spans collide");
+        // Additive, so a consumer can echo back what it asked for.
+        assert_eq!(json["label"], "Today, 2026-08-18");
+
+        // Project keys are the field, and the empty bucket is not `(untagged)`.
+        let projects = json["projects"].as_object().expect("an object");
+        let mut names: Vec<&str> = projects.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, vec![NO_PROJECT, "vinge"]);
+        assert!(
+            !projects.contains_key("agent"),
+            "the provenance tag is not a project"
+        );
+
+        let item = &json["projects"]["vinge"]["items"]["vinge/6"];
+        assert_eq!(item["seconds"], 30 * 60);
+        assert_eq!(item["phases"]["plan"], 30 * 60);
+        assert_eq!(item["description"], "did the thing");
+        assert_eq!(item["active"], false);
+
+        // Integers throughout, not the script's floats — no `.0` anywhere.
+        assert!(json["total_seconds"].is_i64());
+        assert!(item["seconds"].is_i64());
+    }
 }
