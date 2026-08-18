@@ -6,7 +6,7 @@ use crate::config;
 use crate::duration;
 use crate::icons;
 use crate::storage::{load_data, save_data};
-use crate::tracker::parse_tags;
+use crate::tracker::{format_tags, parse_tags};
 
 #[derive(Parser)]
 #[command(name = "tt", about = "Simple time tracking CLI")]
@@ -54,6 +54,16 @@ pub enum Commands {
     Active,
 }
 
+/// Bracketed, space-prefixed tag display for println! output, e.g. " [#a #b]",
+/// or "" when there are no tags.
+fn tags_display(tags: &[String]) -> String {
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", format_tags(tags))
+    }
+}
+
 pub fn start(description: Vec<String>) -> Result<()> {
     let mut data = load_data()?;
 
@@ -74,17 +84,11 @@ pub fn start(description: Vec<String>) -> Result<()> {
     data.add_entry(desc.clone(), tags.clone(), start_time, None);
     save_data(&data)?;
 
-    let tags_display = if tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "))
-    };
-
     println!(
         "{}  Started: \"{}\"{} at {}",
         icons::active(),
         desc,
-        tags_display,
+        tags_display(&tags),
         start_time.format("%H:%M:%S")
     );
     Ok(())
@@ -123,17 +127,11 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
     data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
     save_data(&data)?;
 
-    let tags_display = if tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "))
-    };
-
     println!(
         "{} Logged: \"{}\"{} - Duration: {}",
         icons::logged(),
         desc,
-        tags_display,
+        tags_display(&tags),
         duration::format(dur)
     );
     Ok(())

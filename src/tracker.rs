@@ -31,6 +31,11 @@ pub fn parse_tags(text: &str) -> (String, Vec<String>) {
     (clean_parts.join(" "), tags)
 }
 
+/// Format tags for display (with # prefix), e.g. "#backend #bug"
+pub fn format_tags(tags: &[String]) -> String {
+    tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ")
+}
+
 impl TimeEntry {
     pub fn duration(&self) -> Duration {
         let end = self.end_time.unwrap_or_else(Local::now);
@@ -56,7 +61,7 @@ impl TimeEntry {
 
     /// Format tags for display (with # prefix)
     pub fn format_tags(&self) -> String {
-        self.tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ")
+        format_tags(&self.tags)
     }
 
     /// Check if entry has a specific tag (case-insensitive)

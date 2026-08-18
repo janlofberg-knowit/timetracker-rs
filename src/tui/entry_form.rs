@@ -65,33 +65,35 @@ impl App {
         }
     }
 
-    pub(crate) fn submit_entry(&mut self) -> Result<()> {
+    /// Validates the current form input and resolves it into entry fields.
+    /// Returns `None` if the form isn't currently submittable (empty
+    /// description, unresolvable start/end times).
+    fn build_entry_fields(&self) -> Option<(String, Vec<String>, DateTime<Local>, Option<DateTime<Local>>)> {
         if self.input_description.is_empty() {
-            return Ok(());
+            return None;
         }
-        let Some((start_time, end_time)) = self.resolve_times() else {
+        let (start_time, end_time) = self.resolve_times()?;
+        Some((self.input_description.clone(), self.parse_tags(), start_time, end_time))
+    }
+
+    pub(crate) fn submit_entry(&mut self) -> Result<()> {
+        let Some((description, tags, start_time, end_time)) = self.build_entry_fields() else {
             return Ok(());
         };
-        let tags = self.parse_tags();
-        self.data.add_entry(self.input_description.clone(), tags, start_time, end_time);
+        self.data.add_entry(description, tags, start_time, end_time);
         save_data(&self.data)?;
         self.cancel_adding();
         Ok(())
     }
 
     pub(crate) fn submit_edit(&mut self) -> Result<()> {
-        let entry_id = match self.editing_entry_id {
-            Some(id) => id,
-            None => return Ok(()),
-        };
-        if self.input_description.is_empty() {
-            return Ok(());
-        }
-        let Some((start_time, end_time)) = self.resolve_times() else {
+        let Some(entry_id) = self.editing_entry_id else {
             return Ok(());
         };
-        let tags = self.parse_tags();
-        self.data.update_entry(entry_id, self.input_description.clone(), tags, start_time, end_time);
+        let Some((description, tags, start_time, end_time)) = self.build_entry_fields() else {
+            return Ok(());
+        };
+        self.data.update_entry(entry_id, description, tags, start_time, end_time);
         save_data(&self.data)?;
         self.cancel_adding();
         Ok(())
