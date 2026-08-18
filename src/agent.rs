@@ -389,9 +389,9 @@ fn end(
 /// session wants `--full`.
 ///
 /// The figures are **unrounded**, as the wrapper's are: rounding happens later,
-/// on the way to `cli::log`. And `has an <n>m gap` is ungrammatical for most `n`;
-/// that is reproduced verbatim rather than fixed, because these messages are the
-/// contract an agent reads (#58 owns the wart).
+/// on the way to `cli::log`. The article is picked per figure by [`article`] — the
+/// wrapper said `has an <n>m gap` for every `n` — but the line's *shape* is left
+/// exactly as it was, because these messages are the contract an agent reads.
 fn refuse(
     project: &str,
     issue: &str,
@@ -410,8 +410,9 @@ fn refuse(
     }
 
     eprintln!(
-        "tt: {} has an {}m gap ({}-{})",
+        "tt: {} has {} {}m gap ({}-{})",
         phase_name(project, issue, phase),
+        article(worst.0),
         worst.0,
         clock(worst.1),
         clock(worst.2)
@@ -419,6 +420,21 @@ fn refuse(
     eprintln!("tt: --full logs {measured}m, --trim logs {trimmed}m");
     eprintln!("tt: or pass the real minutes instead.");
     std::process::exit(65);
+}
+
+/// `"a"` or `"an"` for a minute count, read the way it is spoken.
+///
+/// Only the leading digit decides, because that is the word the article attaches
+/// to: `8` is the one digit that opens with a vowel sound, so `8`, `80` and `800`
+/// all take `an`. The two exceptions are the teens that are read as one word —
+/// `11` ("an eleven") and `18` ("an eighteen") — and only those two exactly:
+/// `110` is "a hundred and ten" and `180` is "a hundred and eighty".
+fn article(minutes: i64) -> &'static str {
+    if minutes == 11 || minutes == 18 || minutes.abs().to_string().starts_with('8') {
+        "an"
+    } else {
+        "a"
+    }
 }
 
 /// How long a silence has to be to count, in minutes.
@@ -504,8 +520,8 @@ fn strip_stray_tags(summary: &str) -> String {
 /// stored tags to build its phase breakdown.
 ///
 /// Deliberately **not** used to validate the `phase` argument: `bin/tt-safe`
-/// accepts any word, and tightening that is a behaviour change (#58), not part
-/// of giving the list one home.
+/// accepts any word, and tightening that is a behaviour change nobody has asked
+/// for — ruled out of scope on #58 — not part of giving the list one home.
 pub const PHASES: [&str; 7] = ["plan", "impl", "qa", "review", "docs", "spike", "ops"];
 
 /// The description `cli::log` is given: the summary plus the convention's tags.
@@ -533,6 +549,22 @@ fn description(project: &str, issue: &str, phase: &str, summary: &str) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_article_follows_how_the_number_is_spoken() {
+        // Every number opening on the digit 8, whatever its magnitude.
+        for minutes in [8, 80, 85, 800] {
+            assert_eq!(article(minutes), "an", "{minutes}");
+        }
+        // The two teens read as one vowel-initial word.
+        assert_eq!(article(11), "an");
+        assert_eq!(article(18), "an");
+        // And their multiples, which are not: "a hundred and ten", "a hundred and
+        // eighty". This is the case a naive `starts_with("1")`-style rule breaks.
+        for minutes in [7, 45, 70, 110, 118, 180, 1, 0] {
+            assert_eq!(article(minutes), "a", "{minutes}");
+        }
+    }
 
     #[test]
     fn rounding_goes_up_to_the_nearest_quarter() {

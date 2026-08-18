@@ -302,6 +302,28 @@ fn a_single_over_threshold_hole_is_refused_and_named() {
     assert!(case.beats_file("proj.12.plan").is_file());
 }
 
+/// The refusal picks its article per figure (#88).
+///
+/// The fixture above has an 80-minute hole, which takes `an` and so could never
+/// have caught the wrapper's hard-coded one. This one is 70 minutes.
+#[test]
+fn the_refusal_names_the_gap_with_the_right_article() {
+    let case = Case::new("gaps-article");
+    let start = now() - 100 * 60;
+    let beats = [start + 10 * 60, start + 80 * 60, start + 100 * 60];
+    case.write_mark("proj.12.plan", start);
+    case.beats_at("proj.12.plan", &beats);
+
+    let run = case.run(&["end", "proj", "12", "plan", "planned the thing"]);
+    run.assert_status(65);
+    // The whole line, so the shape agents read stays pinned as well as the article.
+    run.assert_stderr_has(&format!(
+        "tt: proj/12 plan has a 70m gap ({}-{})",
+        clock(beats[0]),
+        clock(beats[1])
+    ));
+}
+
 /// Ported from "--full accepts a flagged span".
 #[test]
 fn full_accepts_a_flagged_span() {
