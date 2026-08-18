@@ -19,6 +19,7 @@
 use anyhow::{Context, Result};
 
 use crate::cli::AgentCommands;
+use crate::icons;
 use crate::marks::{self, Begin, Touch};
 
 /// Run one `tt agent` subcommand.
@@ -120,10 +121,14 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
 
 /// `tt agent list`: every open mark, newest first.
 ///
-/// A port of `tt-safe marks`' terse `%-*s  %s  (%s)` row, one label column for
-/// the whole list. #64 replaces the row with `tt`'s house style — the one ruled
-/// divergence from the shell oracle in this port — and the empty case already
-/// reads the same in both.
+/// The house style, not `tt-safe marks`' terse row: a `{} Open marks:` header in
+/// the shape of `cli::list`'s `{} All entries:`, a blank line, and rows at the
+/// two-column indent the entry lists reserve for their status glyph. Owner
+/// ruling, 2026-08-18 — the port's one deliberate divergence from the shell
+/// oracle, because a `tt` subcommand should look like `tt`.
+///
+/// The empty case is a bare `No open marks.` with no emoji, matching
+/// `No entries yet.` — and, as it happens, the wrapper's own line exactly.
 fn list() -> Result<()> {
     let marks = marks::open_marks();
     if marks.is_empty() {
@@ -131,22 +136,9 @@ fn list() -> Result<()> {
         return Ok(());
     }
 
-    let width = marks
-        .iter()
-        .map(|mark| mark.label().chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(18);
-    for mark in &marks {
-        let label = mark.label();
-        let pad = " ".repeat(width.saturating_sub(label.chars().count()));
-        println!(
-            "{}{}  {}  ({})",
-            label,
-            pad,
-            mark.started_at(),
-            mark.elapsed()
-        );
+    println!("{} Open marks:\n", icons::MARKS);
+    for row in marks::rows(&marks) {
+        println!("  {}", row);
     }
     Ok(())
 }

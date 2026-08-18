@@ -18,12 +18,14 @@
 //! Only the start timestamp is read. See [`open_marks_in`] for why the
 //! heartbeat siblings are deliberately left alone.
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, TimeDelta};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use crate::duration;
 
 /// Suffixes that turn a mark's name into one of its sibling files.
 ///
@@ -87,6 +89,68 @@ impl Mark {
             hours => format!("{}h {}m", hours, minutes % 60),
         }
     }
+
+    /// How long this mark has been open, in the **house** duration format —
+    /// always `{h}h {m}m`, as [`crate::duration::format`] renders every other
+    /// span the CLI prints.
+    ///
+    /// Not [`elapsed`](Mark::elapsed), which renders `15m` / `2h 6m` for the TUI's
+    /// narrow rows. And clamped first: `duration::format` on a negative span
+    /// prints `0h -5m`, and a mark started in the future is a real case — a clock
+    /// stepping back, or a hand-written mark.
+    pub fn age_at(&self, now: DateTime<Local>) -> String {
+        duration::format((now - self.start).max(TimeDelta::zero()))
+    }
+}
+
+/// Narrowest label column `tt agent list` will use, so a single short mark still
+/// reads as a column rather than as a sentence. `src/tui/render.rs` keeps its own
+/// copy for the surface's rows; whether the two rows should converge is #58's.
+const LABEL_WIDTH: usize = 18;
+
+/// The rows `tt agent list` prints, one per mark, without the CLI's indent.
+///
+/// Assembled here rather than in `crate::agent` because this module owns the row
+/// as well as the file: the TUI composes its own styled spans from
+/// [`Mark::label`], [`Mark::started_at`] and [`Mark::elapsed`], and a second
+/// plain-text row built somewhere else is how the same mark starts reading two
+/// ways.
+///
+/// **This is the port's one deliberate divergence from `tt-safe marks`.** The
+/// wrapper prints `%-*s  %s  (%s)`; a `tt` subcommand looks like the rest of `tt`
+/// instead — one label column, ` - since HH:MM`, and the house `{h}h {m}m`
+/// duration. Owner ruling, 2026-08-18: #58 must not "fix" this back toward the
+/// shell.
+pub fn rows(marks: &[Mark]) -> Vec<String> {
+    rows_at(marks, Local::now())
+}
+
+/// The `now`-taking half of [`rows`], so a row can be asserted against a
+/// fabricated age instead of a clock.
+pub fn rows_at(marks: &[Mark], now: DateTime<Local>) -> Vec<String> {
+    // One column for the whole list, as the TUI does it, so the start times and
+    // ages read as columns instead of trailing each label at its own indent.
+    let width = marks
+        .iter()
+        .map(|mark| mark.label().chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(LABEL_WIDTH);
+
+    marks
+        .iter()
+        .map(|mark| {
+            let label = mark.label();
+            let pad = " ".repeat(width.saturating_sub(label.chars().count()));
+            format!(
+                "{}{} - since {} ({})",
+                label,
+                pad,
+                mark.started_at(),
+                mark.age_at(now)
+            )
+        })
+        .collect()
 }
 
 /// The directory `tt-safe` keeps its marks in, mirroring `bin/tt-safe`'s
@@ -375,6 +439,14 @@ mod tests {
         fs::write(dir.join(name), contents).unwrap();
     }
 
+    /// A fabricated instant, so an age is derived from the fixture's own epochs
+    /// rather than waited for.
+    fn at(seconds: i64) -> DateTime<Local> {
+        DateTime::from_timestamp(seconds, 0)
+            .unwrap()
+            .with_timezone(&Local)
+    }
+
     fn labels(marks: &[Mark]) -> Vec<(String, Option<String>, String)> {
         marks
             .iter()
@@ -569,6 +641,97 @@ mod tests {
                 ("my_proj".into(), None, "code_review".into()),
                 ("bare".into(), None, String::new()),
             ]
+        );
+    }
+
+    /// The house-style row `tt agent list` prints — the port's one ruled
+    /// divergence from `tt-safe marks` (owner, 2026-08-18).
+    #[test]
+    fn a_row_is_one_padded_label_column_then_since_and_the_house_duration() {
+        let dir = sandbox("rows");
+        let now = 1_000_000_000;
+        // Two labels of different lengths, so the column can be seen to align.
+        write(
+            &dir,
+            "timetracker-rs.54.plan",
+            &format!("{}\n", now - 15 * 60),
+        );
+        write(&dir, "vinge.12.impl", &format!("{}\n", now - 45 * 60));
+
+        let marks = open_marks_in(&dir);
+        let rows = rows_at(&marks, at(now));
+        let since = |offset: i64| at(now - offset).format("%H:%M").to_string();
+        assert_eq!(
+            rows,
+            vec![
+                format!("timetracker-rs/54 plan - since {} (0h 15m)", since(15 * 60)),
+                format!("vinge/12 impl          - since {} (0h 45m)", since(45 * 60)),
+            ]
+        );
+        // One column for the whole list: the separator lands at the same offset.
+        let separator = |row: &String| row.find(" - since").unwrap();
+        assert_eq!(separator(&rows[0]), separator(&rows[1]));
+    }
+
+    #[test]
+    fn a_row_reads_the_names_back_the_way_the_reader_does() {
+        let dir = sandbox("rows-names");
+        let now = 1_000_000_000;
+        // The `-` sentinel collapses away entirely — never `vinge/-`.
+        write(&dir, "vinge.-.plan", &format!("{}\n", now));
+        // Nothing to split: a bare project.
+        write(&dir, "solo", &format!("{}\n", now));
+        // A phase literally called `last` is a mark, not a sibling (#16).
+        write(&dir, "proj.-.last", &format!("{}\n", now));
+
+        let rows = rows_at(&open_marks_in(&dir), at(now));
+        assert!(
+            rows.iter().any(|row| row.starts_with("vinge plan ")),
+            "the - sentinel leaked or the row is missing: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("solo ")),
+            "a dotless name should list as a bare project: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("proj last ")),
+            "a phase called `last` should still be listed: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("vinge/-")),
+            "the - sentinel leaked into a label: {rows:?}"
+        );
+        // Every label here is shorter than the minimum column, so all three rows
+        // put `since` at the same offset — that minimum is what stops one short
+        // mark reading as a sentence.
+        for row in &rows {
+            assert_eq!(row.find(" - since"), Some(18), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn a_rows_duration_is_the_house_format_and_never_negative() {
+        let dir = sandbox("rows-age");
+        let now = 1_000_000_000;
+        write(&dir, "long.1.impl", &format!("{}\n", now - 126 * 60));
+        write(&dir, "short.2.impl", &format!("{}\n", now - 2 * 60));
+        // A start in the future reads as `0h 0m`, not as `0h -10m`.
+        write(&dir, "future.3.impl", &format!("{}\n", now + 600));
+
+        let rows = rows_at(&open_marks_in(&dir), at(now));
+        let ages: Vec<&str> = rows
+            .iter()
+            .map(|row| &row[row.find('(').unwrap()..])
+            .collect();
+        assert_eq!(ages, vec!["(0h 0m)", "(0h 2m)", "(2h 6m)"], "{rows:?}");
+    }
+
+    #[test]
+    fn no_marks_have_no_rows() {
+        let dir = sandbox("rows-empty");
+        assert_eq!(
+            rows_at(&open_marks_in(&dir), Local::now()),
+            Vec::<String>::new()
         );
     }
 
