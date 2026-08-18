@@ -15,14 +15,20 @@ use clap::Parser;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Dispatched here, *ahead* of the store preamble below, and returning. The
-    // `tt agent` commands only ever touch mark files, and an agent calls
-    // `tt agent touch` constantly — so letting them fall through would take the
-    // store's exclusive lock and rewrite `data.json` once per heartbeat, which is
-    // exactly what `bin/tt-safe` skips its own lock for the mark verbs to avoid.
-    // Writing the handlers so they merely never call `with_data` is not enough:
-    // the preamble below runs before the dispatch table, not inside it.
-    if let Commands::Agent { command } = &cli.command {
+    // The mark-only `tt agent` commands are dispatched here, *ahead* of the store
+    // preamble below, and return. An agent calls `tt agent touch` constantly — so
+    // letting a heartbeat fall through would take the store's exclusive lock and
+    // rewrite `data.json` once per beat, which is exactly what `bin/tt-safe` skips
+    // its own lock for the mark verbs to avoid. Writing the handlers so they merely
+    // never call `with_data` is not enough: the preamble below runs before the
+    // dispatch table, not inside it.
+    //
+    // The commands that *do* log an entry are the complement, and must dispatch
+    // after the preamble or they would write an unmigrated store — see
+    // `AgentCommands::touches_store`.
+    if let Commands::Agent { command } = &cli.command
+        && !command.touches_store()
+    {
         return agent::run(command);
     }
 
@@ -53,7 +59,8 @@ fn main() -> Result<()> {
         Commands::Tui => tui::run_tui(),
         Commands::Status => cli::status(),
         Commands::Active => cli::active(),
-        // Returned above, before the store lock was ever taken.
-        Commands::Agent { .. } => unreachable!("the agent commands dispatch ahead of the preamble"),
+        // The mark-only ones returned above, before the store lock was ever taken;
+        // only the entry-logging ones reach here.
+        Commands::Agent { command } => agent::run(&command),
     }
 }

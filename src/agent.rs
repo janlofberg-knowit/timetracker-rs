@@ -5,10 +5,12 @@
 //! this module turns the four subcommands into calls on it and prints what the
 //! shell wrapper printed.
 //!
-//! **Nothing here touches the store.** A mark is not an entry — the work becomes
-//! a `tt` entry only at `end` — so no handler reads `data.json`, takes the store
-//! lock or calls `storage::with_data`. `main` dispatches these commands *ahead*
-//! of its migration preamble to keep that true; see the comment there.
+//! **The mark commands touch no store.** A mark is not an entry, so `begin`,
+//! `touch`, `cancel` and `list` never read `data.json`, take the store lock or
+//! call `storage::with_data`, and `main` dispatches them *ahead* of its migration
+//! preamble to keep that true. `item` and `end` are the complement: they create
+//! an entry through [`crate::cli::log`], so they dispatch *after* the preamble.
+//! See `AgentCommands::touches_store`.
 //!
 //! The messages are `bin/tt-safe`'s, verbatim apart from the `tt-safe: ` prefix
 //! becoming `tt: `, because the caller of these commands is an agent following
@@ -18,7 +20,9 @@
 
 use anyhow::{Context, Result};
 
-use crate::cli::AgentCommands;
+use crate::tracker::IdleInterval;
+
+use crate::cli::{self, AgentCommands};
 use crate::icons;
 use crate::marks::{self, Begin, Touch};
 
@@ -41,6 +45,19 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             phase,
         } => cancel(project, issue, phase),
         AgentCommands::List => list(),
+        AgentCommands::Item {
+            project,
+            issue,
+            phase,
+            summary,
+            minutes,
+        } => item(
+            project,
+            issue,
+            phase,
+            summary.as_deref(),
+            minutes.as_deref(),
+        ),
     }
 }
 
@@ -141,6 +158,72 @@ fn list() -> Result<()> {
         println!("  {}", row);
     }
     Ok(())
+}
+
+/// `tt agent item <project> <issue|-> <phase> <summary> <minutes>`: log one
+/// finished piece of work in one call, with no mark involved.
+///
+/// The whole of `bin/tt-safe`'s `item`: the convention's three tags, the
+/// 15-minute rounding, and nothing else. No mark file is read, written or
+/// cleared — a phase short enough to report in one call never needed one.
+fn item(
+    project: &str,
+    issue: &str,
+    phase: &str,
+    summary: Option<&str>,
+    minutes: Option<&str>,
+) -> Result<()> {
+    let (Some(summary), Some(minutes)) = (summary, minutes) else {
+        eprintln!("tt: usage: tt agent item <project> <issue|-> <phase> <summary> <minutes>");
+        std::process::exit(64);
+    };
+    let minutes = whole_minutes(minutes);
+    log_entry(project, issue, phase, summary, minutes, Vec::new(), false)
+}
+
+/// A minutes argument as the wrapper accepted it, or exit 64.
+///
+/// Hand-parsed rather than typed as an integer in the clap surface: clap answers
+/// a non-numeric positional with exit **2** and its own usage block, where the
+/// wrapper says `minutes must be a whole number, got '<x>'` and exits 64
+/// (`bin/tt-safe:144-147`) — and the caller here is an agent following prose
+/// instructions, for which a changed message is a changed contract.
+///
+/// Bash's `case "$m" in ''|*[!0-9]*)` is stricter than `parse`: no sign, no
+/// whitespace, no `+`.
+fn whole_minutes(raw: &str) -> i64 {
+    let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
+    match digits.then(|| raw.parse().ok()).flatten() {
+        Some(minutes) => minutes,
+        None => {
+            eprintln!("tt: minutes must be a whole number, got '{raw}'");
+            std::process::exit(64);
+        }
+    }
+}
+
+/// Log the entry both `item` and `end` end at: the convention's description, the
+/// rounded duration, the project as a real field, and whatever silence was found.
+///
+/// `extra_tags` is deliberately empty — every tag is already in the description,
+/// so `parse_tags` produces exactly the set the wrapper's `--description=` did.
+fn log_entry(
+    project: &str,
+    issue: &str,
+    phase: &str,
+    summary: &str,
+    minutes: i64,
+    idle: Vec<IdleInterval>,
+    trim: bool,
+) -> Result<()> {
+    cli::log(
+        description(project, issue, phase, summary),
+        format!("{}m", round_quarter(minutes)),
+        Vec::new(),
+        Some(project.to_string()),
+        idle,
+        trim,
+    )
 }
 
 // --- the shared convention -------------------------------------------------
