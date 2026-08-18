@@ -142,3 +142,134 @@ fn list() -> Result<()> {
     }
     Ok(())
 }
+
+// --- the shared convention -------------------------------------------------
+//
+// `item` and `end` both log an entry, and they must log it the same way: the same
+// rounding, the same stray-`#` stripping and the same three tags. The convention
+// therefore lives here once, in the module that owns the agent layer's
+// presentation, rather than being spelled out in each handler.
+
+/// Round minutes up to the nearest quarter hour, never below 15.
+///
+/// `((m + 7) / 15) * 15` on integers, `bin/tt-safe:110`'s `round_quarter`
+/// verbatim: the `+ 7` makes it round to the *nearest* quarter with the halfway
+/// point going up, and the floor makes a two-minute errand cost a quarter of an
+/// hour, because a quarter hour is the smallest unit anybody bills.
+fn round_quarter(minutes: i64) -> i64 {
+    (((minutes + 7) / 15) * 15).max(15)
+}
+
+/// Strip a `#` run that begins a word, keeping the word and the whitespace it
+/// followed.
+///
+/// `bin/tt-safe:123`'s `sed -E 's/(^|[[:space:]])#+/\1/g'`. [`parse_tags`]
+/// harvests every whitespace-delimited word starting with `#`, so a summary that
+/// merely mentions "#12" would silently become a tag — and since the store
+/// migration infers a project from the tags, a stray numeric one can even be
+/// picked as the project (#11). A **mid-word** `#` is deliberately left alone,
+/// because `parse_tags` ignores it and `C#`/`F#` are real words.
+///
+/// The double space this can leave behind is invisible in the stored description:
+/// `parse_tags` splits on whitespace and re-joins on single spaces.
+///
+/// [`parse_tags`]: crate::tracker::parse_tags
+fn strip_stray_tags(summary: &str) -> String {
+    let mut stripped = String::with_capacity(summary.len());
+    let mut at_word_start = true;
+    for c in summary.chars() {
+        if c == '#' && at_word_start {
+            // The whole run goes, and the position stays a word start so the
+            // rest of it goes too — `#+` in the sed is greedy for that reason.
+            continue;
+        }
+        at_word_start = c.is_ascii_whitespace();
+        stripped.push(c);
+    }
+    stripped
+}
+
+/// The description `cli::log` is given: the summary plus the convention's tags.
+///
+/// One string rather than a `Vec` of `extra_tags` because `cli::log` runs
+/// `parse_tags` on its `description` (`src/cli.rs:237`), so this reproduces the
+/// wrapper's `--description=` argv exactly — same tags, same order, same stored
+/// prose.
+///
+/// Three tags, deliberately sparse, one per axis the `project` field cannot
+/// express: the item (`<project>/<issue>`, omitted entirely for the `-`
+/// sentinel), the phase, and `#agent` marking the entry as written by an agent
+/// rather than by hand. There is **no bare `#<project>` tag**: the project is a
+/// real field with its own axis, and duplicating it only made the tag list name
+/// every project twice (`bin/tt-safe:150-154`).
+fn description(project: &str, issue: &str, phase: &str, summary: &str) -> String {
+    let mut description = strip_stray_tags(summary);
+    if issue != "-" {
+        description.push_str(&format!(" #{project}/{issue}"));
+    }
+    description.push_str(&format!(" #{phase} #agent"));
+    description
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rounding_goes_up_to_the_nearest_quarter() {
+        // The halfway point rounds up, and each side of it lands where it should.
+        assert_eq!(round_quarter(37), 30);
+        assert_eq!(round_quarter(38), 45);
+        assert_eq!(round_quarter(43), 45);
+        assert_eq!(round_quarter(45), 45);
+    }
+
+    #[test]
+    fn rounding_never_goes_below_a_quarter_hour() {
+        // A quarter hour is the smallest unit anybody bills, so a two-minute
+        // errand costs one — and zero minutes is still a quarter, not nothing.
+        assert_eq!(round_quarter(0), 15);
+        assert_eq!(round_quarter(2), 15);
+        assert_eq!(round_quarter(7), 15);
+        assert_eq!(round_quarter(8), 15);
+    }
+
+    #[test]
+    fn a_word_starting_with_a_hash_keeps_the_word_and_loses_the_hash() {
+        // What #11 was about: `parse_tags` would harvest `#12` as a tag.
+        assert_eq!(strip_stray_tags("closed #12 at last"), "closed 12 at last");
+        assert_eq!(strip_stray_tags("#12 closed"), "12 closed");
+        // A run goes whole, and the whitespace it followed survives.
+        assert_eq!(strip_stray_tags("closed ##12"), "closed 12");
+        assert_eq!(strip_stray_tags("a\t#12"), "a\t12");
+    }
+
+    #[test]
+    fn a_mid_word_hash_survives() {
+        // `parse_tags` ignores it, and C#/F# are real words.
+        assert_eq!(
+            strip_stray_tags("ported the C# bridge"),
+            "ported the C# bridge"
+        );
+        assert_eq!(strip_stray_tags("F#"), "F#");
+    }
+
+    #[test]
+    fn the_description_carries_the_item_phase_and_agent_tags() {
+        assert_eq!(
+            description("loremind", "77", "impl", "store/links boundary"),
+            "store/links boundary #loremind/77 #impl #agent"
+        );
+    }
+
+    #[test]
+    fn the_sentinel_issue_drops_the_item_tag_and_no_bare_project_tag_is_emitted() {
+        let built = description("loremind", "-", "plan", "sketched the shape");
+        assert_eq!(built, "sketched the shape #plan #agent");
+        // The project is a real field with its own axis — never a tag.
+        assert!(
+            !built.contains("#loremind"),
+            "a bare project tag was emitted: {built:?}"
+        );
+    }
+}
