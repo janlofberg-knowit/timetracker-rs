@@ -52,12 +52,25 @@ impl Case {
     fn run(&self, args: &[&str]) -> Run {
         let mut argv = vec!["agent"];
         argv.extend_from_slice(args);
-        self.run_bare(&argv)
+        self.run_with(&argv, true)
+    }
+
+    /// Run `tt agent <args>` with **no** `TT_MARK_DIR`, so the default location
+    /// inside the sandboxed `HOME`'s cache directory is exercised — including the
+    /// one-shot migration, which only runs for the default.
+    fn run_in_cache(&self, args: &[&str]) -> Run {
+        let mut argv = vec!["agent"];
+        argv.extend_from_slice(args);
+        self.run_with(&argv, false)
     }
 
     /// Run `tt <args>` with no `agent` prefix, for the one case that needs a
     /// store-taking command to prove the sandbox is where the store would land.
     fn run_bare(&self, args: &[&str]) -> Run {
+        self.run_with(args, true)
+    }
+
+    fn run_with(&self, args: &[&str], mark_dir: bool) -> Run {
         assert!(
             self.home.starts_with(std::env::temp_dir())
                 && self.marks.starts_with(self.home.parent().unwrap()),
@@ -68,7 +81,9 @@ impl Case {
         let mut command = Command::new(env!("CARGO_BIN_EXE_tt"));
         command.env_clear();
         command.env("HOME", &self.home);
-        command.env("TT_MARK_DIR", &self.marks);
+        if mark_dir {
+            command.env("TT_MARK_DIR", &self.marks);
+        }
         command.args(args);
 
         let Output {
@@ -304,4 +319,46 @@ fn cancel_clears_the_beats_file_and_any_legacy_heartbeat() {
     assert!(!case.mark_file("proj.7.impl").exists());
     assert!(!case.mark_file("proj.7.impl.last").exists());
     assert!(!case.beats_file("proj.7.impl").exists());
+}
+
+// --- the one-shot migration, end to end -----------------------------------
+
+/// The wrapper's directory is carried across once, by the real binary, at the
+/// real default location — with `HOME` sandboxed, so the old directory read here
+/// is the sandbox's own and never the live one.
+#[test]
+fn the_wrappers_marks_are_carried_over_once_and_the_old_directory_stays() {
+    let case = Case::new("migration");
+    let old = case.home.join(".cache/tt-safe/marks");
+    fs::create_dir_all(old.join("beats")).unwrap();
+    let start = now() - 15 * 60;
+    fs::write(old.join("proj.7.impl"), format!("{start}\n")).unwrap();
+    fs::write(old.join("beats/proj.7.impl"), format!("{}\n", now())).unwrap();
+
+    let first = case.run_in_cache(&["list"]);
+    first.assert_status(0);
+    first.assert_stderr_has("carried 2 mark files over");
+    // The migrated mark is open, with its original start.
+    first.assert_stdout_has("proj/7 impl");
+    first.assert_stdout_has("(0h 15m)");
+
+    let cache = case.home.join("Library/Caches/com.timetracker.tt");
+    assert!(cache.join(".marks-migrated").is_file(), "the sentinel");
+    // A sibling of the mark directory, so `list` can never read it as a mark.
+    assert!(!cache.join("marks/.marks-migrated").exists());
+    // The old directory is left completely in place.
+    assert!(old.join("proj.7.impl").is_file());
+
+    // Second run: nothing is carried, and a mark cancelled in between is not
+    // resurrected from the wrapper's lingering copy.
+    case.run_in_cache(&["cancel", "proj", "7", "impl"])
+        .assert_status(0);
+    let second = case.run_in_cache(&["list"]);
+    second.assert_status(0);
+    assert!(
+        !second.stderr.contains("carried"),
+        "migration ran twice: {:?}",
+        second.stderr
+    );
+    second.assert_stdout_has("No open marks.");
 }

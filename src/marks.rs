@@ -176,7 +176,19 @@ pub fn rows_at(marks: &[Mark], now: DateTime<Local>) -> Vec<String> {
 /// `None` only when there is no home directory to resolve at all, which is a
 /// caller's error to report rather than a path to guess at.
 pub fn mark_dir() -> Option<PathBuf> {
-    resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), cache_dir())
+    let dir = resolve_mark_dir(std::env::var_os("TT_MARK_DIR"), cache_dir())?;
+
+    // Carry the wrapper's older directory across, once — but only when the
+    // default location is the one in use. An explicit `TT_MARK_DIR` is a caller
+    // naming a specific directory (a test sandbox, nearly always), and it must
+    // never quietly gain files from a directory it did not name.
+    if let Some(cache) = cache_dir()
+        && dir == cache.join("marks")
+        && let Some(old) = legacy_mark_dir()
+    {
+        migrate_marks_once(&cache, &old, &dir);
+    }
+    Some(dir)
 }
 
 /// This app's cache directory — `$HOME/Library/Caches/com.timetracker.tt` on
@@ -196,6 +208,99 @@ fn resolve_mark_dir(mark_dir: Option<OsString>, cache: Option<PathBuf>) -> Optio
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => Some(cache?.join("marks")),
     }
+}
+
+/// The wrapper's older mark directory, `~/.cache/tt-safe/marks`, kept only as the
+/// source of the one-shot migration below.
+///
+/// The only place that path still appears. `bin/tt-safe` writes it until the agent
+/// instructions are switched over, so it is read once and then never again — and
+/// never removed here, which is a separate change the owner confirms.
+fn legacy_mark_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(".cache/tt-safe/marks"))
+}
+
+/// Carry the wrapper's marks into `new` exactly once, then leave the old
+/// directory alone forever.
+///
+/// **One-shot, and that is the design rather than bookkeeping.** The obvious
+/// alternative — copy anything in the old directory that is not in the new one, on
+/// every command — is idempotent but wrong: the wrapper keeps writing its own
+/// directory until the agent instructions are switched over, so both can be live
+/// at once, and a mark that `tt agent cancel` deliberately removed would be
+/// *resurrected* from the wrapper's lingering copy. The sentinel makes the copy
+/// land whenever the switch happens to occur, and never again.
+///
+/// The sentinel is a **sibling** of the mark directory, not a file inside it, so
+/// nothing can ever read it as a mark — [`open_marks_in`] would skip a dotfile as
+/// unparseable, but the invariant should not rest on that.
+///
+/// Failure is silent and never fails the command: a missing or unreadable old
+/// directory is the normal case, and a mark that could not be copied is worth less
+/// than the `begin` the caller actually asked for. Returns how many files were
+/// copied, so a test can assert the count the message names.
+fn migrate_marks_once(cache: &Path, old: &Path, new: &Path) -> usize {
+    let sentinel = cache.join(".marks-migrated");
+    if sentinel.exists() {
+        return 0;
+    }
+
+    let copied =
+        copy_regular_files(old, new) + copy_regular_files(&old.join("beats"), &new.join("beats"));
+
+    // Written even when nothing was copied: what happened once is the *switch*,
+    // and a migration that found an empty directory has still happened.
+    if fs::create_dir_all(cache).is_ok() {
+        let _ = fs::write(&sentinel, "");
+    }
+    if copied > 0 {
+        eprintln!(
+            "tt: carried {} mark file{} over from {}",
+            copied,
+            if copied == 1 { "" } else { "s" },
+            old.display()
+        );
+    }
+    copied
+}
+
+/// Copy every regular file from `from` into `to` without ever overwriting one,
+/// and return how many arrived.
+///
+/// A mark's contents are a bare epoch, so a copy is exactly faithful and an open
+/// mark survives with its original start. `create_new` rather than
+/// exists-then-copy so a file appearing underneath the copy is left alone rather
+/// than truncated. Subdirectories are skipped — `beats/` is copied by its own
+/// call, and nothing else belongs there.
+fn copy_regular_files(from: &Path, to: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(from) else {
+        return 0;
+    };
+
+    let mut copied = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if fs::create_dir_all(to).is_err() {
+            return copied;
+        }
+        let Ok(mut source) = fs::File::open(entry.path()) else {
+            continue;
+        };
+        let target = to.join(entry.file_name());
+        let Ok(mut destination) = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        else {
+            continue;
+        };
+        if io::copy(&mut source, &mut destination).is_ok() {
+            copied += 1;
+        }
+    }
+    copied
 }
 
 /// Every open mark, newest first. A missing or empty mark directory is an empty
@@ -824,6 +929,118 @@ mod tests {
             rows_at(&open_marks_in(&dir), Local::now()),
             Vec::<String>::new()
         );
+    }
+
+    // --- migration --------------------------------------------------------
+    //
+    // Two scratch directories per case, and the real `~/.cache/tt-safe/marks` is
+    // never opened: every case passes both locations in explicitly.
+
+    /// An old-and-new pair: the cache root, the new mark dir inside it, and a
+    /// stand-in for the wrapper's directory.
+    fn migration_sandbox(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = sandbox(name);
+        let cache = root.join("cache");
+        let new = cache.join("marks");
+        let old = root.join("old-marks");
+        fs::create_dir_all(&new).unwrap();
+        fs::create_dir_all(old.join("beats")).unwrap();
+        (cache, old, new)
+    }
+
+    #[test]
+    fn migration_carries_a_mark_its_beats_and_a_legacy_heartbeat() {
+        let (cache, old, new) = migration_sandbox("migrate-carries");
+        write(&old, "proj.7.impl", "1000200\n");
+        write(&old, "proj.7.impl.last", "1000250\n");
+        write(&old.join("beats"), "proj.7.impl", "1000210\n1000220\n");
+
+        assert_eq!(migrate_marks_once(&cache, &old, &new), 3, "files carried");
+
+        assert_eq!(
+            fs::read_to_string(new.join("proj.7.impl")).unwrap(),
+            "1000200\n"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("proj.7.impl.last")).unwrap(),
+            "1000250\n"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("beats/proj.7.impl")).unwrap(),
+            "1000210\n1000220\n"
+        );
+        // An open mark survives with its original start, since the content is a
+        // bare epoch and the copy is byte-for-byte.
+        assert_eq!(
+            labels(&open_marks_in(&new)),
+            vec![("proj".into(), Some("7".into()), "impl".into())]
+        );
+        // The old directory is left completely in place — removing it is a
+        // separate change the owner confirms.
+        assert!(old.join("proj.7.impl").is_file());
+        assert!(cache.join(".marks-migrated").is_file(), "the sentinel");
+        // The sentinel is a sibling of the mark directory, so nothing lists it.
+        assert!(!new.join(".marks-migrated").exists());
+    }
+
+    #[test]
+    fn migration_happens_once_and_never_resurrects_a_cancelled_mark() {
+        let (cache, old, new) = migration_sandbox("migrate-once");
+        write(&old, "proj.7.impl", "1000200\n");
+        assert_eq!(migrate_marks_once(&cache, &old, &new), 1);
+
+        // The wrapper is still live in the window before the docs switch over, so
+        // its copy lingers — and `tt agent cancel` has deliberately dropped the
+        // mark from the new directory in the meantime.
+        fs::remove_file(new.join("proj.7.impl")).unwrap();
+        write(&old, "other.9.plan", "1000300\n");
+
+        assert_eq!(migrate_marks_once(&cache, &old, &new), 0, "copied again");
+        assert!(
+            !new.join("proj.7.impl").exists(),
+            "a cancelled mark was resurrected from the old directory"
+        );
+        assert!(
+            !new.join("other.9.plan").exists(),
+            "a later mark was copied"
+        );
+        assert_eq!(open_marks_in(&new), Vec::new());
+    }
+
+    #[test]
+    fn migration_never_overwrites_a_destination() {
+        let (cache, old, new) = migration_sandbox("migrate-no-overwrite");
+        write(&old, "proj.7.impl", "1000200\n");
+        write(&old.join("beats"), "proj.7.impl", "1000210\n");
+        // The same phase, already open in the new directory with a later start.
+        write(&new, "proj.7.impl", "1000900\n");
+        fs::create_dir_all(new.join("beats")).unwrap();
+        write(&new.join("beats"), "proj.7.impl", "1000950\n");
+
+        assert_eq!(
+            migrate_marks_once(&cache, &old, &new),
+            0,
+            "nothing to carry"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("proj.7.impl")).unwrap(),
+            "1000900\n"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("beats/proj.7.impl")).unwrap(),
+            "1000950\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_old_directory_migrates_silently() {
+        let (cache, old, new) = migration_sandbox("migrate-missing");
+        fs::remove_dir_all(&old).unwrap();
+
+        assert_eq!(migrate_marks_once(&cache, &old, &new), 0);
+        // The switch still happened, so it never happens again.
+        assert!(cache.join(".marks-migrated").is_file());
+        assert_eq!(open_marks_in(&new), Vec::new());
     }
 
     // --- writer -----------------------------------------------------------
