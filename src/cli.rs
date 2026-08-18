@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Local;
 use clap::{Parser, Subcommand};
 
+use crate::config;
 use crate::duration;
 use crate::icons;
 use crate::storage::{load_data, save_data};
@@ -40,9 +41,10 @@ pub enum Commands {
     Today,
     /// Show all entries
     List {
-        /// Maximum number of entries to show
-        #[arg(short = 'n', long, default_value_t = 20)]
-        limit: usize,
+        /// Maximum number of entries to show (defaults to the `list.default_limit`
+        /// config value, or 20 if unset)
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
     },
     /// Open interactive TUI
     Tui,
@@ -58,7 +60,7 @@ pub fn start(description: Vec<String>) -> Result<()> {
     if let Some(active) = data.active_entry() {
         println!(
             "{}  Already tracking: \"{}\" (started at {})",
-            icons::WARNING,
+            icons::warning(),
             active.description,
             active.start_time.format("%H:%M")
         );
@@ -80,7 +82,7 @@ pub fn start(description: Vec<String>) -> Result<()> {
 
     println!(
         "{}  Started: \"{}\"{} at {}",
-        icons::ACTIVE,
+        icons::active(),
         desc,
         tags_display,
         start_time.format("%H:%M:%S")
@@ -99,7 +101,7 @@ pub fn stop() -> Result<()> {
     if data.stop_active() {
         let (desc, dur) = info.unwrap();
         save_data(&data)?;
-        println!("{}  Stopped: \"{}\" - Duration: {}", icons::STOPPED, desc, dur);
+        println!("{}  Stopped: \"{}\" - Duration: {}", icons::stopped(), desc, dur);
     } else {
         println!("No active task to stop.");
     }
@@ -129,7 +131,7 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
 
     println!(
         "{} Logged: \"{}\"{} - Duration: {}",
-        icons::LOGGED,
+        icons::logged(),
         desc,
         tags_display,
         duration::format(dur)
@@ -146,7 +148,7 @@ pub fn today() -> Result<()> {
         return Ok(());
     }
 
-    println!("{} Today's entries:\n", icons::CALENDAR);
+    println!("{} Today's entries:\n", icons::calendar());
     for entry in &today_entries {
         let status = if entry.is_active() { entry.status_icon() } else { "  " };
         let tags_display = if entry.tags.is_empty() {
@@ -167,7 +169,8 @@ pub fn today() -> Result<()> {
     Ok(())
 }
 
-pub fn list(limit: usize) -> Result<()> {
+pub fn list(limit: Option<usize>) -> Result<()> {
+    let limit = limit.unwrap_or_else(|| config::load().list.default_limit.unwrap_or(20));
     let data = load_data()?;
 
     if data.entries.is_empty() {
@@ -175,7 +178,7 @@ pub fn list(limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    println!("{} All entries:\n", icons::LIST);
+    println!("{} All entries:\n", icons::list());
     for entry in data.entries.iter().rev().take(limit) {
         let status = if entry.is_active() { entry.status_icon() } else { "  " };
         let tags_display = if entry.tags.is_empty() {
@@ -200,7 +203,7 @@ pub fn status() -> Result<()> {
     let data = load_data()?;
 
     if let Some(active) = data.active_entry() {
-        println!("{}  Currently tracking: \"{}\"", icons::ACTIVE, active.description);
+        println!("{}  Currently tracking: \"{}\"", icons::active(), active.description);
         if !active.tags.is_empty() {
             println!("   Tags: {}", active.format_tags());
         }
