@@ -1,9 +1,10 @@
 use anyhow::Result;
-use chrono::{Local, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
 
 use crate::duration;
 use crate::icons;
+use crate::report;
 use crate::storage::{load_data, with_data};
 use crate::tracker::{IdleInterval, parse_tags};
 
@@ -63,6 +64,29 @@ pub enum Commands {
     Status,
     /// true/false if something is active
     Active,
+    /// Roll up logged time by project and item
+    Report {
+        /// Every entry, with no date bound
+        #[arg(long, group = "scope")]
+        all: bool,
+        /// This week, from Monday
+        #[arg(long, group = "scope")]
+        week: bool,
+        /// From this date onwards (YYYY-MM-DD)
+        #[arg(long, group = "scope")]
+        since: Option<NaiveDate>,
+        /// Up to and including this date (YYYY-MM-DD). Narrows a scope, so one of
+        /// --all/--week/--since is required alongside it: on its own it would have
+        /// nothing to narrow but the single default day.
+        #[arg(long, requires = "scope")]
+        until: Option<NaiveDate>,
+        /// Only entries whose project field is this
+        #[arg(long)]
+        project: Option<String>,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
     /// Phase marks for the agent layer
     Agent {
         #[command(subcommand)]
@@ -431,6 +455,34 @@ pub fn active() -> Result<()> {
 
     Ok(())
 }
+/// `tt report` — the rollup surface. Read-only over the store; see `src/report.rs`
+/// for the maths and for why the project axis is the field rather than a tag.
+#[allow(clippy::too_many_arguments)]
+pub fn report(
+    all: bool,
+    week: bool,
+    since: Option<NaiveDate>,
+    until: Option<NaiveDate>,
+    project: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let data = load_data()?;
+    let today = Local::now().date_naive();
+    let scope = report::resolve_scope(today, all, week, since, until, project.as_deref());
+    let selected = report::select(&data, &scope, project.as_deref());
+    let rolled = report::rollup(&selected);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report::to_json(&rolled, &scope.label))?
+        );
+    } else {
+        print!("{}", report::render(&rolled, &scope.label));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +490,53 @@ mod tests {
     use crate::storage::env_guard;
     use clap::Parser;
     use std::path::PathBuf;
+
+    /// `--until` on its own had nothing to narrow but the single default day, and
+    /// `bin/tt-report:198-207` silently discarded it. A usage error is the honest
+    /// version of that.
+    #[test]
+    fn until_requires_a_scope_to_narrow() {
+        assert!(
+            Cli::try_parse_from(["tt", "report", "--until", "2026-08-05"]).is_err(),
+            "--until alone is a usage error"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tt",
+                "report",
+                "--since",
+                "2026-08-01",
+                "--until",
+                "2026-08-05"
+            ])
+            .is_ok(),
+            "--until narrows a scope that exists"
+        );
+    }
+
+    #[test]
+    fn the_scope_selectors_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from(["tt", "report", "--week", "--all"]).is_err(),
+            "two scopes contradict each other"
+        );
+        assert!(Cli::try_parse_from(["tt", "report", "--week"]).is_ok());
+        assert!(Cli::try_parse_from(["tt", "report", "--all"]).is_ok());
+    }
+
+    #[test]
+    fn a_malformed_date_is_rejected_rather_than_ignored() {
+        assert!(Cli::try_parse_from(["tt", "report", "--since", "last tuesday"]).is_err());
+        assert!(Cli::try_parse_from(["tt", "report", "--since", "2026-13-01"]).is_err());
+    }
+
+    #[test]
+    fn report_takes_a_project_filter_and_a_json_flag_in_any_scope() {
+        assert!(
+            Cli::try_parse_from(["tt", "report", "--project", "vinge", "--json"]).is_ok(),
+            "neither belongs to the scope group"
+        );
+    }
 
     /// Point `HOME` at a fresh scratch dir so the store resolves inside it. The
     /// real store is written continuously by live agent sessions and must never be

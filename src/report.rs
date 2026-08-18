@@ -523,4 +523,157 @@ mod tests {
         assert_eq!(classify(&tags), (Some("vinge/6"), Some("plan")));
         assert_eq!(classify(&[]), (None, None));
     }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("a real date")
+    }
+
+    #[test]
+    fn the_default_scope_is_today_bounded_at_both_ends() {
+        let today = date(2026, 8, 18);
+        let scope = resolve_scope(today, false, false, None, None, None);
+        assert_eq!(scope.from, Some(today));
+        assert_eq!(scope.until, Some(today));
+        assert_eq!(scope.label, "Today, 2026-08-18");
+    }
+
+    #[test]
+    fn all_is_unbounded_and_week_starts_on_monday_with_no_upper_bound() {
+        // 2026-08-18 is a Tuesday, so the week starts the day before.
+        let today = date(2026, 8, 18);
+
+        let all = resolve_scope(today, true, false, None, None, None);
+        assert_eq!((all.from, all.until), (None, None));
+        assert_eq!(all.label, "All entries");
+
+        let week = resolve_scope(today, false, true, None, None, None);
+        assert_eq!(week.from, Some(date(2026, 8, 17)), "Monday");
+        assert_eq!(
+            week.until, None,
+            "the script sets no upper bound for a week"
+        );
+        assert_eq!(week.label, "Week of 2026-08-17");
+    }
+
+    #[test]
+    fn since_and_until_bound_the_range_and_project_suffixes_any_label() {
+        let today = date(2026, 8, 18);
+        let scope = resolve_scope(
+            today,
+            false,
+            false,
+            Some(date(2026, 8, 1)),
+            Some(date(2026, 8, 5)),
+            Some("vinge"),
+        );
+        assert_eq!(scope.from, Some(date(2026, 8, 1)));
+        assert_eq!(scope.until, Some(date(2026, 8, 5)));
+        assert_eq!(scope.label, "Since 2026-08-01 — #vinge");
+    }
+
+    #[test]
+    fn an_empty_rollup_says_so_and_renders_nothing_else() {
+        let rendered = render(&Rollup::default(), "Today, 2026-08-18");
+        assert_eq!(rendered, "No entries for Today, 2026-08-18.\n");
+    }
+
+    #[test]
+    fn the_human_form_carries_the_header_the_rows_and_the_phase_breakdown() {
+        let a = entry(1, Some("tt"), &["tt/12", "plan", "agent"], (9, 0), 30);
+        let b = entry(2, Some("tt"), &["tt/12", "impl", "agent"], (11, 0), 60);
+        let rendered = render(&rollup(&[&a, &b]), "Today, 2026-08-18");
+
+        assert!(
+            rendered.starts_with(&format!(
+                "{} Today, 2026-08-18 — 1h 30m\n\n",
+                icons::CALENDAR
+            )),
+            "header carries the icon, the label and the total: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("tt                             1h 30m\n"),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains("  tt/12                        1h 30m\n"),
+            "{rendered:?}"
+        );
+        // Longest phase first, joined with the middot.
+        assert!(
+            rendered.contains("      impl 1h 0m · plan 0h 30m\n"),
+            "{rendered:?}"
+        );
+        // The description line appears because it differs from the item key.
+        assert!(rendered.contains("      did the thing\n"), "{rendered:?}");
+        assert!(
+            !rendered.contains("overlapping"),
+            "two disjoint spans warn about nothing"
+        );
+    }
+
+    #[test]
+    fn the_overlap_warning_appears_only_when_spans_collide() {
+        let a = entry(1, Some("tt"), &["tt/1", "impl"], (9, 0), 60);
+        let b = entry(2, Some("tt"), &["tt/2", "impl"], (9, 30), 60);
+        let rendered = render(&rollup(&[&a, &b]), "Today, 2026-08-18");
+        assert!(
+            rendered.contains(&format!("{} 1 overlapping span(s)", icons::WARNING)),
+            "{rendered:?}"
+        );
+        assert!(rendered.contains("Log at each commit, not in batches."));
+    }
+
+    #[test]
+    fn an_active_entry_is_starred_in_the_item_row() {
+        let mut e = entry(1, Some("tt"), &["tt/12", "impl"], (9, 0), 30);
+        e.end_time = None;
+        let rendered = render(&rollup(&[&e]), "Today");
+        assert!(
+            rendered
+                .lines()
+                .any(|l| l.starts_with("  tt/12") && l.ends_with(" *")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_key_and_description_are_truncated_by_characters_not_bytes() {
+        // Multi-byte throughout: byte slicing would panic mid-character.
+        let mut e = entry(1, Some("tt"), &[], (9, 0), 30);
+        e.description = "å".repeat(80);
+        let rendered = render(&rollup(&[&e]), "Today");
+        // The key is the description here, so it is cut at 26 and the separate
+        // description line does not appear (they are equal before truncation).
+        assert!(rendered.contains(&"å".repeat(26)), "{rendered:?}");
+        assert!(!rendered.contains(&"å".repeat(27)), "cut at 26 characters");
+    }
+
+    #[test]
+    fn select_filters_on_the_date_bounds_and_on_the_project_field() {
+        let inside = entry(1, Some("vinge"), &["vinge/6", "plan"], (9, 0), 30);
+        let mut earlier = entry(2, Some("vinge"), &["vinge/7", "plan"], (9, 0), 30);
+        earlier.start_time = at(9, 0) - Duration::days(3);
+        earlier.end_time = Some(earlier.start_time + Duration::minutes(30));
+        let other_project = entry(3, Some("tt"), &["tt/12", "plan"], (10, 0), 30);
+
+        let data = TimeData {
+            entries: vec![inside.clone(), earlier.clone(), other_project.clone()],
+            ..Default::default()
+        };
+
+        let today = date(2026, 8, 18);
+        let day = resolve_scope(today, false, false, None, None, None);
+        assert_eq!(select(&data, &day, None).len(), 2, "the two dated today");
+
+        let all = resolve_scope(today, true, false, None, None, None);
+        assert_eq!(select(&data, &all, None).len(), 3);
+        assert_eq!(
+            select(&data, &all, Some("vinge"))
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "filtered on the field, not on a tag"
+        );
+    }
 }
