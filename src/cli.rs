@@ -63,6 +63,48 @@ pub enum Commands {
     Status,
     /// true/false if something is active
     Active,
+    /// Phase marks for the agent layer
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
+}
+
+/// The agent layer's mark commands, ported from `bin/tt-safe`.
+///
+/// The first nested subcommand in this CLI, and nested rather than flat on
+/// purpose: the positionals are the wrapper's verbatim, so every call site in the
+/// agent instructions is a textual `tt-safe ` → `tt agent ` swap, and the four
+/// verbs stay visibly one namespace instead of four top-level commands that only
+/// an agent ever types.
+///
+/// These commands touch mark files and nothing else — see `crate::agent` and
+/// `main`'s dispatch order.
+#[derive(Subcommand)]
+pub enum AgentCommands {
+    /// Open a mark for a phase, keeping the start of one already open
+    Begin {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+    },
+    /// Record one heartbeat for an open phase
+    Touch {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+    },
+    /// Drop a phase's mark and heartbeats without logging anything
+    Cancel {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+    },
+    /// List every open mark
+    List,
 }
 
 /// Parse one `--idle` value: `<start>-<end>` in epoch seconds.
