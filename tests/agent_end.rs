@@ -417,7 +417,6 @@ fn an_unvouched_span_over_the_threshold_is_flagged() {
 /// recorded intervals has something to prove.
 struct TwoGapFixture {
     holes: [(i64, i64); 2],
-    minutes: i64,
 }
 
 fn two_gap_fixture(case: &Case) -> TwoGapFixture {
@@ -436,7 +435,6 @@ fn two_gap_fixture(case: &Case) -> TwoGapFixture {
     case.beats_at("proj.12.plan", &beats);
     TwoGapFixture {
         holes: [(beats[0], beats[1]), (beats[2], beats[3])],
-        minutes: (beats[3] - start) / 60,
     }
 }
 
