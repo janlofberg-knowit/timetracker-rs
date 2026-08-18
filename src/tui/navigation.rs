@@ -1,3 +1,4 @@
+use crossterm::event::KeyCode;
 use anyhow::Result;
 use chrono::{Duration, Local};
 use crate::storage::PathStamp;
@@ -143,18 +144,11 @@ impl App {
         }
     }
 
-    pub(crate) fn delete_selected(&mut self) -> Result<()> {
-        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
-            return Ok(());
-        };
-        self.delete_entry(entry_id)
-    }
-
     /// Remove one entry by id, then keep the table cursor inside the shorter list.
     ///
-    /// By id rather than by selection, because the confirmation flow captured its
-    /// target before the prompt went up and the cursor may have moved since — see
-    /// [`PendingConfirm`].
+    /// By id and never by selection: `d` only reaches here through a confirmation
+    /// that captured its target before the prompt went up, and the cursor may have
+    /// moved since — see [`PendingConfirm`].
     pub(crate) fn delete_entry(&mut self, entry_id: u64) -> Result<()> {
         // An id that is already gone simply matches nothing — not an error.
         self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
@@ -170,24 +164,15 @@ impl App {
         Ok(())
     }
 
-    /// `[t]` in the detail popover: trim the selected entry's idle stretches away,
-    /// which splits it into the pieces between them.
+    /// `[t]` in the detail popover, once confirmed: trim the entry's idle stretches
+    /// away, which splits it into the pieces between them.
     ///
-    /// Destructive and unconfirmed, matching `d`. Afterwards the popover stays open
-    /// on the piece that kept the original id — the earliest one — **selected by
-    /// id**: `selected_entry` is positional (`nth` into the re-sorted list), so
-    /// inserting the later pieces would otherwise slide the overlay onto a
+    /// By id for the reason [`delete_entry`](Self::delete_entry) is. Afterwards the
+    /// popover stays open on the piece that kept the original id — the earliest one —
+    /// **selected by id**: `selected_entry` is positional (`nth` into the re-sorted
+    /// list), so inserting the later pieces would otherwise slide the overlay onto a
     /// different entry under the reader. The view can never empty here, since one
     /// entry becomes two or more, so there is no "closed it instead" case.
-    pub(crate) fn trim_selected(&mut self) -> Result<()> {
-        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
-            return Ok(());
-        };
-        self.trim_entry(entry_id)
-    }
-
-    /// Trim one entry by id, for the reason [`delete_entry`](Self::delete_entry) is
-    /// by id: the confirmation captured its target before the prompt went up.
     pub(crate) fn trim_entry(&mut self, entry_id: u64) -> Result<()> {
         // Nothing to trim comes back as no pieces, which is why the footer only
         // advertises `[t]` when there are intervals: the key is never a surprise
@@ -228,6 +213,24 @@ impl App {
             from: self.input_mode,
         });
         self.input_mode = InputMode::Confirm;
+    }
+
+    /// Answer the prompt with a keypress — the whole body of the `Confirm` arm, so
+    /// that the key contract is testable instead of living in a `match` no test can
+    /// reach.
+    ///
+    /// Every escape route is a no: `n`, `Esc`, **and `Enter`**. `Enter` already means
+    /// "close this" in the popover, so leaving it as cancel teaches no second meaning
+    /// — and an unlucky `Enter` can then never destroy anything. Anything else is
+    /// ignored and the prompt stays up; the destructive answer always takes a
+    /// deliberate key.
+    pub(crate) fn answer_confirm(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Char(c) if self.confirms_pending(c) => self.confirm_pending()?,
+            KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => self.cancel_confirm(),
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Whether `c` is a yes to the prompt that is up: `y`, or the very key that
