@@ -1,23 +1,11 @@
 //! The shared harness for the `tt agent` integration tests.
 //!
-//! `tests/agent_marks.rs` and `tests/agent_end.rs` are separate test binaries, so
-//! the sandbox, the fixtures and the assertions live here rather than being
-//! duplicated — and a `tests/` **subdirectory** is not compiled as a target of its
-//! own, which is why this is `common/mod.rs` and not `common.rs`.
-//!
-//! **Sandboxing is not optional and is asserted, not assumed.** The live store
-//! (`~/Library/Application Support/com.timetracker.tt/data.json`) and the live
-//! mark directory are written continuously by concurrent agent sessions, so every
-//! case gets a throwaway `HOME` *and* `TT_MARK_DIR` inside it, and [`Case::run`]
-//! refuses to run a command whose paths are not inside the sandbox.
-//!
-//! Time is fabricated, never waited for: marks and heartbeats are written
-//! directly at synthetic epochs and every expectation is derived from those
-//! fixtures rather than from a clock read by hand.
+//! Every case runs in a throwaway `HOME` *and* `TT_MARK_DIR`, and [`Case::run`]
+//! refuses a command whose paths are not inside the sandbox. Time is fabricated at
+//! synthetic epochs; expectations are derived from the fixture, never written down.
 //!
 //! Each test binary compiles this module separately, so an item only one of them
-//! uses is `dead_code` in the other — hence the crate-level allow, which is not a
-//! judgement about any particular helper.
+//! uses is `dead_code` in the other — hence the crate-level allow.
 #![allow(dead_code)]
 
 use chrono::{DateTime, Local};
@@ -32,7 +20,6 @@ pub struct Case {
     pub marks: PathBuf,
 }
 
-/// What one `tt agent` invocation produced.
 pub struct Run {
     pub status: Option<i32>,
     pub stdout: String,
@@ -50,27 +37,22 @@ impl Case {
         Self { home, marks }
     }
 
-    /// Run `tt agent <args>` with the sandbox in force.
-    ///
-    /// `env_clear` rather than a couple of overrides: an inherited `TT_MARK_DIR`
-    /// from the developer's own shell would silently point a case at the live
-    /// marks, which is the one failure mode this harness exists to prevent.
+    /// Run `tt agent <args>` with the sandbox in force. `env_clear`, not overrides:
+    /// an inherited `TT_MARK_DIR` would silently point a case at the live marks.
     pub fn run(&self, args: &[&str]) -> Run {
         let mut argv = vec!["agent"];
         argv.extend_from_slice(args);
         self.run_with(&argv, true)
     }
 
-    /// Run `tt agent <args>` with **no** `TT_MARK_DIR`, so the default location
-    /// inside the sandboxed `HOME`'s cache directory is exercised.
+    /// Run `tt agent <args>` with **no** `TT_MARK_DIR`, exercising the default path.
     pub fn run_in_cache(&self, args: &[&str]) -> Run {
         let mut argv = vec!["agent"];
         argv.extend_from_slice(args);
         self.run_with(&argv, false)
     }
 
-    /// Run `tt agent <args>` with one extra `KEY=value` in the environment, which
-    /// `env_clear` would otherwise strip. The oracle's own `EXTRA_ENV`.
+    /// Run `tt agent <args>` with one extra `KEY=value` that `env_clear` would strip.
     pub fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
         let mut argv = vec!["agent"];
         argv.extend_from_slice(args);
@@ -125,20 +107,13 @@ impl Case {
         fs::write(self.mark_file(key), format!("{start}\n")).unwrap();
     }
 
-    /// Run `tt <args>` with **no** `agent` prefix — the store-reading commands.
-    ///
-    /// [`Case::run`] prepends `agent` to every argv because that is what the mark
-    /// tests need; `tt report` is not an agent subcommand, so it needs the bare
-    /// form.
+    /// Run `tt <args>` with **no** `agent` prefix, for the store-reading commands.
     pub fn run_bare(&self, args: &[&str]) -> Run {
         self.run_with(args, true)
     }
 
-    /// Lay a `data.json` into the sandbox from fabricated rows.
-    ///
-    /// `schema_version: 1` on purpose: `main`'s migrate preamble early-returns at
-    /// `>= 1`, so the fabricated `project` fields survive instead of being
-    /// overwritten by the tag-inference migration this Story exists to replace.
+    /// Lay a `data.json` into the sandbox from fabricated rows, at `schema_version:
+    /// 1` so the migrate preamble early-returns and the `project` fields survive.
     pub fn write_store(&self, rows: &[StoreRow]) {
         let entries: Vec<String> = rows
             .iter()
@@ -179,38 +154,27 @@ impl Case {
         .unwrap();
     }
 
-    /// Lay a `data.json` into the sandbox verbatim.
-    ///
-    /// [`Case::write_store`] always stamps `schema_version: 1`, which is what the
-    /// rollup cases want; this is for the ones that need a store from *before* the
-    /// project field existed, so the migration has something to do.
+    /// Lay a `data.json` into the sandbox verbatim, for a store the migration must fix.
     pub fn write_raw_store(&self, json: &str) {
         let dir = self.data_dir();
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("data.json"), json).unwrap();
     }
 
-    /// The sandbox's own store directory — where `data.json` and `data.lock` land
-    /// if anything at all reaches the store.
+    /// The sandbox's store directory — where `data.json` and `data.lock` would land.
     pub fn data_dir(&self) -> PathBuf {
         self.home
             .join("Library/Application Support/com.timetracker.tt")
     }
 
-    /// The sandbox's store, parsed.
-    ///
-    /// An integration test cannot `use` a binary crate's modules, so the store is
-    /// read back through its own JSON rather than through `storage::load_data` —
-    /// the same file, one deserialiser further out.
+    /// The sandbox's store, parsed back from its own JSON.
     pub fn store(&self) -> Store {
         let path = self.data_dir().join("data.json");
         let body = fs::read_to_string(path).expect("the sandbox's data.json");
         serde_json::from_str(&body).expect("data.json should parse")
     }
 
-    /// Fabricate a heartbeat sequence at absolute epochs — the oracle's
-    /// `beats_at`. Written directly rather than beaten out in real time, so a
-    /// four-hour phase costs a test nothing.
+    /// Fabricate a heartbeat sequence at absolute epochs, so a long phase is free.
     pub fn beats_at(&self, key: &str, beats: &[i64]) {
         let file = self.beats_file(key);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -218,8 +182,7 @@ impl Case {
         fs::write(file, body).unwrap();
     }
 
-    /// Regular files directly in the mark directory — the beats subdirectory is
-    /// not one, which is the property `list` relies on.
+    /// Regular files directly in the mark directory — the `beats` subdirectory is not one.
     pub fn mark_count(&self) -> usize {
         count_files(&self.marks)
     }
@@ -246,8 +209,7 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// The `HH:MM` a fixture's own epoch renders as, so a row expectation is derived
-/// from the fixture rather than from a clock read by hand.
+/// The `HH:MM` a fixture's own epoch renders as.
 pub fn clock(epoch: i64) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)
         .unwrap()
@@ -261,7 +223,6 @@ pub struct StoreRow {
     pub description: &'static str,
     pub project: Option<&'static str>,
     pub tags: &'static [&'static str],
-    /// Epoch seconds.
     pub start: i64,
     /// Epoch seconds; `None` leaves the entry running.
     pub end: Option<i64>,
@@ -281,7 +242,6 @@ pub struct Store {
     pub entries: Vec<Entry>,
 }
 
-/// One logged entry.
 #[derive(Debug, serde::Deserialize)]
 pub struct Entry {
     pub description: String,
@@ -305,7 +265,6 @@ impl Entry {
     }
 }
 
-/// One recorded silent stretch, compared against the fixture's own epochs.
 #[derive(Debug, serde::Deserialize)]
 pub struct Idle {
     pub start: DateTime<Local>,
@@ -313,20 +272,19 @@ pub struct Idle {
 }
 
 impl Idle {
-    /// The epoch pair the wrapper would have passed as `--idle=<from>-<to>`.
+    /// The recorded stretch as a raw `(from, to)` epoch pair.
     pub fn epochs(&self) -> (i64, i64) {
         (self.start.timestamp(), self.end.timestamp())
     }
 }
 
-/// `tt-safe`'s own rounding, mirrored so an expectation can be derived from the
-/// fixture's timestamps instead of restating a literal.
+/// The rounding `tt` applies to a logged duration.
 pub fn round_quarter(minutes: i64) -> i64 {
     (((minutes + 7) / 15) * 15).max(15)
 }
 
-/// The `- Duration: <h>h <m>m` tail `cli::log` prints for `minutes`, which is what
-/// replaces the shell oracle's `--time=` argv assertion.
+/// The `- Duration:` tail `cli::log` prints for `minutes` — the figure it was asked
+/// for, never the stored span.
 pub fn logged_duration(minutes: i64) -> String {
     let rounded = round_quarter(minutes);
     format!("- Duration: {}h {}m", rounded / 60, rounded % 60)
@@ -351,12 +309,8 @@ impl Run {
         );
     }
 
-    /// The minutes `cli::log` said it logged, read back off its own output.
-    ///
-    /// The in-process stand-in for the oracle's `logged_minutes`, which read
-    /// `--time=<n>m` off the stub's argv: `log` prints the duration it was given,
-    /// **before** any split, which is exactly what the shell's `--time=` was. Lets
-    /// two runs be compared without either figure being written down.
+    /// The minutes `cli::log` said it logged, read off its own output — the requested
+    /// figure, before any split, never the stored span.
     pub fn logged_minutes(&self) -> i64 {
         let tail = self
             .stdout

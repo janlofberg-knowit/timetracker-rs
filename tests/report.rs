@@ -1,12 +1,5 @@
-//! `tt report` end to end, driving the real binary in a sandbox.
-//!
-//! The oracle is `bin/tt-report`, and the one place this deliberately disagrees
-//! with it is the **project axis**: the script derived the project from the first
-//! tag without a `/` that was not a phase, which for every agent-written entry is
-//! `agent`. Project is a real field, so these assert on the field — see
-//! `src/report.rs`'s module doc.
-//!
-//! Every timestamp is fabricated at an absolute epoch rather than waited for, so
+//! `tt report` end to end in a sandbox. The rollup axis is the entry's **project
+//! field**, never a tag, and every timestamp is fabricated at an absolute epoch so
 //! `--week`, `--since` and `--until` are testable without a clock.
 
 mod common;
@@ -14,8 +7,7 @@ mod common;
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use common::{Case, StoreRow, stamp};
 
-/// Midnight-anchored epochs, so a fabricated row lands on a date this test can
-/// name. Uses the local zone because the store's dates are local.
+/// Midnight-anchored epochs in the local zone, as the store's dates are local.
 fn epoch_on(date: NaiveDate, hour: i64) -> i64 {
     date.and_hms_opt(0, 0, 0)
         .expect("midnight exists")
@@ -34,8 +26,7 @@ fn days_ago(n: i64) -> NaiveDate {
     today() - Duration::days(n)
 }
 
-/// One agent-shaped row: the tags a `tt agent` command writes, plus the project
-/// field it sets.
+/// One agent-shaped row: the tags a `tt agent` command writes, plus its project.
 fn agent_row(
     description: &'static str,
     project: &'static str,
@@ -93,7 +84,6 @@ fn the_default_scope_reports_today_and_leaves_other_days_out() {
 
 #[test]
 fn an_agent_shaped_entry_reports_under_its_project_and_never_under_agent() {
-    // The whole reason `tt report` exists rather than shipping the script.
     let case = Case::new("report-project-axis");
     case.write_store(&[agent_row(
         "premium brand primitives",
@@ -111,8 +101,7 @@ fn an_agent_shaped_entry_reports_under_its_project_and_never_under_agent() {
         "grouped under the project field: {:?}",
         run.stdout
     );
-    // `agent` may appear nowhere as a project row. The item row is indented, the
-    // project row is not, so a line *starting* with `agent` would be the bug.
+    // A project row is unindented, so a line *starting* with `agent` is the bug.
     assert!(
         !run.stdout.lines().any(|line| line.starts_with("agent")),
         "the provenance tag is not a project: {:?}",
@@ -123,8 +112,7 @@ fn an_agent_shaped_entry_reports_under_its_project_and_never_under_agent() {
 #[test]
 fn week_includes_the_monday_boundary_entry() {
     let case = Case::new("report-week");
-    // The same arithmetic `TimeData::week_start` uses, so the boundary this
-    // asserts on is the one the code computes.
+    // The same arithmetic `TimeData::week_start` uses, so the boundary matches it.
     let monday = today() - Duration::days(today().weekday().num_days_from_monday() as i64);
 
     case.write_store(&[
@@ -215,8 +203,6 @@ fn since_and_until_bound_the_range_at_both_ends() {
 
 #[test]
 fn until_without_a_scope_is_a_usage_error() {
-    // The script silently discarded it and reported the single default day
-    // instead, which answered a question nobody asked.
     let case = Case::new("report-until-alone");
     case.write_store(&[]);
 
@@ -305,10 +291,7 @@ fn json_carries_the_documented_keys_over_the_real_binary() {
     assert_eq!(item["seconds"], 30 * 60);
     assert_eq!(item["phases"]["plan"], 30 * 60);
     assert_eq!(item["active"], false);
-    assert!(
-        item["seconds"].is_i64(),
-        "integers, not the script's floats"
-    );
+    assert!(item["seconds"].is_i64(), "seconds are integers, not floats");
 }
 
 #[test]
@@ -408,9 +391,7 @@ fn all_reports_every_entry_regardless_of_date() {
 
 #[test]
 fn report_leaves_the_store_untouched_byte_for_byte() {
-    // It is a read, and it used to be a write: `main`'s migrate preamble locked the
-    // store exclusively and rewrote `data.json` before every command, so a rollup
-    // could block a live `tt agent end` over a file it only wanted to look at.
+    // A read: no rewrite and no exclusive lock, so it cannot block `tt agent end`.
     let case = Case::new("report-read-only");
     case.write_store(&[agent_row(
         "did the thing",
@@ -446,11 +427,9 @@ fn report_leaves_the_store_untouched_byte_for_byte() {
 
 #[test]
 fn a_pre_project_store_still_reports_its_inferred_projects() {
-    // The other half of dispatching ahead of the preamble: `report` migrates its own
-    // in-memory copy, so a store written before the `project` field existed still
-    // rolls up under the project inferred from its tags — without that inference
-    // being written back.
-    let case = Case::new("report-legacy-store");
+    // `report` migrates its own in-memory copy, so a pre-`project` store rolls up
+    // under the project inferred from its tags, without that being written back.
+    let case = Case::new("report-pre-project-store");
     let start = epoch_on(today(), 9);
     case.write_raw_store(&format!(
         r#"{{"entries":[{{"id":1,"description":"premium brand primitives","project":null,"tags":["vinge","vinge/12","impl"],"start_time":"{}","end_time":"{}","idle":[]}}],"next_id":2,"schema_version":0}}"#,
