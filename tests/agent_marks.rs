@@ -139,6 +139,16 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// The `HH:MM` a fixture's own epoch renders as, so a row expectation is derived
+/// from the fixture rather than from a clock read by hand.
+fn clock(epoch: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string()
+}
+
 impl Run {
     fn assert_status(&self, expected: i32) {
         assert_eq!(
@@ -361,4 +371,145 @@ fn the_wrappers_marks_are_carried_over_once_and_the_old_directory_stays() {
         second.stderr
     );
     second.assert_stdout_has("No open marks.");
+}
+
+// --- list (tt-safe-gaps.sh:321-398, `marks`) -------------------------------
+//
+// Three of these read the **house-style** row from #64 rather than the wrapper's
+// terse `%-*s  %s  (%s)`: the port's one ruled divergence (owner, 2026-08-18).
+// "nothing when the directory is empty" needs no change at all, because
+// `No open marks.` happens to be identical in both.
+
+/// Ported from "marks reports nothing when the directory is empty".
+#[test]
+fn list_reports_nothing_when_the_directory_is_empty() {
+    let case = Case::new("list-empty");
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("No open marks.");
+    // The bare line, with no header and no emoji — as `tt list` says
+    // `No entries yet.`
+    assert_eq!(run.stdout, "No open marks.\n");
+}
+
+/// Ported from "marks lists an open mark in the TUI's row format", reading the
+/// house-style row instead.
+#[test]
+fn list_shows_an_open_mark_as_a_house_style_row() {
+    let case = Case::new("list-row");
+    let start = now() - 600;
+    case.write_mark("proj.23.impl", start);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "\u{1F4CC} Open marks:\n\n  proj/23 impl       - since {} (0h 10m)\n",
+            clock(start)
+        ),
+        "the header, the blank line and one padded row"
+    );
+}
+
+/// Ported from "marks drops the issue for the - sentinel".
+#[test]
+fn list_drops_the_issue_for_the_sentinel() {
+    let case = Case::new("list-sentinel");
+    case.write_mark("proj.-.plan", now());
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("proj plan");
+    assert!(
+        !run.stdout.contains("proj/-"),
+        "the - sentinel leaked into the label: {:?}",
+        run.stdout
+    );
+}
+
+/// Ported from "marks renders elapsed as the TUI does", reading the house
+/// duration instead: always `{h}h {m}m`, and never negative.
+#[test]
+fn list_renders_an_age_in_the_house_duration_format() {
+    let case = Case::new("list-ages");
+    case.write_mark("long.1.impl", now() - 126 * 60);
+    case.write_mark("short.2.impl", now() - 2 * 60);
+    case.write_mark("future.3.impl", now() + 600);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("(2h 6m)");
+    run.assert_stdout_has("(0h 2m)");
+    // A start in the future reads as `0h 0m`, not as `0h -10m`.
+    run.assert_stdout_has("(0h 0m)");
+    // No age is ever negative — `duration::format` on an unclamped negative span
+    // would print `0h -10m`. (` - since ` is the row separator, so the check is on
+    // the parenthesised age itself.)
+    for line in run.stdout.lines().filter(|line| line.contains('(')) {
+        let age = &line[line.find('(').unwrap()..];
+        assert!(!age.contains('-'), "a negative age reached {age:?}");
+    }
+}
+
+/// Ported from "marks still lists a mark whose phase contains a dot".
+#[test]
+fn list_still_shows_a_mark_whose_phase_contains_a_dot() {
+    let case = Case::new("list-dotted-phase");
+    case.write_mark("proj.23.impl.v2", now());
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    // The first/last-dot split is lossy by design: extra dots land in the middle
+    // field. Listing an imperfect label beats hiding an open mark.
+    run.assert_stdout_has("proj/23.impl v2");
+}
+
+/// Ported from "marks lists a dotless mark name as a bare project".
+#[test]
+fn list_shows_a_dotless_name_as_a_bare_project() {
+    let case = Case::new("list-dotless");
+    case.write_mark("solo", now());
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("solo");
+}
+
+/// Ported from "marks lists a mark whose phase is literally 'last' (issue #16)".
+#[test]
+fn list_shows_a_mark_whose_phase_is_literally_last() {
+    let case = Case::new("list-phase-last");
+    case.run(&["begin", "proj", "-", "last"]).assert_status(0);
+    assert!(case.mark_file("proj.-.last").is_file());
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    // A name filter would hide this; the reader tests it structurally instead.
+    run.assert_stdout_has("proj last");
+}
+
+/// Ported from "marks ignores the beats subdirectory".
+#[test]
+fn list_ignores_the_beats_subdirectory() {
+    let case = Case::new("list-ignores-beats");
+    case.write_mark("proj.7.impl", now());
+    case.run(&["touch", "proj", "7", "impl"]).assert_status(0);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("proj/7 impl");
+    assert!(
+        !run.stdout.contains("beats"),
+        "the beats directory was listed as a mark: {:?}",
+        run.stdout
+    );
+    // One row per regular file in the mark directory, and the directory is not
+    // one — a file-type test, never a name filter (#16).
+    let rows = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .count();
+    assert_eq!(rows, case.mark_count(), "one row per mark file");
 }
