@@ -510,6 +510,14 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         Style::default().fg(theme::ACCENT).bold(),
         value_width,
     ));
+    // Idle rows only when the entry has any: an entry with none has nothing to say
+    // about idle, and an em dash would imply the field applies to it.
+    for (i, gap) in entry.idle.iter().enumerate() {
+        lines.push(Line::from(vec![
+            label(if i == 0 { "Idle" } else { "" }),
+            Span::styled(gap.format_span(), Style::default().fg(theme::INACTIVE)),
+        ]));
+    }
     lines.push(Line::from(Span::raw("")));
     lines.push(Line::from(label("Description")));
     // The description gets the full inner width rather than the value column: it
@@ -534,14 +542,10 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         ),
         Span::styled(marker, marker_style),
         // Every hint here is bound in the `InputMode::Detail` arm — a hint that does
-        // nothing would be worse than none. Traversal comes first because it is what
-        // keeps the list interactive from inside the overlay.
-        overlay_hints(&[
-            ("j/k", "move"),
-            ("e", "edit"),
-            ("d", "delete"),
-            ("esc", "close"),
-        ]),
+        // nothing would be worse than none, which is also why `app.detail_hints()`
+        // drops `[t]` on an entry with no idle to trim. Traversal comes first
+        // because it is what keeps the list interactive from inside the overlay.
+        overlay_hints(&app.detail_hints()),
     );
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),

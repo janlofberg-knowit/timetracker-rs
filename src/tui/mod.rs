@@ -342,6 +342,14 @@ pub fn run_tui() -> Result<()> {
                                     app.input_mode = InputMode::Normal;
                                 }
                             }
+                            // Unconfirmed for the same reason as `d`, and `t` rather
+                            // than the better-mnemonic `s` because a slip outside
+                            // this modal hits `go_to_today()` rather than
+                            // `stop_active()` — harmless navigation instead of a
+                            // stopped timer. Bound here only: the table's `t` still
+                            // means today. The popover stays open on the piece that
+                            // kept the id, so there is no "emptied the view" case.
+                            KeyCode::Char('t') => app.trim_selected()?,
                             _ => {}
                         },
                     }
@@ -826,6 +834,30 @@ mod tests {
             end_time: Some(start + chrono::Duration::minutes(minutes)),
             idle: Vec::new(),
         }
+    }
+
+    /// A logged entry carrying idle stretches, given as minute offsets from its
+    /// own start — so every assertion derives from the fixture, not a literal.
+    fn with_idle(id: u64, minutes: i64, gaps: &[(i64, i64)]) -> TimeEntry {
+        let mut entry = logged(
+            id,
+            "long session",
+            "tt",
+            &["tt"],
+            Local::now().date_naive(),
+            minutes,
+        );
+        let start = entry.start_time;
+        entry.idle = gaps
+            .iter()
+            .map(|(from, to)| {
+                crate::tracker::IdleInterval::new(
+                    start + chrono::Duration::minutes(*from),
+                    start + chrono::Duration::minutes(*to),
+                )
+            })
+            .collect();
+        entry
     }
 
     /// A store spanning three scopes: two days inside the current week plus one
@@ -1447,9 +1479,125 @@ mod tests {
         assert!(app.input_mode == InputMode::Normal);
     }
 
+    /// `[t]`: the popover's trim. Destructive, unconfirmed, and it must leave the
+    /// overlay on the piece that kept the original id rather than wherever the
+    /// inserted rows pushed the cursor.
+    #[test]
+    fn t_in_the_popover_trims_the_entry_and_stays_on_the_piece_that_kept_the_id() {
+        let _guard = env_guard();
+        sandbox("detail-trim");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                with_idle(4, 180, &[(30, 45), (100, 130)]),
+                dated(9, "untouched", "vinge", &["ops"], today),
+            ],
+            10,
+        );
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "long session");
+        app.open_detail();
+        assert!(
+            app.detail_hints().contains(&("t", "trim")),
+            "the footer hid the hint on an entry that has idle"
+        );
+        let before = app
+            .selected_entry()
+            .map(|e| (e.duration(), e.idle.len()))
+            .unwrap();
+        let idle_total = with_idle(4, 180, &[(30, 45), (100, 130)])
+            .idle
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, gap| acc + gap.duration());
+
+        app.trim_selected().unwrap();
+
+        assert!(app.input_mode == InputMode::Detail, "the trim closed it");
+        assert_eq!(
+            app.selected_entry().map(|e| e.id),
+            Some(4),
+            "the popover slid off the piece that kept the id"
+        );
+        // Two holes, so three pieces, plus the entry that was never touched.
+        assert_eq!(app.filtered_entries().len(), before.1 + 1 + 1);
+        let pieces: Vec<&TimeEntry> = app
+            .filtered_entries()
+            .into_iter()
+            .filter(|e| e.description == "long session")
+            .collect();
+        assert_eq!(pieces.len(), 3);
+        let after = pieces
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, e| acc + e.duration());
+        assert_eq!(after, before.0 - idle_total);
+        // Nothing marks the pieces apart but their real times, and none of them
+        // still carries a stretch it excludes — so the hint is gone too.
+        assert!(pieces.iter().all(|e| e.idle.is_empty()));
+        assert!(
+            !app.detail_hints().contains(&("t", "trim")),
+            "the footer advertises a trim that would now do nothing"
+        );
+        assert!(
+            descriptions(&on_disk()).contains(&"untouched"),
+            "the trim disturbed another entry"
+        );
+    }
+
+    #[test]
+    fn t_on_an_entry_with_no_idle_does_nothing_and_the_footer_omits_the_hint() {
+        let _guard = env_guard();
+        sandbox("detail-trim-noop");
+        seed(vec![entry(0, "no idle here"), entry(1, "nor here")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "no idle here");
+        app.open_detail();
+        assert!(
+            !app.detail_hints().contains(&("t", "trim")),
+            "the footer advertised a no-op"
+        );
+        let before = serde_json::to_string(&on_disk()).unwrap();
+
+        app.trim_selected().unwrap();
+
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(selected_description(&app), "no idle here");
+        assert_eq!(
+            serde_json::to_string(&on_disk()).unwrap(),
+            before,
+            "a no-op trim rewrote the store"
+        );
+    }
+
+    /// The binding lives in the `Detail` arm only: on the table, `t` is still the
+    /// harmless navigation that made it the safe choice over `s`.
+    #[test]
+    fn t_outside_the_popover_still_jumps_to_today() {
+        let _guard = env_guard();
+        sandbox("detail-trim-normal-t");
+        seed(vec![with_idle(4, 180, &[(30, 45)])], 5);
+
+        let mut app = App::new().unwrap();
+        app.previous_period();
+        assert_ne!(app.selected_date, Local::now().date_naive());
+
+        // What the `Normal` arm's `t` calls.
+        app.go_to_today();
+
+        assert_eq!(app.selected_date, Local::now().date_naive());
+        assert_eq!(on_disk().entries.len(), 1, "the table's `t` split an entry");
+    }
+
     /// `Detail` is deliberately *not* in `sync_from_store`'s guarded set: there is no
-    /// half-typed input to clobber, and the id anchoring means an agent's write while
-    /// the popover is open cannot swap the entry being read.
+    /// half-typed input to clobber, and `sync_from_store` re-anchors the cursor on the
+    /// selected entry's id, so a write that lands elsewhere leaves the popover where
+    /// it was.
+    ///
+    /// That anchor is `sync_from_store`'s own, not a property of the popover:
+    /// `selected_entry` is purely positional (`nth` into the re-sorted list), so any
+    /// code path that inserts rows *without* re-anchoring does slide the overlay onto
+    /// a different entry — which is exactly why `trim_selected` re-selects by id.
     #[test]
     fn an_outside_write_reaches_the_open_detail_popover_without_moving_it() {
         let _guard = env_guard();

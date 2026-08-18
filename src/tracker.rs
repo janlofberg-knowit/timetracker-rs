@@ -39,6 +39,17 @@ impl IdleInterval {
     pub fn duration(&self) -> Duration {
         self.end.signed_duration_since(self.start)
     }
+
+    /// `09:50 – 10:20 (30m)`, as the detail popover lists it — clock times, since
+    /// the epoch seconds the interval was recorded from are a wire format.
+    pub fn format_span(&self) -> String {
+        format!(
+            "{} – {} ({})",
+            self.start.format("%H:%M"),
+            self.end.format("%H:%M"),
+            duration::format(self.duration())
+        )
+    }
 }
 
 /// Parse tags (words starting with #) from text and return (clean_text, tags)
