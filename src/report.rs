@@ -1,16 +1,6 @@
-//! Rollups over the store — the `tt report` surface.
-//!
-//! Ported from `bin/tt-report`, a 229-line Python script that read `data.json`
-//! directly. That was the last part of the agent workflow a `cargo install` could
-//! not carry, and the last thing parsing the store behind the binary's back.
-//!
-//! **The project axis changed in the port, deliberately.** The script derived the
-//! project from the tags — the first tag with no `/` that was not a phase — and
-//! since the tag convention emits `#<project>/<issue> #<phase> #agent`, that tag
-//! was always `agent`. On real data it filed the great majority of agent-logged
-//! work under a project literally called `agent`. Project is a real field
-//! ([`TimeEntry::project`]), so this groups on the field and the numbers change
-//! because they were wrong, not because the port drifted.
+//! Rollups over the store — the `tt report` surface: a [`TimeEntry::project`] →
+//! item tree with per-phase breakdowns and an overlap count, the scope flags, and
+//! the terminal and `--json` renderings.
 
 use std::collections::BTreeMap;
 
@@ -23,21 +13,15 @@ use crate::icons;
 use crate::tracker::{TimeData, TimeEntry};
 
 /// The bucket an entry with no `project` field lands in.
-///
-/// The script called this `(untagged)`, which described how it guessed rather than
-/// what it found. Nothing has been untagged since project became a field.
 pub const NO_PROJECT: &str = "(no project)";
 
-/// One item's totals — an item being a `<project>/<issue>` tag, or the bare
-/// description when an entry carries no such tag.
+/// One item's totals — the item being a `<project>/<issue>` tag, else a description.
 #[derive(Debug, Default)]
 pub struct ItemNode {
     pub seconds: i64,
-    /// Seconds per phase, for the ` · `-joined breakdown. Empty when no entry
-    /// under this item carried a phase tag.
+    /// Seconds per phase, for the ` · `-joined breakdown; empty when none carried one.
     pub phases: BTreeMap<String, i64>,
-    /// The first contributing entry's description, shown when it differs from the
-    /// item key — exactly the script's `item["entries"][0]["description"]`.
+    /// The first contributing entry's description, shown when it differs from the key.
     pub description: String,
     /// Whether any contributing entry is still running.
     pub active: bool,
@@ -65,12 +49,8 @@ impl Rollup {
     }
 }
 
-/// Split an entry's tags into its item and phase axes.
-///
-/// Stored tags carry **no** `#` — `tracker::parse_tags` strips the prefix before
-/// saving — so these compare bare words. The item is the first tag containing a
-/// `/`; the phase is the first tag in [`PHASES`]; `agent` matches neither and is
-/// ignored, which is the whole reason the project axis had to move to the field.
+/// Split an entry's tags into its item axis (first tag containing a `/`) and its
+/// phase axis (first tag in [`PHASES`]). Stored tags carry **no** `#`.
 pub fn classify(tags: &[String]) -> (Option<&str>, Option<&str>) {
     let mut item = None;
     let mut phase = None;
@@ -86,23 +66,15 @@ pub fn classify(tags: &[String]) -> (Option<&str>, Option<&str>) {
     (item, phase)
 }
 
-/// An entry's billable seconds. Never negative: an entry whose end precedes its
-/// start is corrupt, and reporting it as negative time would corrupt the totals
-/// around it too.
+/// An entry's billable seconds, clamped at zero so an entry whose end precedes its
+/// start cannot subtract from the totals around it.
 fn entry_seconds(entry: &TimeEntry) -> i64 {
     entry.duration().num_seconds().max(0)
 }
 
-/// Count overlapping *pairs* of spans.
-///
-/// Reproduces `bin/tt-report:117-126`, early `break` included. The break is
-/// correct rather than a bug: the list is sorted by start, so once a successor
-/// starts at or after `first`'s end, every later successor does too.
-///
-/// The count matters because `tt log` back-dates from now (`end = now`,
-/// `start = now - duration`), so entries logged in a batch claim overlapping
-/// evening slots. Daily totals stay right; the timeline does not. This is what
-/// keeps that visible.
+/// Count overlapping *pairs* of spans, not overlapping entries — `tt log`
+/// back-dates from now, so a batch of entries claims overlapping slots. The early
+/// `break` is sound because the list is sorted by start.
 pub fn count_overlaps(entries: &[&TimeEntry]) -> usize {
     let mut ordered: Vec<&&TimeEntry> = entries.iter().collect();
     ordered.sort_by_key(|entry| entry.start_time);
@@ -131,8 +103,7 @@ pub fn rollup(entries: &[&TimeEntry]) -> Rollup {
         let seconds = entry_seconds(entry);
         let (item, phase) = classify(&entry.tags);
         let project = entry.project.as_deref().unwrap_or(NO_PROJECT);
-        // An item tag if there is one, else the description — the same fallback
-        // the script used, so a hand-written entry still gets its own row.
+        // Else the description, so a hand-written entry still gets its own row.
         let key = item.unwrap_or(entry.description.as_str());
 
         result.total_seconds += seconds;
@@ -153,12 +124,7 @@ pub fn rollup(entries: &[&TimeEntry]) -> Rollup {
     result
 }
 
-/// Keys of a map, ordered by descending value with the name as the tie-break.
-///
-/// The script's tie order was dict-insertion order — first appearance in the store
-/// — which is neither stable under editing nor testable. Alphabetical ties are
-/// both, at the cost of two equal-length adjacent rows swapping against the
-/// script's output.
+/// Keys of a map by descending value, the name breaking ties so the order is stable.
 fn by_seconds_desc<T>(map: &BTreeMap<String, T>, seconds: impl Fn(&T) -> i64) -> Vec<&str> {
     let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
     keys.sort_by(|a, b| {
@@ -173,13 +139,12 @@ fn seconds_to_duration(seconds: i64) -> Duration {
     Duration::seconds(seconds)
 }
 
-/// Truncate to `n` **characters**, not bytes — descriptions are free text and
-/// byte slicing panics on a multi-byte boundary.
+/// Truncate to `n` **characters** — byte slicing panics on a multi-byte boundary.
 fn truncate(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
-/// The human rollup, keeping `bin/tt-report:129-159`'s columns and content.
+/// The human rollup: a header, then a row per project with its items beneath it.
 pub fn render(rollup: &Rollup, label: &str) -> String {
     if rollup.is_empty() {
         return format!("No entries for {label}.\n");
@@ -209,8 +174,7 @@ pub fn render(rollup: &Rollup, label: &str) -> String {
                 fmt_duration::format(seconds_to_duration(item.seconds)),
                 marker
             ));
-            // The description earns its own line only when it says something the
-            // key does not.
+            // Its own line only when it says something the key does not.
             if item.description != key && !item.description.is_empty() {
                 out.push_str(&format!("      {}\n", truncate(&item.description, 60)));
             }
@@ -244,21 +208,8 @@ pub fn render(rollup: &Rollup, label: &str) -> String {
     out
 }
 
-/// The `--json` payload.
-///
-/// Keeps `bin/tt-report:162-182`'s key names and nesting, with **three
-/// deliberate deltas** — recorded here so a later reader does not take them for
-/// accidents:
-///
-/// 1. `projects` keys are the `project` **field**, and the empty bucket is
-///    [`NO_PROJECT`] rather than the script's `(untagged)`.
-/// 2. `seconds` and `total_seconds` are whole integers, not the script's floats.
-/// 3. `label` is additive, so a consumer can echo back the scope it asked for.
-///
-/// Safe because nothing reads the old shape programmatically: its only references
-/// were prose in the wrapper repo's agent instructions. Anything keying off the
-/// old names still keys off these; only the values under `projects` move, and they
-/// move because they were wrong.
+/// The `--json` payload: `projects` keyed on the `project` **field** with the
+/// fieldless bucket under [`NO_PROJECT`], integer seconds, and the scope `label`.
 #[derive(Debug, Serialize)]
 pub struct JsonReport {
     pub label: String,
@@ -326,12 +277,8 @@ pub struct Scope {
     pub label: String,
 }
 
-/// Resolve the scope flags into bounds and a label, reproducing
-/// `bin/tt-report:196-211`.
-///
-/// Note `--week` has a lower bound only — the script sets no upper bound for it,
-/// so a week report includes anything dated after today, which a fabricated or
-/// mis-clocked entry can be.
+/// Resolve the scope flags into bounds and a label. `--week` has a lower bound
+/// only, so it includes anything dated after today.
 pub fn resolve_scope(
     today: NaiveDate,
     all: bool,
@@ -367,8 +314,7 @@ pub fn resolve_scope(
         }
     };
 
-    // `--until` only ever narrows, and clap requires a scope alongside it, so it
-    // can never silently overwrite the default day the way the script's did.
+    // `--until` only ever narrows, and clap requires a scope alongside it.
     if let Some(until) = until {
         scope.until = Some(until);
     }
@@ -378,8 +324,7 @@ pub fn resolve_scope(
     scope
 }
 
-/// The entries a scope selects: dated inside its bounds, and matching its project
-/// filter on the **field**.
+/// The entries a scope selects: inside its dates, matching `project` on the field.
 pub fn select<'a>(data: &'a TimeData, scope: &Scope, project: Option<&str>) -> Vec<&'a TimeEntry> {
     data.entries
         .iter()
@@ -425,8 +370,7 @@ mod tests {
 
     #[test]
     fn an_agent_shaped_entry_rolls_up_under_its_project_not_under_agent() {
-        // The bug the port exists to fix: `agent` is a tag on every agent-written
-        // entry, and the script took it for the project.
+        // `agent` tags every agent-written entry and must never be the project.
         let e = entry(1, Some("vinge"), &["vinge/6", "plan", "agent"], (9, 0), 30);
         let rolled = rollup(&[&e]);
 
@@ -493,9 +437,7 @@ mod tests {
 
     #[test]
     fn overlaps_count_pairs_and_the_early_break_does_not_undercount() {
-        // Three spans: the first two overlap each other, the third starts after
-        // the first ends but before the second does. One pair with the first, one
-        // with the second — the `break` must not hide the second.
+        // Two pairs (a×b, b×c) and not a×c — the `break` must not hide b×c.
         let a = entry(1, Some("tt"), &["tt/1"], (9, 0), 60); // 09:00–10:00
         let b = entry(2, Some("tt"), &["tt/2"], (9, 30), 60); // 09:30–10:30
         let c = entry(3, Some("tt"), &["tt/3"], (10, 15), 30); // 10:15–10:45
@@ -545,10 +487,7 @@ mod tests {
 
         let week = resolve_scope(today, false, true, None, None, None);
         assert_eq!(week.from, Some(date(2026, 8, 17)), "Monday");
-        assert_eq!(
-            week.until, None,
-            "the script sets no upper bound for a week"
-        );
+        assert_eq!(week.until, None, "a week report has no upper bound");
         assert_eq!(week.label, "Week of 2026-08-17");
     }
 
@@ -639,8 +578,7 @@ mod tests {
         let mut e = entry(1, Some("tt"), &[], (9, 0), 30);
         e.description = "å".repeat(80);
         let rendered = render(&rollup(&[&e]), "Today");
-        // The key is the description here, so it is cut at 26 and the separate
-        // description line does not appear (they are equal before truncation).
+        // The key is the description here, so it is cut at 26 and not repeated.
         assert!(rendered.contains(&"å".repeat(26)), "{rendered:?}");
         assert!(!rendered.contains(&"å".repeat(27)), "cut at 26 characters");
     }
@@ -675,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn the_json_payload_keeps_the_scripts_keys_with_integer_seconds() {
+    fn the_json_payload_keys_projects_on_the_field_with_integer_seconds() {
         let agent_shaped = entry(1, Some("vinge"), &["vinge/6", "plan", "agent"], (9, 0), 30);
         let fieldless = entry(2, None, &["plan"], (9, 15), 15);
         let rolled = rollup(&[&agent_shaped, &fieldless]);
@@ -683,13 +621,11 @@ mod tests {
         let json = serde_json::to_value(to_json(&rolled, "Today, 2026-08-18"))
             .expect("the payload serialises");
 
-        // The script's own keys, unchanged.
         assert_eq!(json["total_seconds"], 45 * 60);
         assert_eq!(json["overlaps"], 1, "the two spans collide");
-        // Additive, so a consumer can echo back what it asked for.
         assert_eq!(json["label"], "Today, 2026-08-18");
 
-        // Project keys are the field, and the empty bucket is not `(untagged)`.
+        // Project keys are the field, and the fieldless entry buckets separately.
         let projects = json["projects"].as_object().expect("an object");
         let mut names: Vec<&str> = projects.keys().map(String::as_str).collect();
         names.sort();
@@ -705,7 +641,7 @@ mod tests {
         assert_eq!(item["description"], "did the thing");
         assert_eq!(item["active"], false);
 
-        // Integers throughout, not the script's floats — no `.0` anywhere.
+        // Integers throughout — no `.0` anywhere.
         assert!(json["total_seconds"].is_i64());
         assert!(item["seconds"].is_i64());
     }
