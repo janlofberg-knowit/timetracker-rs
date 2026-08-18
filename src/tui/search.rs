@@ -11,9 +11,7 @@ impl App {
             SortOrder::OldestFirst => entries.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
         }
 
-        // Values are OR'd within a pane and AND'd across the two panes: projects
-        // `a`,`b` plus tag `impl` means "in a or b, and also tagged impl". An empty
-        // set is not a filter, so it drops out rather than matching nothing.
+        // OR within a pane, AND across the two; an empty set is not a filter.
         let entries: Vec<_> = entries
             .into_iter()
             .filter(|e| {
@@ -43,20 +41,13 @@ impl App {
         !self.search_term.is_empty() || self.input_mode == InputMode::Searching
     }
 
-    /// Whether any pane selection is narrowing the view — the footer total's
-    /// "is this a filtered figure?" test.
+    /// Whether a pane selection is narrowing the view.
     pub(crate) fn is_filtering(&self) -> bool {
         !self.selected_projects.is_empty() || !self.selected_tags.is_empty()
     }
 
-    /// Whether the figure the footer shows is a narrowed one — a pane selection
-    /// or a live search term, i.e. `filtered_total` rather than the scope total.
-    ///
-    /// One predicate for two readers on purpose: the footer labels its total
-    /// `Filtered:` from it, and the Summary surface emphasises its `all projects`
-    /// marker from it. Those two are the halves of one statement — "this number
-    /// is narrowed, that box is not" — so they must never be able to disagree
-    /// about when it holds.
+    /// Whether the footer's figure is narrowed — pane selection or search term.
+    /// The Summary marker reads the same predicate, so the two cannot disagree.
     pub(crate) fn total_is_filtered(&self) -> bool {
         !self.search_term.is_empty() || self.is_filtering()
     }

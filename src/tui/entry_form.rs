@@ -5,9 +5,7 @@ use super::types::{InputField, InputMode, ViewMode};
 
 impl App {
     pub(crate) fn start_adding(&mut self) {
-        // In week view, snap selected_date to the day the cursor is under so
-        // that new entries land on the right day without the user having to
-        // type a date explicitly.
+        // In week view, snap selected_date to the day under the cursor.
         if self.view_mode == ViewMode::Week {
             if let Some(date) = self.date_under_cursor() {
                 self.selected_date = date;
@@ -78,8 +76,7 @@ impl App {
         let tags = self.parse_tags();
         let description = self.input_description.clone();
         let project = self.parse_project();
-        // Added against the freshly loaded store, so the id comes from the current
-        // `next_id` rather than the one this session started with.
+        // Added against the freshly loaded store, so the id is the current `next_id`.
         self.mutate_store(|data| {
             data.add_entry(description, project, tags, start_time, end_time);
         })?;
@@ -184,7 +181,7 @@ impl App {
         }
     }
 
-    /// Returns the text of the active input regardless of mode (form field or search bar).
+    /// The active input's text in any mode — form field or search bar.
     fn active_input(&self) -> &str {
         match self.input_mode {
             super::types::InputMode::Searching => &self.search_term,
@@ -208,11 +205,9 @@ impl App {
         let input = self.active_input().to_string();
         let chars: Vec<char> = input.chars().collect();
         let mut pos = self.cursor_pos.min(chars.len());
-        // Step back past non-alphanumeric chars
         while pos > 0 && !chars[pos - 1].is_alphanumeric() {
             pos -= 1;
         }
-        // Step back past the word
         while pos > 0 && chars[pos - 1].is_alphanumeric() {
             pos -= 1;
         }
@@ -225,11 +220,9 @@ impl App {
         let chars: Vec<char> = input.chars().collect();
         let len = chars.len();
         let mut pos = self.cursor_pos.min(len);
-        // Step forward past the word
         while pos < len && chars[pos].is_alphanumeric() {
             pos += 1;
         }
-        // Step forward past non-alphanumeric chars
         while pos < len && !chars[pos].is_alphanumeric() {
             pos += 1;
         }
@@ -238,12 +231,8 @@ impl App {
 
     // ── Time resolution ──────────────────────────────────────────────────────
 
-    /// Resolve start/end times from the three input fields. Priority:
-    /// - Start + Duration → end = start + duration
-    /// - Start + End      → save both as-is
-    /// - End + Duration   → start = end - duration
-    /// - Duration only    → end = selected_date@now, start = end - duration
-    /// - Start only       → active entry (no end time)
+    /// Resolve start/end from the three fields, in priority order: Start+Duration,
+    /// Start+End, End+Duration, Duration only (ends now), Start only (still active).
     pub(crate) fn resolve_times(&self) -> Option<(DateTime<Local>, Option<DateTime<Local>>)> {
         let start = if !self.input_start_time.is_empty() {
             self.parse_time_str(&self.input_start_time)
@@ -267,9 +256,7 @@ impl App {
             (Some(s), Some(e), None) => Some((s, Some(e))),
             (None, Some(e), Some(d)) => Some((e - d, Some(e))),
             (None, None, Some(d)) => {
-                // Anchor to selected_date at current wall-clock time so that
-                // duration-only entries added while browsing a past day land
-                // on that day rather than today.
+                // Anchored to selected_date, so a past day's entry lands on that day.
                 let now_time = Local::now().time();
                 let end = self.selected_date
                     .and_time(now_time)
@@ -283,12 +270,8 @@ impl App {
         }
     }
 
-    /// Auto-fill missing time fields when the user tabs away from a field.
-    ///
-    /// - Leave StartTime:  if Dur set → End = Start + Dur; else if End set → Dur = End − Start
-    /// - Leave EndTime:    if Start + Dur → adjust Start; else if Start → Dur = End − Start;
-    ///                     else if Dur only → Start = End − Dur
-    /// - Leave Duration:   if Start → End = Start + Dur; else if End → Start = End − Dur
+    /// Tabbing off Start / End / Duration derives whichever of the other two is still
+    /// blank, preferring to adjust the field the user did not just leave.
     pub(crate) fn apply_time_calculations(&mut self, leaving_field: InputField) {
         let start_str = self.input_start_time.clone();
         let end_str = self.input_end_time.clone();
@@ -363,7 +346,6 @@ impl App {
 
     /// Parse a date-only string. Supported formats: `DD/MM`, `MM-DD`, `YYYY-MM-DD`.
     fn parse_date_part(s: &str, current_year: i32) -> Option<NaiveDate> {
-        // DD/MM
         if s.contains('/') {
             let mut parts = s.splitn(2, '/');
             if let (Some(d), Some(m)) = (parts.next(), parts.next()) {
@@ -372,11 +354,9 @@ impl App {
                 }
             }
         }
-        // YYYY-MM-DD
         if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
             return Some(nd);
         }
-        // MM-DD
         if s.len() == 5 && s.contains('-') {
             let with_year = format!("{}-{}", current_year, s);
             if let Ok(nd) = NaiveDate::parse_from_str(&with_year, "%Y-%m-%d") {
@@ -386,8 +366,7 @@ impl App {
         None
     }
 
-    /// Parse a time string. Supports 24-hour and 12-hour (am/pm) formats with
-    /// `:` or `.` as separator; minutes default to `00` when omitted.
+    /// Parse a time: 24- or 12-hour, `:` or `.` separated, minutes default to `00`.
     fn parse_time_part(s: &str) -> Option<chrono::NaiveTime> {
         use chrono::NaiveTime;
 
@@ -428,7 +407,6 @@ impl App {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Returns the date of the entry currently under the cursor, if any.
     fn date_under_cursor(&self) -> Option<chrono::NaiveDate> {
         let filtered = self.filtered_entries();
         self.table_state

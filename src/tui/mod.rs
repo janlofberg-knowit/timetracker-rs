@@ -40,49 +40,26 @@ pub(crate) struct App {
     pub(crate) input_end_time: String,
     pub(crate) input_duration: String,
     pub(crate) search_term: String,
-    /// The values picked in each pane. OR within a set, AND across the two — see
-    /// `filtered_entries`.
+    /// The values picked in each pane. OR within a set, AND across the two.
     pub(crate) selected_projects: Vec<String>,
     pub(crate) selected_tags: Vec<String>,
     pub(crate) editing_entry_id: Option<u64>,
-    /// The destructive action `InputMode::Confirm` is asking about, if any: which
-    /// action, which entry, and which mode to go back to. Beside the mode rather
-    /// than inside it, for the reason `InputMode::Confirm` documents.
+    /// What `InputMode::Confirm` is asking about: the action, entry and origin mode.
     pub(crate) pending_confirm: Option<PendingConfirm>,
     pub(crate) sort_order: SortOrder,
-    /// Cursor position within the currently active input field (char index, not byte index).
+    /// Cursor position in the active input field — a char index, not a byte index.
     pub(crate) cursor_pos: usize,
-    /// Fingerprint of the store as of the last load, so the event loop can spot
-    /// writes made outside the TUI without reading the file every tick.
+    /// Fingerprint of the store as of the last load, so a tick can skip the read.
     pub(crate) store_stamp: Option<PathStamp>,
-    /// `tt-safe`'s open phase marks as of the last read, newest first, kept so a
-    /// frame never reads the directory.
+    /// The open agent phase marks, newest first, so a frame never reads the directory.
     pub(crate) marks: Vec<Mark>,
-    /// Fingerprint of the *mark directory*, so the event loop can spot marks
-    /// begun or dropped outside the TUI without listing it every tick.
-    ///
-    /// **The blind spot, deliberately:** creating or deleting a mark file changes
-    /// the directory's mtime, but `tt-safe touch` rewriting `<mark>.last` in
-    /// place does not — an in-place write to a file inside a directory leaves the
-    /// directory itself untouched. So this stamp catches `begin`, `end` and
-    /// `cancel`, i.e. every event that changes *which* marks are open, and is
-    /// blind to heartbeats. That is exactly why the surface shows only
-    /// start-derived data (`Mark::start`, and elapsed derived from it at render
-    /// time). Anything heartbeat-derived — a last-beat column, a staleness cue —
-    /// would appear to work while the mark list happened to be changing and then
-    /// silently go stale, so do not add one on top of this stamp: it would need a
-    /// stamp per mark file, or the append-only `<mark>.beats` file, or both.
+    /// Fingerprint of the *mark directory*, so a tick need not list it.
     pub(crate) marks_stamp: Option<PathStamp>,
-    /// Whether the Projects / Tags panes are open. Both default to off, so the
-    /// pane surface has zero height and first-run layout is unchanged.
+    /// Whether each collapsible surface is open. All default to off, so their rows
+    /// are absent from the layout plan.
     pub(crate) show_projects: bool,
     pub(crate) show_tags: bool,
-    /// Whether the Marks surface is open. Off by default like the panes, so its
-    /// row is absent from the layout plan and first-run layout is unchanged.
     pub(crate) show_marks: bool,
-    /// Whether the Summary surface at the bottom is open. Off by default for the
-    /// same reason as the others: hidden, its row is left out of the layout plan
-    /// entirely, so the collapsed screen is byte-for-byte the old one.
     pub(crate) show_summary: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
@@ -126,28 +103,21 @@ impl App {
             project_cursor: 0,
             tag_cursor: 0,
         };
-        // The first tick is 250 ms away; reading now means the first frame is as
-        // current as every frame after it.
+        // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
         Ok(app)
     }
 
-    /// Apply `edit` to the store under its exclusive lock, then refresh the
-    /// in-memory view from what actually landed.
-    ///
-    /// `App.data` is loaded once at startup, so mutating that snapshot and saving
-    /// it back would rewrite the whole file and silently drop anything written
-    /// since — and reuse a stale `next_id`. Every TUI mutation goes through here
-    /// instead: the intent is computed from the view, but applied to the freshly
-    /// loaded store.
+    /// Apply `edit` under the store's exclusive lock, then refresh from what landed.
+    /// **Every** TUI mutation goes through here: `App.data` is a startup snapshot, so
+    /// saving it back would drop outside writes and reuse a stale `next_id`.
     pub(crate) fn mutate_store<T>(&mut self, edit: impl FnOnce(&mut TimeData) -> T) -> Result<T> {
         let (result, fresh) = crate::storage::with_data(|data| {
             let result = edit(data);
             Ok((result, data.clone()))
         })?;
         self.data = fresh;
-        // Our own write moved the file on; stamping it here keeps the next tick
-        // from reloading what we already hold.
+        // Our own write moved the file on; stamp it so the next tick skips it.
         self.store_stamp = crate::storage::store_stamp();
         Ok(result)
     }
@@ -194,8 +164,7 @@ pub fn run_tui() -> Result<()> {
                                     app.should_quit = true;
                                 }
                             }
-                            // j/k move inside the focused pane when there is one,
-                            // and fall through to the table otherwise.
+                            // j/k move in the focused pane, else the table.
                             KeyCode::Char('j') | KeyCode::Down => {
                                 if !app.pane_next() {
                                     app.next();
@@ -206,12 +175,8 @@ pub fn run_tui() -> Result<()> {
                                     app.previous();
                                 }
                             }
-                            // One key, disambiguated by focus: in a pane it toggles
-                            // the value under the cursor into the filter, and on the
-                            // table it opens the selected entry's detail popover.
-                            // `toggle_pane_value` reporting false *is* the focus
-                            // check — there is no second place for the two meanings
-                            // to disagree about which is which.
+                            // One key, disambiguated by focus: `toggle_pane_value`
+                            // reporting false *is* the focus check.
                             KeyCode::Enter => {
                                 if !app.toggle_pane_value() {
                                     app.open_detail();
@@ -219,20 +184,12 @@ pub fn run_tui() -> Result<()> {
                             }
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
-                            // No focus argument, unlike the panes: the marks
-                            // surface is display-only, so opening it cannot
-                            // move `j`/`k` or `Enter` anywhere.
                             KeyCode::Char('A') => app.toggle_marks(),
-                            // Display-only like the marks surface, so no focus
-                            // argument here either. Capital `S` only: lowercase
-                            // `s` stops the active entry.
+                            // Capital `S` only; lowercase `s` stops the entry.
                             KeyCode::Char('S') => app.toggle_summary(),
                             KeyCode::Tab => app.cycle_focus(),
-                            // crossterm reports Shift-Tab as its own code, not Tab
-                            // with a SHIFT modifier.
+                            // crossterm reports Shift-Tab as its own code.
                             KeyCode::BackTab => app.cycle_focus_back(),
-                            // Confirmed, like the popover's `d`: this is the
-                            // destructive key's one meaning everywhere it appears.
                             KeyCode::Char('d') => app.request_confirm(ConfirmAction::Delete),
                             KeyCode::Char('s') => app.stop_active()?,
                             KeyCode::Char('r') => app.reload()?,
@@ -322,58 +279,33 @@ pub fn run_tui() -> Result<()> {
                             }
                             _ => {}
                         },
-                        // Modal like Help — no second surface can be open at once —
-                        // but not inert: the popover renders whatever
-                        // `selected_entry()` returns, so moving the table cursor is
-                        // the whole implementation of "the overlay follows the list".
-                        // There is no cached entry and no second cursor to keep in
-                        // sync. `Enter` closes what `Enter` opened.
+                        // Modal, but not inert: the popover renders whatever
+                        // `selected_entry()` returns, so j/k alone make it follow.
                         InputMode::Detail => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
                                 app.input_mode = InputMode::Normal;
                             }
-                            // The table's own next/previous, not the Normal arm's
-                            // pane-first variant: this overlay is about entries, so a
-                            // focused pane must not capture j/k while it is open.
+                            // The table's own, so a focused pane cannot capture j/k.
                             KeyCode::Char('j') | KeyCode::Down => app.next(),
                             KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                            // The form is modal too, so it replaces the popover rather
-                            // than nesting inside it — `start_editing` sets the mode.
+                            // The form is modal too, so it replaces the popover.
                             KeyCode::Char('e') => app.start_editing(),
-                            // Confirmed here **because the table confirms it too**.
-                            // The rule this arm used to protect — one key must not
-                            // mean two different things — is what forced the choice:
-                            // a confirmation invented only for the popover would have
-                            // broken it, and so would leaving the popover unconfirmed
-                            // once the table asks. Confirming both honours it. After
-                            // the delete the popover reports whatever the selection
-                            // fell to, and closes if the view emptied.
+                            // Confirmed here as on the table: one key, one meaning.
                             KeyCode::Char('d') => app.request_confirm(ConfirmAction::Delete),
-                            // Confirmed for the same reason as `d`, and `t` rather
-                            // than the better-mnemonic `s` because a slip outside
-                            // this modal hits `go_to_today()` rather than
-                            // `stop_active()` — harmless navigation instead of a
-                            // stopped timer. Bound here only: the table's `t` still
-                            // means today. The popover stays open on the piece that
-                            // kept the id, so there is no "emptied the view" case.
+                            // `t` rather than `s`, so a slip outside this modal hits
+                            // `go_to_today()`. Bound here only.
                             KeyCode::Char('t') => app.request_confirm(ConfirmAction::Trim),
                             _ => {}
                         },
-                        // The one modal that asks a question. Which key is a yes
-                        // depends on which action is pending — the originating key
-                        // repeated, or `y` — so the whole answer lives in
-                        // `answer_confirm` rather than here, where no test could
-                        // reach it.
+                        // Which key is a yes depends on the pending action, so the
+                        // whole answer lives in `answer_confirm`.
                         InputMode::Confirm => app.answer_confirm(key.code)?,
                     }
                 }
             }
         }
 
-        // The 250 ms poll above is the loop's clock: whether it returned a key or
-        // timed out, this is where we notice a store written from outside — and,
-        // on the same tick and with no second timer, a mark begun or dropped
-        // outside too.
+        // The poll above is the loop's clock, key or timeout alike.
         app.sync_from_store()?;
         app.sync_from_marks();
 
@@ -390,17 +322,14 @@ pub fn run_tui() -> Result<()> {
 mod tests {
     use super::*;
     use crate::storage;
-    /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`, since env is
-    /// process-wide — and shares its lock with `marks`' own env test, which would
-    /// otherwise repoint `TT_MARK_DIR` underneath these.
+    /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`; env is
+    /// process-wide, and `marks`' own env test shares this lock.
     use crate::storage::env_guard;
     use crate::tracker::TimeEntry;
     use std::path::PathBuf;
 
-    /// Point `HOME` at a fresh scratch dir so `ProjectDirs` resolves the store
-    /// inside it, and `TT_MARK_DIR` at a mark directory inside the same dir.
-    /// Tests must never touch the user's real store or their real marks — live
-    /// agent sessions write both continuously.
+    /// Point `HOME` and `TT_MARK_DIR` at a fresh scratch dir. **Tests must never
+    /// touch the real store or marks** — live agent sessions write both.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-store-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -427,9 +356,8 @@ mod tests {
         dir
     }
 
-    /// Write a mark file the way `tt-safe begin` does: the name is the phase key,
-    /// the content is a unix-seconds start timestamp. Never shells out to
-    /// `tt-safe` — the real mark directory has live marks in it.
+    /// Write a mark file the way `tt agent begin` does: name is the phase key,
+    /// content a unix-seconds start. Never shells out.
     fn begin_mark(dir: &std::path::Path, key: &str, minutes_ago: i64) {
         let start = Local::now() - chrono::Duration::minutes(minutes_ago);
         std::fs::write(dir.join(key), format!("{}\n", start.timestamp())).unwrap();
@@ -456,8 +384,7 @@ mod tests {
         .unwrap();
     }
 
-    /// A write from outside the TUI, through the same `with_data` path `tt log`
-    /// uses — i.e. what an agent session does while the TUI sits on its snapshot.
+    /// A write from outside the TUI, through the same `with_data` path `tt log` uses.
     fn agent_write(description: &str) -> u64 {
         storage::with_data(|data| {
             Ok(data
@@ -484,9 +411,8 @@ mod tests {
             .collect()
     }
 
-    /// `d` pressed and answered — the two real `App` calls the event loop makes,
-    /// nothing re-implemented. Whichever mode the app is in is the mode the prompt
-    /// is raised from, so this drives the table's `d` and the popover's `d` alike.
+    /// `d` pressed and answered, via the two real calls the event loop makes. The
+    /// current mode is the mode the prompt is raised from.
     fn press_d_then(app: &mut App, answer: KeyCode) {
         app.request_confirm(ConfirmAction::Delete);
         app.answer_confirm(answer).unwrap();
@@ -672,20 +598,18 @@ mod tests {
         app.sync_from_marks();
         assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
 
-        // A second mark, begun while the first is still open.
         begin_mark(&marks, "vinge.-.plan", 126);
         app.sync_from_marks();
         assert_eq!(mark_keys(&app), vec!["tt.14.impl", "vinge.-.plan"]);
 
-        // `tt-safe cancel` / `tt-safe end` both remove the file.
+        // `tt agent cancel` / `tt agent end` both remove the file.
         std::fs::remove_file(marks.join("tt.14.impl")).unwrap();
         app.sync_from_marks();
         assert_eq!(mark_keys(&app), vec!["vinge.-.plan"]);
     }
 
-    /// The directory stamp's whole purpose, and its documented blind spot in one
-    /// test: an in-place rewrite of a file *inside* the mark directory leaves the
-    /// directory's own mtime alone, so a settled stamp means no re-read at all.
+    /// An in-place rewrite inside the mark directory leaves its mtime alone, so a
+    /// settled stamp means no re-read.
     #[test]
     fn an_unchanged_mark_directory_is_not_read_again() {
         let _guard = env_guard();
@@ -698,19 +622,15 @@ mod tests {
         let first = app.marks.clone();
         assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
 
-        // Let the directory's mtime settle out of the current second, so the stamp
-        // is trustworthy rather than deliberately stale.
+        // Let the mtime settle out of the current second, so the stamp is trusted.
         std::thread::sleep(std::time::Duration::from_millis(1100));
 
-        // Rewrite the mark's *contents* in place, same length, without adding or
-        // removing a file. The directory is untouched, so a re-read would be the
-        // only way this could show up — and it must not.
+        // Same length, no file added or removed: only a re-read could show this.
         begin_mark(&marks, "tt.14.impl", 999);
         app.sync_from_marks();
         assert_eq!(app.marks, first, "the directory did not change: no re-read");
 
-        // Creating a file *does* move the directory on, and the whole list is then
-        // re-read — including the rewritten start the previous tick ignored.
+        // Creating a file *does* move the directory on, so the whole list re-reads.
         begin_mark(&marks, "loremind.64.plan", 38);
         app.sync_from_marks();
         assert_eq!(mark_keys(&app), vec!["loremind.64.plan", "tt.14.impl"]);
@@ -756,9 +676,7 @@ mod tests {
         agent_write("probe");
         assert!(!app.store_is_unchanged(), "an outside write was missed");
 
-        // A stamp identical to the one on disk still counts as changed while the
-        // mtime sits inside the current second, since a second write in that
-        // second could leave both mtime and length untouched.
+        // Inside the current second even an identical stamp counts as changed.
         app.store_stamp = storage::store_stamp();
         assert!(
             !app.store_is_unchanged(),
@@ -784,8 +702,7 @@ mod tests {
         assert_eq!(descriptions(&app.data), vec!["after", "probe"]);
     }
 
-    /// The form's Project field is optional: whitespace-only means "no project",
-    /// which must land as JSON `null` rather than an empty string.
+    /// A whitespace-only Project means "no project", and must land as JSON `null`.
     #[test]
     fn the_form_writes_the_project_and_leaves_a_blank_one_null() {
         let _guard = env_guard();
@@ -863,8 +780,7 @@ mod tests {
         }
     }
 
-    /// A logged entry carrying idle stretches, given as minute offsets from its
-    /// own start — so every assertion derives from the fixture, not a literal.
+    /// A logged entry with idle stretches, as minute offsets from its own start.
     fn with_idle(id: u64, minutes: i64, gaps: &[(i64, i64)]) -> TimeEntry {
         let mut entry = logged(
             id,
@@ -887,8 +803,7 @@ mod tests {
         entry
     }
 
-    /// A store spanning three scopes: two days inside the current week plus one
-    /// entry a week back, so day / week / all each see a different set.
+    /// Two days in the current week plus one a week back, so each scope differs.
     fn seed_panes() -> App {
         let today = Local::now().date_naive();
         let week_start = TimeData::week_start(today);
@@ -920,8 +835,7 @@ mod tests {
             .join(" ")
     }
 
-    /// Each pane offers the distinct values of the current view scope with their
-    /// match counts — and an entry with no project contributes no Projects row.
+    /// Each pane offers its scope's distinct values; no project means no row.
     #[test]
     fn pane_values_follow_the_view_scope() {
         let _guard = env_guard();
@@ -941,8 +855,6 @@ mod tests {
         assert_eq!(values(&app, Pane::Tags), "impl=3 ops=2 plan=1 tt/8=1");
     }
 
-    /// The panes read the scope *before* the filter, so a pane never hides the
-    /// value the user has just filtered on.
     #[test]
     fn pane_values_ignore_the_active_filter_and_search() {
         let _guard = env_guard();
@@ -958,9 +870,6 @@ mod tests {
         assert_eq!(app.pane_values(Pane::Projects).len(), 2);
     }
 
-    /// The 6-row cap makes long lists scroll; the indicator is what stops a
-    /// scrolled-away value from looking like it was never there. It has to be
-    /// absent when everything already fits, or it is just noise.
     #[test]
     fn the_scroll_indicator_appears_only_when_values_do_not_fit() {
         let _guard = env_guard();
@@ -976,12 +885,10 @@ mod tests {
         let mut app = App::new().unwrap();
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
-        // Opening the pane focuses it, so `pane_next` moves its cursor.
         app.toggle_pane(Pane::Tags);
         assert_eq!(app.pane_values(Pane::Tags).len(), 8);
 
-        // Six rows on screen, eight values: the position tracks the cursor over
-        // every value, wrap included.
+        // Six rows, eight values: the position tracks every one, wrap included.
         for expected in 1..=8 {
             assert_eq!(
                 app.pane_scroll_indicator(Pane::Tags, 6).as_deref(),
@@ -995,10 +902,8 @@ mod tests {
             "the cursor did not wrap back to the first value"
         );
 
-        // Room for all eight — and for more than eight — means no indicator.
         assert_eq!(app.pane_scroll_indicator(Pane::Tags, 8), None);
         assert_eq!(app.pane_scroll_indicator(Pane::Tags, 12), None);
-        // Projects has a single value, so it never shows one at the shared height.
         assert_eq!(app.pane_scroll_indicator(Pane::Projects, 6), None);
     }
 
@@ -1058,7 +963,6 @@ mod tests {
         let _guard = env_guard();
         sandbox("marks-cap");
         seed(vec![entry(0, "first")], 1);
-        // Four simultaneous marks, oldest last.
         let app = seed_marks(&[
             ("tt.14.impl", 2),
             ("loremind.64.plan", 38),
@@ -1097,8 +1001,6 @@ mod tests {
         }
     }
 
-    /// The surface is display-only: no focus, no cursor, nothing for `Tab` or
-    /// `Enter` to land on.
     #[test]
     fn toggling_the_marks_surface_leaves_focus_and_the_table_alone() {
         let _guard = env_guard();
@@ -1113,7 +1015,6 @@ mod tests {
         app.toggle_marks();
         assert_eq!(app.focus, Focus::Pane(Pane::Projects), "closing it");
 
-        // And `Tab`'s ring is still the table plus the visible panes only.
         app.toggle_marks();
         app.focus = Focus::Table;
         app.cycle_focus();
@@ -1121,7 +1022,6 @@ mod tests {
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table, "the ring skips the marks surface");
 
-        // `Enter` still means the detail popover on the table, not this surface.
         app.focus = Focus::Table;
         app.open_detail();
         assert!(matches!(app.input_mode, InputMode::Detail));
@@ -1133,11 +1033,9 @@ mod tests {
         sandbox("pane-focus");
         let mut app = seed_panes();
 
-        // No pane open: Tab is a no-op.
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Table);
 
-        // Opening a pane focuses it, so the ring is walked from the table.
         app.toggle_pane(Pane::Tags);
         app.focus = Focus::Table;
         app.cycle_focus();
@@ -1155,8 +1053,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Table);
     }
 
-    /// The request behind this: opening a pane must also focus it, so the pane the
-    /// user just asked for is the one `j`/`k`/`Enter` drive — no `Tab` in between.
+    /// Opening a pane focuses it, so `j`/`k`/`Enter` drive it with no `Tab` first.
     #[test]
     fn opening_a_pane_focuses_it() {
         let _guard = env_guard();
@@ -1168,7 +1065,6 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         assert_eq!(app.focused_pane(), Some(Pane::Projects));
 
-        // Opening the *other* pane while one is focused moves focus to the new one.
         app.toggle_pane(Pane::Tags);
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
 
@@ -1180,8 +1076,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
-    /// Closing a pane and opening it again resumes its cursor where it was: the
-    /// cursor lives on `App`, not on the pane's visibility.
+    /// A reopened pane resumes its cursor: it lives on `App`, not on visibility.
     #[test]
     fn a_reopened_pane_resumes_its_cursor() {
         let _guard = env_guard();
@@ -1199,8 +1094,7 @@ mod tests {
         assert_eq!(app.pane_cursor(Pane::Tags), 2);
     }
 
-    /// `Shift-Tab` must undo `Tab` for every pane-visibility combination, so the
-    /// two together are a ring the user can walk in either direction.
+    /// `Shift-Tab` undoes `Tab` for every pane-visibility combination.
     #[test]
     fn shift_tab_cycles_focus_in_the_exact_reverse_order() {
         let _guard = env_guard();
@@ -1214,10 +1108,8 @@ mod tests {
             if tags {
                 app.toggle_pane(Pane::Tags);
             }
-            // Opening focuses the pane opened; the ring is walked from the table.
             app.focus = Focus::Table;
 
-            // The ring walked forwards, from the table, is the reference order.
             let ring_len = 1 + app.visible_panes().len();
             let mut forward = Vec::new();
             for _ in 0..ring_len {
@@ -1230,7 +1122,6 @@ mod tests {
                 "forward did not return to the table"
             );
 
-            // Backwards from the table must visit the same states in reverse.
             let mut backward = Vec::new();
             for _ in 0..ring_len {
                 app.cycle_focus_back();
@@ -1245,7 +1136,6 @@ mod tests {
                  projects={projects} tags={tags}"
             );
 
-            // …and one step back always undoes one step forward.
             for _ in 0..ring_len {
                 let before = app.focus;
                 app.cycle_focus();
@@ -1256,8 +1146,6 @@ mod tests {
         }
     }
 
-    /// A pane hidden while focused leaves focus off the ring; both directions have
-    /// to recover from that rather than panicking or landing somewhere invisible.
     #[test]
     fn shift_tab_recovers_when_the_focused_pane_was_hidden() {
         let _guard = env_guard();
@@ -1267,8 +1155,7 @@ mod tests {
         app.toggle_pane(Pane::Tags);
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
 
-        // Hide Tags out from under the focus without going through toggle_pane's
-        // hand-off, which is the only way this state can be observed.
+        // Bypass `toggle_pane`'s hand-off: the only way to observe this state.
         app.show_tags = false;
         assert!(app.focused_pane().is_none());
         app.cycle_focus_back();
@@ -1285,8 +1172,6 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
-    /// Closing the focused pane lands focus on the other pane when that one is
-    /// still open, and on the table when it was the last one.
     #[test]
     fn hiding_the_focused_pane_falls_back_to_the_other_pane_then_the_table() {
         let _guard = env_guard();
@@ -1295,12 +1180,10 @@ mod tests {
         app.toggle_pane(Pane::Projects);
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
 
-        // The last open pane closing leaves nothing on the surface to focus.
         app.toggle_pane(Pane::Projects);
         assert_eq!(app.focus, Focus::Table);
         assert!(app.focused_pane().is_none());
 
-        // With the other pane still open, focus moves there rather than to the table.
         app.toggle_pane(Pane::Projects);
         app.toggle_pane(Pane::Tags);
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
@@ -1314,8 +1197,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
     }
 
-    /// `j`/`k` wrap inside the focused pane and leave the table alone; with no
-    /// pane focused they report "not handled" so the table moves instead.
+    /// `j`/`k` wrap in the focused pane, or report "not handled" so the table moves.
     #[test]
     fn pane_cursor_moves_only_while_a_pane_has_focus() {
         let _guard = env_guard();
@@ -1334,16 +1216,13 @@ mod tests {
         assert_eq!(app.pane_cursor(Pane::Tags), 1);
         assert!(app.pane_previous());
         assert_eq!(app.pane_cursor(Pane::Tags), 0);
-        // k at the top wraps to the last value
         assert!(app.pane_previous());
         assert_eq!(app.pane_cursor(Pane::Tags), len - 1);
-        // …and j at the bottom wraps back
         assert!(app.pane_next());
         assert_eq!(app.pane_cursor(Pane::Tags), 0);
         assert_eq!(app.table_state.selected(), Some(0), "the table moved too");
     }
 
-    /// A cursor left past the end by a scope change is clamped, not panicking.
     #[test]
     fn a_stale_pane_cursor_is_clamped_to_the_new_value_list() {
         let _guard = env_guard();
@@ -1386,8 +1265,7 @@ mod tests {
         }
     }
 
-    /// `Enter` is the toggle, and it is disambiguated by focus: in a pane it filters
-    /// on the value under the cursor, on the table it is not a pane action at all.
+    /// `Enter` in a pane filters on the value under its cursor; on the table it does not.
     #[test]
     fn enter_toggles_the_value_under_the_pane_cursor() {
         let _guard = env_guard();
@@ -1403,22 +1281,17 @@ mod tests {
         assert!(app.is_filtering());
         assert!(app.pane_value_is_selected(Pane::Projects, "tt"));
 
-        // A second Enter on the same value clears it again.
         assert!(app.toggle_pane_value());
         assert!(app.selected_projects.is_empty());
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
         assert!(!app.is_filtering());
 
-        // With focus on the table there is no pane value to toggle: Enter reports
-        // "not handled" and touches nothing, leaving the arm free for the popover.
         app.focus = Focus::Table;
         assert!(!app.toggle_pane_value());
         assert!(app.selected_projects.is_empty() && app.selected_tags.is_empty());
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
     }
 
-    /// The other half of that one key: with the table focused, `Enter` opens the
-    /// detail popover, and with a pane focused it must not.
     #[test]
     fn enter_opens_the_detail_popover_only_from_the_table() {
         let _guard = env_guard();
@@ -1448,14 +1321,12 @@ mod tests {
             app.input_mode == InputMode::Detail,
             "Enter on the table did not open the popover"
         );
-        // Opening it changes nothing else: same selection, same filter.
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.selected_projects, vec!["tt".to_string()]);
         assert_eq!(app.selected_entry().map(|e| e.id), Some(0));
     }
 
-    /// What the `InputMode::Detail` arm does with j/k, `e` and `d`. Written as one
-    /// closure per key so the test drives the same calls the arm does.
+    /// What the `Detail` arm does with j/k, `e` and `d`, via the calls it makes.
     #[test]
     fn the_detail_popover_traverses_the_list_and_acts_on_what_it_shows() {
         let _guard = env_guard();
@@ -1468,8 +1339,6 @@ mod tests {
         let ids: Vec<u64> = app.filtered_entries().iter().map(|e| e.id).collect();
         assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
 
-        // j/k walk the list and the popover reports the new row, wrapping at both
-        // ends rather than sticking or blanking.
         app.next();
         assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[1]));
         app.previous();
@@ -1480,31 +1349,24 @@ mod tests {
         assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
         assert!(app.input_mode == InputMode::Detail, "traversal closed it");
 
-        // `e` hands the entry on screen to the form, which replaces the popover.
         app.start_editing();
         assert!(app.input_mode == InputMode::EditingEntry);
         assert_eq!(app.editing_entry_id, Some(ids[0]));
 
-        // `d` asks, the repeated `d` answers, and the popover stays open on the new
-        // selection. Driven through the real methods the arm calls — this test used
-        // to carry a closure copy of the arm and so agreed only with itself.
+        // `d` asks, the repeated `d` answers, and the popover stays open.
         app.input_mode = InputMode::Detail;
         press_d_then(&mut app, KeyCode::Char('d'));
         assert!(app.input_mode == InputMode::Detail);
         assert_eq!(app.filtered_entries().len(), 2);
         assert!(app.selected_entry().is_some());
 
-        // …and the delete that empties the view closes it instead of leaving an
-        // empty modal behind.
+        // …and the delete that empties the view closes it.
         press_d_then(&mut app, KeyCode::Char('y'));
         press_d_then(&mut app, KeyCode::Char('d'));
         assert_eq!(app.filtered_entries().len(), 0);
         assert!(app.input_mode == InputMode::Normal);
     }
 
-    /// `[t]`: the popover's trim. Destructive, unconfirmed, and it must leave the
-    /// overlay on the piece that kept the original id rather than wherever the
-    /// inserted rows pushed the cursor.
     #[test]
     fn t_in_the_popover_trims_the_entry_and_stays_on_the_piece_that_kept_the_id() {
         let _guard = env_guard();
@@ -1554,8 +1416,6 @@ mod tests {
             .iter()
             .fold(chrono::Duration::zero(), |acc, e| acc + e.duration());
         assert_eq!(after, before.0 - idle_total);
-        // Nothing marks the pieces apart but their real times, and none of them
-        // still carries a stretch it excludes — so the hint is gone too.
         assert!(pieces.iter().all(|e| e.idle.is_empty()));
         assert!(
             !app.detail_hints().contains(&("t", "trim…")),
@@ -1593,8 +1453,6 @@ mod tests {
         );
     }
 
-    /// The binding lives in the `Detail` arm only: on the table, `t` is still the
-    /// harmless navigation that made it the safe choice over `s`.
     #[test]
     fn t_outside_the_popover_still_jumps_to_today() {
         let _guard = env_guard();
@@ -1612,8 +1470,6 @@ mod tests {
         assert_eq!(on_disk().entries.len(), 1, "the table's `t` split an entry");
     }
 
-    /// Raising the prompt is not the act: nothing reaches the store until an answer,
-    /// and the entry the prompt is about is pinned by id there and then.
     #[test]
     fn requesting_a_confirmation_records_the_selected_id_and_writes_nothing() {
         let _guard = env_guard();
@@ -1638,8 +1494,6 @@ mod tests {
         );
     }
 
-    /// The whole reason the id is captured. Answering must destroy the entry the
-    /// prompt *named*, not whatever the cursor has since come to rest on.
     #[test]
     fn a_confirmed_delete_acts_on_the_captured_id_not_the_current_selection() {
         let _guard = env_guard();
@@ -1660,10 +1514,7 @@ mod tests {
         assert!(app.input_mode == InputMode::Normal);
     }
 
-    /// `sync_from_store` is deliberately live while the prompt is up, and it drops
-    /// the cursor onto a *different* entry when its anchor leaves the view — here by
-    /// an outside edit that moves the pending entry to yesterday. The captured id is
-    /// what makes the answer land on the entry the prompt described anyway.
+    /// The live poll can drop the cursor onto a different entry; the id keeps it on target.
     #[test]
     fn the_poll_moving_the_cursor_under_the_prompt_does_not_move_the_target() {
         let _guard = env_guard();
@@ -1681,8 +1532,7 @@ mod tests {
         select(&mut app, "doomed");
         app.request_confirm(ConfirmAction::Delete);
 
-        // An outside edit walks the pending entry out of the day view. Its anchor is
-        // gone, so the cursor falls back to a position — a different entry.
+        // The pending entry leaves the day view, so the cursor falls back by position.
         storage::with_data(|data| {
             let e = data.entries.iter_mut().find(|e| e.id == 1).unwrap();
             e.start_time -= chrono::Duration::days(1);
@@ -1707,9 +1557,6 @@ mod tests {
         );
     }
 
-    /// A prompt whose subject has been written away answers itself: nothing happens,
-    /// and the screen goes back where it came from. Failing safe beats acting on
-    /// whatever took the entry's place.
     #[test]
     fn a_confirm_whose_target_vanished_performs_nothing() {
         let _guard = env_guard();
@@ -1728,8 +1575,6 @@ mod tests {
         })
         .unwrap();
         app.sync_from_store().unwrap();
-        // The poll itself drops the prompt, so the frame never asks about an entry
-        // that is not there.
         assert!(app.pending_confirm.is_none());
         assert!(
             app.input_mode == InputMode::Detail,
@@ -1741,8 +1586,6 @@ mod tests {
         assert_eq!(descriptions(&on_disk()), vec!["keep"]);
     }
 
-    /// Cancel puts the screen back where the prompt was raised from, and every one of
-    /// `n` / `Esc` / `Enter` reaches this same method.
     #[test]
     fn cancelling_restores_the_originating_mode_and_leaves_the_store_alone() {
         let _guard = env_guard();
@@ -1753,7 +1596,6 @@ mod tests {
         select(&mut app, "doomed");
         let before = serde_json::to_string(&on_disk()).unwrap();
 
-        // From the table.
         app.request_confirm(ConfirmAction::Delete);
         app.cancel_confirm();
         assert!(app.input_mode == InputMode::Normal);
@@ -1774,8 +1616,6 @@ mod tests {
         );
     }
 
-    /// A confirmed trim behaves as `[t]` did: it splits, and the popover stays on the
-    /// piece that kept the id.
     #[test]
     fn a_confirmed_trim_splits_the_captured_entry_and_stays_on_the_first_piece() {
         let _guard = env_guard();
@@ -1806,8 +1646,6 @@ mod tests {
         assert_eq!(app.selected_entry().map(|e| e.id), Some(4));
     }
 
-    /// The prompt knows which action it is about, so the *other* destructive key is
-    /// not an answer to it.
     #[test]
     fn only_y_or_the_originating_key_is_a_yes() {
         let _guard = env_guard();
@@ -1832,8 +1670,7 @@ mod tests {
         assert!(!app.confirms_pending('d'), "`d` confirmed a trim");
     }
 
-    /// One rendered frame, as lines of text — so the prompts are asserted against
-    /// what actually reaches the screen rather than against the strings that went in.
+    /// One rendered frame as lines of text, so assertions read the real screen.
     fn frame_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let mut terminal =
             Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
@@ -1850,8 +1687,6 @@ mod tests {
             .collect()
     }
 
-    /// The prompt has to name the entry: the failure it prevents is a cursor on the
-    /// wrong row, which only the subject line catches.
     #[test]
     fn the_delete_prompt_names_the_entry_it_would_destroy() {
         let _guard = env_guard();
@@ -1880,7 +1715,6 @@ mod tests {
             screen.contains(&duration),
             "the prompt did not state the duration {duration}:\n{screen}"
         );
-        // Exactly the keys the `Confirm` arm binds, and no others.
         assert!(screen.contains("d / y yes"), "hint row:\n{screen}");
         assert!(
             screen.contains("n / esc / enter cancel"),
@@ -1889,8 +1723,7 @@ mod tests {
         assert!(!screen.contains("t / y"), "a delete prompt offered `t`");
     }
 
-    /// The trim prompt states the outcome, which is knowable before anything is
-    /// written — and reads it from the same helper the write uses.
+    /// The trim prompt states its outcome, from the same helper the write uses.
     #[test]
     fn the_trim_prompt_states_the_pieces_and_what_is_removed() {
         let _guard = env_guard();
@@ -1923,8 +1756,6 @@ mod tests {
         );
     }
 
-    /// The three copy surfaces that describe `d` and `t` must not promise that one
-    /// keypress destroys anything.
     #[test]
     fn the_key_hints_say_the_destructive_keys_ask_first() {
         let _guard = env_guard();
@@ -1934,12 +1765,10 @@ mod tests {
         let mut app = App::new().unwrap();
         select(&mut app, "long session");
 
-        // The footer legend, which clips from the right at 80 columns — so it gets a
-        // one-column `…` and nothing more.
+        // The footer legend, which clips at 80 columns, so it gets a bare `…`.
         let footer = frame_lines(&mut app, 200, 30).join("\n");
         assert!(footer.contains("d: del…"), "footer legend:\n{footer}");
 
-        // The help popup, which has the room to say it in words.
         app.input_mode = InputMode::Help;
         let help = frame_lines(&mut app, 100, 40).join("\n");
         assert!(
@@ -1947,15 +1776,12 @@ mod tests {
             "help popup:\n{help}"
         );
 
-        // And the popover footer, whose every hint is bound in the `Detail` arm.
         app.input_mode = InputMode::Detail;
         let popover = frame_lines(&mut app, 100, 40).join("\n");
         assert!(popover.contains("d delete…"), "popover hints:\n{popover}");
         assert!(popover.contains("t trim…"), "popover hints:\n{popover}");
     }
 
-    /// Every key the `Confirm` arm binds, driven through the arm's own body. `d` and
-    /// `t` are the same key contract from either side, so both are exercised here.
     #[test]
     fn each_answer_key_does_exactly_what_the_hint_row_says() {
         let _guard = env_guard();
@@ -1975,8 +1801,7 @@ mod tests {
             assert!(app.input_mode == InputMode::Normal);
         }
 
-        // No, by every route out — and `Enter` among them, so the key that closes the
-        // popover can never destroy anything.
+        // No, by every route out, `Enter` among them.
         for no in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
             seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
             let mut app = App::new().unwrap();
@@ -1995,8 +1820,7 @@ mod tests {
             assert!(app.pending_confirm.is_none());
         }
 
-        // The other destructive key is not an answer, and an unrelated key is not
-        // either: the prompt stays up rather than being dismissed by a stray press.
+        // Neither the other destructive key nor a stray press dismisses the prompt.
         for inert in [KeyCode::Char('t'), KeyCode::Char('j'), KeyCode::Char('q')] {
             seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
             let mut app = App::new().unwrap();
@@ -2015,7 +1839,6 @@ mod tests {
         }
     }
 
-    /// The trim side of the same contract: `t` confirms a trim, `d` does not.
     #[test]
     fn the_trim_prompt_takes_t_and_y_and_ignores_d() {
         let _guard = env_guard();
@@ -2041,8 +1864,7 @@ mod tests {
         assert!(app.input_mode == InputMode::Confirm);
     }
 
-    /// `t` outside the popover is still navigation and `s` never grew a prompt —
-    /// only the three destructive keys were wired.
+    /// `t` outside the popover is navigation, and `s` acts without a prompt.
     #[test]
     fn the_keys_that_were_not_wired_still_mean_what_they_did() {
         let _guard = env_guard();
@@ -2070,9 +1892,6 @@ mod tests {
         assert!(app.input_mode == InputMode::Normal);
     }
 
-    /// `t` on an entry with nothing to trim raises no prompt at all — the popover
-    /// hides `[t]` in that case (#39), and a prompt whose yes does nothing would be
-    /// worse than the silent no-op it replaced.
     #[test]
     fn a_trim_with_nothing_to_trim_raises_no_prompt() {
         let _guard = env_guard();
@@ -2089,15 +1908,8 @@ mod tests {
         assert!(app.input_mode == InputMode::Detail);
     }
 
-    /// `Detail` is deliberately *not* in `sync_from_store`'s guarded set: there is no
-    /// half-typed input to clobber, and `sync_from_store` re-anchors the cursor on the
-    /// selected entry's id, so a write that lands elsewhere leaves the popover where
-    /// it was.
-    ///
-    /// That anchor is `sync_from_store`'s own, not a property of the popover:
-    /// `selected_entry` is purely positional (`nth` into the re-sorted list), so any
-    /// code path that inserts rows *without* re-anchoring does slide the overlay onto
-    /// a different entry — which is exactly why `trim_entry` re-selects by id.
+    /// `Detail` is *not* in `sync_from_store`'s guarded set; the poll re-anchors on the
+    /// selected id. `selected_entry` is positional, so `trim_entry` re-selects by id.
     #[test]
     fn an_outside_write_reaches_the_open_detail_popover_without_moving_it() {
         let _guard = env_guard();
@@ -2122,7 +1934,6 @@ mod tests {
         assert_eq!(selected_description(&app), "second");
     }
 
-    /// An empty view has nothing to show, so there is no modal to escape from.
     #[test]
     fn the_detail_popover_stays_shut_with_nothing_selected() {
         let _guard = env_guard();
@@ -2135,7 +1946,6 @@ mod tests {
         assert!(app.input_mode == InputMode::Normal);
     }
 
-    /// OR within a pane, AND across the panes.
     #[test]
     fn selections_or_within_a_pane_and_and_across_panes() {
         let _guard = env_guard();
@@ -2157,7 +1967,6 @@ mod tests {
         app.toggle_pane_value();
         assert_eq!(in_view(&app), vec!["a", "c"]);
 
-        // …and OR still holds inside the Tags pane too.
         point_at(&mut app, Pane::Tags, "plan");
         app.toggle_pane_value();
         assert_eq!(in_view(&app), vec!["a", "b", "c"]);
@@ -2167,8 +1976,7 @@ mod tests {
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
     }
 
-    /// The footer's total is the filtered one whenever a filter is on, so the number
-    /// on screen always describes the rows on screen.
+    /// The footer's total is the filtered one, so it describes the rows on screen.
     #[test]
     fn the_filtered_total_tracks_the_selection() {
         let _guard = env_guard();
@@ -2184,12 +1992,9 @@ mod tests {
         assert!(app.is_filtering());
     }
 
-    /// A store with unequal per-project times across three scopes, two entries
-    /// with no project at all, and a tie the name has to break.
-    ///
-    /// Day (`day_one`): tt 90m over two entries, loremind 90m, no project 30m —
-    /// 210m. Week adds vinge 120m and a second unprojected 45m — 375m. All adds
-    /// loremind 60m from last week — 435m.
+    /// Unequal per-project times across three scopes, two unprojected entries and a
+    /// tie the name breaks. Day: tt 90m/2, loremind 90m, none 30m — 210m. Week adds
+    /// vinge 120m and none 45m — 375m. All adds loremind 60m — 435m.
     fn seed_summary() -> App {
         let today = Local::now().date_naive();
         let week_start = TimeData::week_start(today);
@@ -2213,8 +2018,7 @@ mod tests {
         app
     }
 
-    /// The three view scopes with a name to report failures against — `ViewMode`
-    /// itself is not `Debug`, and it is not this test's place to make it one.
+    /// The three view scopes with a name to report against; `ViewMode` is not `Debug`.
     fn scopes() -> [(ViewMode, &'static str); 3] {
         [
             (ViewMode::Day, "day"),
@@ -2240,9 +2044,7 @@ mod tests {
             .join(" ")
     }
 
-    /// Per-project totals and counts per scope, largest total first with the tie
-    /// between `tt` and `loremind` broken by name, and both unprojected entries
-    /// collapsed into a single `(no project)` row rather than dropped.
+    /// Totals per scope, largest first, ties by name, absence collapsed into one row.
     #[test]
     fn project_summary_totals_and_counts_follow_the_view_scope() {
         let _guard = env_guard();
@@ -2267,8 +2069,6 @@ mod tests {
             "loremind=150m/2/34% vinge=120m/1/28% tt=90m/2/21% (no project)=75m/2/17%"
         );
 
-        // One row for absence in every scope, however many entries lack a project
-        // — including the one whose project is whitespace only.
         for (mode, name) in scopes() {
             app.view_mode = mode;
             assert_eq!(
@@ -2282,9 +2082,7 @@ mod tests {
         }
     }
 
-    /// The rows account for the whole scope: their totals sum to the scope total
-    /// (which is why the `(no project)` row has to exist), and their shares sum to
-    /// within a point of 100 — rounded honestly rather than fudged to 100 exactly.
+    /// The rows sum to the scope total, and their shares to within a point of 100.
     #[test]
     fn project_summary_rows_account_for_the_whole_scope() {
         let _guard = env_guard();
@@ -2312,10 +2110,6 @@ mod tests {
         }
     }
 
-    /// The decision the whole surface hangs on: the summary folds `scope_entries`,
-    /// so a project or tag filter — which does change `filtered_entries` — leaves
-    /// it completely alone. Folding `filtered_entries` instead is the rejected
-    /// behaviour, and this test is what catches that one-word change.
     #[test]
     fn project_summary_ignores_the_active_filter_and_search() {
         let _guard = env_guard();
@@ -2325,8 +2119,6 @@ mod tests {
         let before = app.project_summary();
         let in_scope = app.scope_entries().len();
 
-        // A project filter is the case that would collapse a filter-following
-        // summary to a single 100% row.
         app.selected_projects = vec!["tt".to_string()];
         assert!(
             app.filtered_entries().len() < in_scope,
@@ -2334,7 +2126,6 @@ mod tests {
         );
         assert_eq!(app.project_summary(), before);
 
-        // A tag filter, and then a search on top, are no different.
         app.selected_projects.clear();
         app.selected_tags = vec!["ops".to_string()];
         assert!(
@@ -2348,9 +2139,6 @@ mod tests {
         assert_eq!(app.project_summary(), before);
     }
 
-    /// An empty scope has nothing to divide by: an empty list, not a panic. Same
-    /// for a scope whose entries are all zero length, which reaches the share
-    /// calculation with a zero total.
     #[test]
     fn an_empty_or_zero_length_scope_summarises_without_dividing_by_zero() {
         let _guard = env_guard();
@@ -2370,8 +2158,7 @@ mod tests {
         app.selected_date = today - chrono::Duration::days(400);
         assert!(app.project_summary().is_empty());
 
-        // Zero-length entries: rows exist, the scope total is zero, and the shares
-        // are 0% rather than a division by zero.
+        // Zero-length entries: rows exist, and the shares are 0%.
         seed(
             vec![
                 logged(0, "a", "tt", &[], today, 0),
@@ -2386,9 +2173,7 @@ mod tests {
         assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
     }
 
-    /// Hidden, the surface has no height at all, so `ui` leaves its row out of the
-    /// layout plan rather than reserving a zero-height one — that omission is what
-    /// keeps the collapsed screen identical to the one before it existed.
+    /// Hidden, the surface has no height, so `ui` leaves its row out of the plan.
     #[test]
     fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
         let _guard = env_guard();
@@ -2416,8 +2201,6 @@ mod tests {
         assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
     }
 
-    /// Toggling the surface is display-only: it moves no focus and touches no
-    /// selection, unlike `toggle_pane`.
     #[test]
     fn toggling_the_summary_surface_leaves_focus_and_the_table_alone() {
         let _guard = env_guard();
@@ -2438,9 +2221,6 @@ mod tests {
         assert_eq!(app.table_state.selected(), Some(1));
     }
 
-    /// The title marker names the scope in words, tracks `1`/`2`/`3`, and always
-    /// carries the `all projects` statement — in both filter states, because it
-    /// describes what the surface covers rather than warning about a filter.
     #[test]
     fn the_title_marker_names_the_scope_and_always_says_all_projects() {
         let _guard = env_guard();
@@ -2462,9 +2242,7 @@ mod tests {
         assert_eq!(app.summary_marker(6), unfiltered);
     }
 
-    /// Overflow says `shown/total` on the same title, driven off the height the
-    /// frame really has — and says nothing at all while every project fits, since
-    /// the title already reads `all projects`.
+    /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.
     #[test]
     fn more_projects_than_fit_are_counted_on_the_title() {
         let _guard = env_guard();
@@ -2489,14 +2267,10 @@ mod tests {
         assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
         assert_eq!(app.visible_project_summary(2).len(), 2);
 
-        // Room for all nine: no count, because the rows already say it.
         assert_eq!(app.summary_count(9), None);
         assert_eq!(app.summary_marker(9), "day · all projects");
     }
 
-    /// The summary and the footer total are one statement: with nothing filtered
-    /// the rows sum to the footer's figure, and with a filter on the rows stay put
-    /// while the footer drops — which is precisely when the marker is emphasised.
     #[test]
     fn the_rows_sum_to_the_footer_total_until_a_filter_narrows_it() {
         let _guard = env_guard();
@@ -2522,9 +2296,6 @@ mod tests {
         assert_eq!(app.project_summary(), rows, "the summary must not move");
     }
 
-    /// `/` must reach every field a row shows: the owner asked to "search on
-    /// anything", and a field the table prints but the search cannot find is the bug
-    /// that asked for.
     #[test]
     fn search_matches_every_field_a_row_shows() {
         let _guard = env_guard();

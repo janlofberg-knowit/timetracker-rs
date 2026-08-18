@@ -1,10 +1,5 @@
-//! The collapsible Projects / Tags pane surface.
-//!
-//! Each pane offers the distinct values found in the entries of the current view
-//! scope (day / week / all) *before* any filter is applied, with the number of
-//! entries each one matches. Listing the unfiltered scope is what keeps a pane
-//! from ever offering a value that matches nothing, and from hiding the value the
-//! user has just filtered on.
+//! The collapsible Projects / Tags pane surface. Each pane offers the distinct
+//! values of the current view scope *before* any filter, with their match counts.
 
 use std::collections::HashMap;
 
@@ -12,23 +7,13 @@ use super::App;
 use super::types::{Focus, Pane};
 use crate::tracker::TimeEntry;
 
-/// Most value rows a pane shows before it starts scrolling. The surface is sized
-/// to its content up to this, so a short list does not leave the box half empty.
+/// Most value rows a pane shows before it starts scrolling.
 const MAX_VISIBLE_VALUES: usize = 6;
 
 /// The number a collapsible surface puts on its top border, or `None` when it has
-/// nothing worth saying there. Every such surface formats it here, so the panes
-/// and the marks box can never disagree about what `3/7` means.
-///
-/// Two readings of one shape, decided by whether the list has a cursor:
-///
-/// - **With a cursor** (`position` is `Some`) the number is about *place*, so it
-///   stays hidden while every row fits — nothing can be off screen, so there is
-///   nothing to report — and reads `position/total` once the list scrolls.
-/// - **Without a cursor** (`position` is `None`) nothing scrolls, so the number is
-///   about *existence*: a bare `total` while everything fits, and `shown/total`
-///   once it does not, which says "there are more of these than you can see"
-///   without implying a position the surface does not have.
+/// nothing to say. With a cursor (`position` is `Some`) it is about *place*: hidden
+/// while every row fits, `position/total` once the list scrolls. Without one it is
+/// about *existence*: a bare `total` while all fit, `shown/total` once they do not.
 pub(crate) fn surface_count(
     position: Option<usize>,
     total: usize,
@@ -44,8 +29,7 @@ pub(crate) fn surface_count(
 }
 
 impl App {
-    /// The entries of the current view scope, before the tag filter and the
-    /// search term narrow them down. `filtered_entries` starts from this.
+    /// The current view scope, before any filter. `filtered_entries` starts here.
     pub(crate) fn scope_entries(&self) -> Vec<&TimeEntry> {
         use super::types::ViewMode;
         use crate::tracker::TimeData;
@@ -66,7 +50,6 @@ impl App {
         }
     }
 
-    /// The open panes, left to right: Projects then Tags.
     pub(crate) fn visible_panes(&self) -> Vec<Pane> {
         [Pane::Projects, Pane::Tags]
             .into_iter()
@@ -74,12 +57,8 @@ impl App {
             .collect()
     }
 
-    /// Distinct values in the current scope with their match counts, most used
-    /// first and ties broken by name so the order is stable.
-    ///
-    /// An entry with no project contributes no Projects row — "no project" is an
-    /// absence, not a value to filter on — and a tag repeated within one entry is
-    /// still only one match.
+    /// Distinct values with match counts, most used first, ties broken by name. No
+    /// project contributes no row; a tag repeated within one entry counts once.
     pub(crate) fn pane_values(&self, pane: Pane) -> Vec<(String, usize)> {
         let entries = self.scope_entries();
         let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -113,9 +92,7 @@ impl App {
         values
     }
 
-    /// Height of the pane surface including borders, or 0 when both panes are
-    /// hidden — the layout then drops the row entirely rather than reserving a
-    /// zero-height one, so the surface really costs nothing.
+    /// Height including borders, or 0 when both are hidden so the layout drops it.
     pub(crate) fn pane_surface_height(&self) -> u16 {
         let panes = self.visible_panes();
         if panes.is_empty() {
@@ -138,13 +115,7 @@ impl App {
         cursor.min(len.saturating_sub(1))
     }
 
-    /// `position/total` for a pane whose values do not all fit in `visible_rows`,
-    /// or `None` when they do.
-    ///
-    /// The cap at [`MAX_VISIBLE_VALUES`] means a long list scrolls, and a list that
-    /// scrolls with nothing on screen to say so hides values outright — the top
-    /// value slides away under `j` and looks like it never existed. This is the
-    /// "there is more, and here is where you are" the box would otherwise lack.
+    /// `position/total` once the values do not all fit in `visible_rows`.
     pub(crate) fn pane_scroll_indicator(&self, pane: Pane, visible_rows: usize) -> Option<String> {
         surface_count(
             Some(self.pane_cursor(pane)),
@@ -160,17 +131,8 @@ impl App {
         }
     }
 
-    /// Show or hide a pane.
-    ///
-    /// Opening one also focuses it: opening a pane *is* the intent to use it, so
-    /// `j`/`k` and `Enter` land there straight away rather than after a `Tab` the
-    /// user has to remember. That holds for the second pane too — the newly opened
-    /// one is the one just asked for.
-    ///
-    /// Hiding the focused pane moves focus to the other pane when that one is still
-    /// open, and to the table otherwise. Focus stays inside the surface for as long
-    /// as the surface exists, which is both the mirror of open-focuses-it and the
-    /// smaller jump; either way `j`/`k` never move a cursor that is off screen.
+    /// Show or hide a pane. Opening one focuses it; hiding the focused one falls
+    /// back to the other pane, or to the table.
     pub(crate) fn toggle_pane(&mut self, pane: Pane) {
         match pane {
             Pane::Projects => self.show_projects = !self.show_projects,
@@ -197,10 +159,8 @@ impl App {
         self.shift_focus(-1);
     }
 
-    /// Walk the focus ring — the table followed by the visible panes, left to
-    /// right — by `delta` steps, wrapping. A focus pointing at a pane that is not
-    /// on the ring (a pane hidden while focused) reads as the table, so both
-    /// directions recover to the same place.
+    /// Walk the ring — table then visible panes, left to right — by `delta`, wrapping.
+    /// A focus off the ring reads as the table, so both directions recover.
     fn shift_focus(&mut self, delta: isize) {
         let mut order = vec![Focus::Table];
         order.extend(self.visible_panes().into_iter().map(Focus::Pane));
@@ -209,7 +169,6 @@ impl App {
         self.focus = order[(current + delta).rem_euclid(len) as usize];
     }
 
-    /// The values selected in a pane, i.e. what it contributes to the filter.
     pub(crate) fn pane_selection(&self, pane: Pane) -> &[String] {
         match pane {
             Pane::Projects => &self.selected_projects,
@@ -217,20 +176,14 @@ impl App {
         }
     }
 
-    /// Whether a value a pane is offering is in that pane's selection. Both sides
-    /// come from [`pane_values`](Self::pane_values), so this is an exact match; the
-    /// filter predicates stay case-insensitive because the *store* is not
-    /// normalised.
+    /// Exact match: both sides come from [`pane_values`](Self::pane_values), though
+    /// the filter predicates themselves stay case-insensitive.
     pub(crate) fn pane_value_is_selected(&self, pane: Pane, value: &str) -> bool {
         self.pane_selection(pane).iter().any(|v| v == value)
     }
 
-    /// `Enter` inside the focused pane: toggle the value under that pane's cursor
-    /// into or out of its selection set.
-    ///
-    /// Returns false when no pane has focus, so `Enter` on the entries table falls
-    /// through to whatever that arm does — `App.focus` is what disambiguates the
-    /// one key, and the table's meaning is the detail popover.
+    /// `Enter` in the focused pane: toggle the value under its cursor. Returns false
+    /// when no pane has focus, so `Enter` falls through to the detail popover.
     pub(crate) fn toggle_pane_value(&mut self) -> bool {
         let Some(pane) = self.focused_pane() else {
             return false;
@@ -254,13 +207,11 @@ impl App {
         true
     }
 
-    /// `j` inside the focused pane. Returns false when nothing is focused, so the
-    /// caller can fall through to moving the table selection.
+    /// `j` in the focused pane, or false so the caller moves the table instead.
     pub(crate) fn pane_next(&mut self) -> bool {
         self.move_pane_cursor(1)
     }
 
-    /// `k` inside the focused pane.
     pub(crate) fn pane_previous(&mut self) -> bool {
         self.move_pane_cursor(-1)
     }

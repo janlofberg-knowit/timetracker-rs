@@ -12,20 +12,12 @@ use crate::tracker::TimeData;
 use super::{theme, App};
 use super::types::{ConfirmAction, InputField, InputMode, Pane, ViewMode};
 
-/// What marks the row a cursor is on, in every list that has a cursor: the entries
-/// table and both P/T panes. One string so the lists stay recognisably the same
-/// mechanism, and so the width a list has to reserve for it is never out of step
-/// with what gets drawn.
+/// The cursor row marker for every list that has one. One constant, so a list's
+/// reserved width can never be out of step with what gets drawn.
 const CURSOR_MARKER: &str = ">> ";
 
-/// A named vertical row of the main layout.
-///
-/// Some rows are conditional — the search bar only while searching, the P/T pane
-/// surface only while a pane is open — so the row a given index refers to depends
-/// on which conditions hold. Numbering them by hand meant one shifted-index pair
-/// per combination (`if show_search { (3, 4) } else { (2, 3) }`), which multiplies
-/// with every new conditional row. `LayoutRows` keeps the names and the
-/// constraints in lockstep instead and resolves a row to its `Rect` by name.
+/// A named vertical row of the main layout. Some rows are conditional, so
+/// `LayoutRows` resolves a row to its `Rect` by name rather than by index.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LayoutRow {
     Status,
@@ -45,8 +37,7 @@ struct LayoutRows {
 }
 
 impl LayoutRows {
-    /// `plan` is the rows to lay out, top to bottom; a conditional row is simply
-    /// left out rather than given a zero-height constraint.
+    /// `plan` is the rows top to bottom; a conditional row is left out entirely.
     fn split(area: Rect, plan: Vec<(LayoutRow, Constraint)>) -> Self {
         let (names, constraints): (Vec<LayoutRow>, Vec<Constraint>) = plan.into_iter().unzip();
         let areas = Layout::default()
@@ -56,7 +47,7 @@ impl LayoutRows {
         Self { names, areas }
     }
 
-    /// The row's area, or `None` when this frame does not include the row.
+    /// The row's area, or `None` when this frame omits it.
     fn get(&self, row: LayoutRow) -> Option<Rect> {
         self.names
             .iter()
@@ -73,8 +64,6 @@ impl LayoutRows {
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let mut plan = vec![(LayoutRow::Status, Constraint::Length(3))];
-    // Marks sit between Status and the panes: it answers the same question Status
-    // does — what is running — and Status alone cannot see a `tt-safe` phase.
     let marks_height = app.marks_surface_height();
     if marks_height > 0 {
         plan.push((LayoutRow::Marks, Constraint::Length(marks_height)));
@@ -88,9 +77,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         plan.push((LayoutRow::Search, Constraint::Length(3)));
     }
     plan.push((LayoutRow::Content, Constraint::Min(10)));
-    // The summary goes under the table and over the footer, per "place at the
-    // bottom": it is about the whole period the table is showing, so it reads as
-    // that table's total rather than as another header above it.
     let summary_height = app.summary_surface_height();
     if summary_height > 0 {
         plan.push((LayoutRow::Summary, Constraint::Length(summary_height)));
@@ -98,7 +84,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     plan.push((LayoutRow::Footer, Constraint::Length(3)));
     let rows = LayoutRows::split(f.area(), plan);
 
-    // Status header
     let (status_text, status_style) = match app.data.active_entry() {
         Some(entry) => (
             format!(
@@ -132,7 +117,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_pane_surface(f, app, area);
     }
 
-    // View tabs
     let tab_titles = vec!["[1] Day", "[2] Week", "[3] All"];
     let selected_tab = match app.view_mode {
         ViewMode::Day => 0,
@@ -189,7 +173,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_summary_surface(f, app, area);
     }
 
-    // Footer: left = hints (clips), right = "? : help" (always visible)
+    // Footer: left = hints (clips), right = the key legend (never clips).
     let (total, total_label) = if app.total_is_filtered() {
         (app.filtered_total(), "Filtered: ")
     } else {
@@ -212,12 +196,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let footer_inner = footer_block.inner(footer);
     f.render_widget(footer_block, footer);
 
-    // The right-hand zone is the part of the footer that never clips. `?: help`
-    // has always lived there; the pane keys join it because with both panes
-    // collapsed this legend is the surface's only trace on screen, so it has to
-    // survive a narrow terminal too.
-    // Hand-counted against the spans below; update it whenever they change, or the
-    // legend loses its last characters to the clipping zone on its left.
+    // Hand-counted against the spans below — update it when they change.
     const KEYS_WIDTH: u16 = 24; // " | P/T/A | Tab | ?: help"
     let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
@@ -229,8 +208,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled(format!(" {}", total_label), Style::default().fg(theme::TITLE)),
         Span::styled(total_str, Style::default().fg(theme::HIGHLIGHT).bold()),
         Span::styled(" | ", Style::default().fg(theme::BORDER)),
-        // Detail goes first among the hints: this zone clips from the right at 80
-        // columns, and `Enter` is the newest and least guessable binding here.
+        // Detail goes first; this zone clips from the right at 80 columns.
         Span::styled("Enter", Style::default().fg(theme::ACCENT)),
         Span::styled(": detail | ", Style::default().fg(theme::INACTIVE)),
         Span::styled("t", Style::default().fg(theme::ACCENT)),
@@ -249,11 +227,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let hints = Paragraph::new(Line::from(hint_spans));
     f.render_widget(hints, footer_chunks[0]);
 
-    // A surface's key is accented while that surface is open and dim while it is
-    // hidden, so this legend says both that the surfaces exist and which are
-    // showing. `A` joins `P`/`T` as the third `Shift`-letter toggle; `Tab` is
-    // separated off after them because it cycles the panes only — the Agents
-    // surface is display-only and deliberately not on the focus ring.
+    // A surface's key is accented while it is open, dim while hidden.
     let key_style =
         |on: bool| Style::default().fg(if on { theme::ACCENT } else { theme::INACTIVE });
     let panes_open = !app.visible_panes().is_empty();
@@ -280,14 +254,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// Geometry and chrome shared by every modal overlay, and the only place either
-/// popover is positioned or framed.
-///
-/// The two popups are the same object with different content: a centred `Rect`
-/// cleared out of the frame beneath it, a bordered block filled with the overlay
-/// background, the subject on the left of the top border with a marker
-/// right-aligned opposite it, and a line of key hints on the last row inside the
-/// bottom border. Returns the content area between the two.
+/// The only place any modal overlay is positioned or framed: a centred, cleared
+/// `Rect` with `title` and `marker` on its top border and `hints` on its last row.
+/// Returns the content area between the two.
 fn render_overlay(
     f: &mut Frame,
     width: u16,
@@ -306,8 +275,7 @@ fn render_overlay(
         height,
     };
 
-    // `Clear` first: without it the widgets underneath show through the gaps in
-    // whatever the popup draws.
+    // `Clear` first, or the widgets underneath show through the popup's gaps.
     f.render_widget(Clear, popup_area);
     let overlay_style = Style::default().bg(theme::OVERLAY_BG);
     let block = Block::default()
@@ -327,8 +295,7 @@ fn render_overlay(
     rows[0]
 }
 
-/// ` esc close `-style hints, spelled out rather than glyphed to match the pane
-/// keys and the footer legend.
+/// ` esc close `-style hints, spelled out rather than glyphed.
 fn overlay_hints(pairs: &[(&'static str, &'static str)]) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (i, (k, what)) in pairs.iter().enumerate() {
@@ -370,18 +337,14 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  d"), sep("        delete selected entry (asks first)")]),
         Line::from(vec![key("  s"), sep("        stop active entry")]),
         Line::from(vec![key("  Enter"), sep("    entry detail")]),
-        // Written as a path rather than a key, because `t` on its own is already
-        // listed under Navigation as "go to today": the trim is modal, live only
-        // while the detail popover is open. Help-only, like `Shift-S` below — the
-        // footer hints it conditionally instead, and only when there is idle to cut.
+        // A path, not a key: the trim is live only while the popover is open.
         Line::from(vec![
             key("  Enter, t"),
             sep(" trim idle from the entry (asks first)"),
         ]),
         Line::from(Span::raw("")),
         heading("  Search & Filter"),
-        // This section's key column is two wider than the rest so `Shift-Tab`,
-        // the longest binding in the popup, still gets a gap before its text.
+        // This section's key column is two wider, for `Shift-Tab`.
         Line::from(vec![key("  /"), sep("          search any field")]),
         Line::from(vec![key("  Shift-P"), sep("    Projects pane on / off")]),
         Line::from(vec![key("  Shift-T"), sep("    Tags pane on / off")]),
@@ -390,11 +353,7 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  Enter"), sep("      filter on the pane value")]),
         Line::from(Span::raw("")),
         heading("  Other"),
-        // Not under Search & Filter with the P/T panes: this surface filters
-        // nothing and takes no focus, it only shows which phases are open.
         Line::from(vec![key("  Shift-A"), sep("  agent phases on / off")]),
-        // Help-only, and deliberately not in the footer legend: the hint zone
-        // clips from the right at 80 columns and has no room left.
         Line::from(vec![key("  Shift-S"), sep("  project summary on / off")]),
         Line::from(vec![key("  o"), sep("        toggle sort order")]),
         Line::from(vec![key("  r"), sep("        reload data from disk")]),
@@ -402,8 +361,7 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  q / Esc"), sep("  quit")]),
     ];
 
-    // Two borders, one hints row and one row per line — sized from the content so
-    // adding a binding cannot silently push the last one out of the box.
+    // Sized from the content, so adding a binding cannot push the last one out.
     let content = render_overlay(
         f,
         52,
@@ -421,27 +379,14 @@ pub fn render_help_popup(f: &mut Frame) {
     );
 }
 
-/// The one overlay that asks instead of telling: a destructive action waiting for
-/// a yes.
-///
-/// **It names the entry.** The failure a confirmation actually prevents here is not
-/// "meant to press a different key", it is "the cursor was on a different row", and
-/// only naming the subject catches that. For the same reason the entry comes from
-/// the *captured* id rather than from `selected_entry()`: the 250 ms poll can move
-/// the cursor while this is on screen, and a prompt that followed the cursor would
-/// re-describe itself under the reader.
-///
-/// The trim prompt also states its outcome, which is fully computable before the
-/// mutation — piece count, each piece's duration, and how much is removed — from
-/// `TimeEntry::trim_spans`, the same helper `split_at_idle` then writes. Never a
-/// second copy of that arithmetic here.
+/// A destructive action waiting for a yes. **It names the entry**, from the
+/// *captured* id and never `selected_entry()`, which the poll can move. The trim
+/// outcome comes from `TimeEntry::trim_spans` — never a second copy of that here.
 fn render_confirm_popup(f: &mut Frame, app: &App) {
     let Some(pending) = app.pending_confirm else {
         return;
     };
-    // Gone from under the prompt: draw nothing rather than describe the wrong
-    // entry. The poll drops the prompt on the same tick (`sync_from_store`), so
-    // this is the one frame in between.
+    // Gone from under the prompt: draw nothing rather than the wrong entry.
     let Some(entry) = app.data.get_entry(pending.entry_id) else {
         return;
     };
@@ -449,8 +394,7 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
     let value = Style::default().fg(Color::White);
     let dim = Style::default().fg(theme::INACTIVE);
 
-    // The subject line: what the entry is, so a cursor on the wrong row shows up
-    // here rather than after the fact.
+    // The subject line, so a cursor on the wrong row shows up here.
     let mut subject = vec![Span::styled(format!("  {}", entry.description), value)];
     if let Some(project) = entry.project.as_deref().filter(|p| !p.trim().is_empty()) {
         subject.push(Span::styled(format!(" ({})", project), dim));
@@ -485,10 +429,7 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
         ]));
     }
 
-    // Sized from the content, like the other two overlays, so a long description
-    // gets room instead of being clipped by a fixed width — bounded, because the
-    // question is the point and a full-width banner reads as a screen, not a
-    // prompt.
+    // Sized from the content but bounded, so it never becomes a full-width banner.
     let title = format!(" {} entry #{}? ", pending.action.verb(), entry.id);
     let widest = lines
         .iter()
@@ -504,9 +445,7 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
         lines.len() as u16 + 3,
         Span::styled(title, Style::default().fg(theme::HIGHLIGHT).bold()),
         Span::styled(" confirm ", Style::default().fg(theme::INACTIVE)),
-        // Exactly what the `Confirm` arm binds, and nothing else. `enter` is listed
-        // with the other cancels on purpose: it already means "close this" in the
-        // popover, so it keeps that meaning here rather than learning a second one.
+        // Exactly what the `Confirm` arm binds, `enter` among the cancels.
         overlay_hints(&[
             (pending.action.confirm_keys(), "yes"),
             ("n / esc / enter", "cancel"),
@@ -518,20 +457,16 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
     );
 }
 
-/// The selected entry, every field of it, wrapped rather than truncated — the
-/// answer to a table cell that had to clip.
+/// The selected entry, every field wrapped rather than truncated.
 fn render_detail_popup(f: &mut Frame, app: &App) {
     let Some(entry) = app.selected_entry() else {
         return;
     };
 
-    // Label column wide enough for the longest label, so the values line up and a
-    // wrapped value hangs under its own first line rather than under the label.
+    // Wide enough for the longest label, so values line up.
     const LABEL: usize = 12;
     let width = 80u16.min(f.area().width.saturating_sub(4)).max(24) as usize;
-    // 2 border columns, the leading two-space indent every line carries, the label
-    // column, and a two-column right margin so a wrapped line never runs flush into
-    // the border.
+    // Hand-counted: 2 borders + 2 indent + label + 2 right margin.
     let value_width = width.saturating_sub(2 + 2 + LABEL + 2).max(8);
 
     fn label(text: &str) -> Span<'_> {
@@ -541,9 +476,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         )
     }
 
-    /// Greedy word wrap. Values are joined tag lists and prose, so the break
-    /// points are spaces; a single word longer than the line is left long rather
-    /// than cut, since cutting is the thing this popover exists to avoid.
+    /// Greedy word wrap on spaces; a word longer than the line is left long.
     fn wrap(text: &str, width: usize) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         for word in text.split_whitespace() {
@@ -561,8 +494,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         lines
     }
 
-    /// One labelled field: the first line beside the label, the rest indented to
-    /// the value column.
+    /// One labelled field, continuation lines indented to the value column.
     fn field(name: &str, value: &str, style: Style, value_width: usize) -> Vec<Line<'static>> {
         wrap(value, value_width)
             .into_iter()
@@ -607,8 +539,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         value,
         value_width,
     ));
-    // `format_end_time` is already the em dash while an entry runs, so an active
-    // entry needs no special case here.
+    // `format_end_time` is already the em dash while an entry runs.
     lines.extend(field("End", &entry.format_end_time(), value, value_width));
     lines.extend(field(
         "Duration",
@@ -616,8 +547,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         Style::default().fg(theme::ACCENT).bold(),
         value_width,
     ));
-    // Idle rows only when the entry has any: an entry with none has nothing to say
-    // about idle, and an em dash would imply the field applies to it.
+    // Idle rows only when the entry has any.
     for (i, gap) in entry.idle.iter().enumerate() {
         lines.push(Line::from(vec![
             label(if i == 0 { "Idle" } else { "" }),
@@ -626,8 +556,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from(Span::raw("")));
     lines.push(Line::from(label("Description")));
-    // The description gets the full inner width rather than the value column: it
-    // is prose, and it is the field most likely to need the room.
+    // The description gets the full inner width, not the value column.
     for text in wrap(&entry.description, width.saturating_sub(2 + 2 + 2).max(8)) {
         lines.push(Line::from(vec![Span::raw("  "), Span::styled(text, value)]));
     }
@@ -647,12 +576,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
             Style::default().fg(theme::HIGHLIGHT).bold(),
         ),
         Span::styled(marker, marker_style),
-        // Every hint here is bound in the `InputMode::Detail` arm — a hint that does
-        // nothing would be worse than none, which is also why `app.detail_hints()`
-        // drops `[t]` on an entry with no idle to trim. Traversal comes first
-        // because it is what keeps the list interactive from inside the overlay, and
-        // the two destructive keys trail a `…` because they open a confirmation
-        // rather than acting.
+        // Every hint here is bound in the `InputMode::Detail` arm.
         overlay_hints(&app.detail_hints()),
     );
     f.render_widget(
@@ -661,16 +585,11 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     );
 }
 
-/// The `Marks` surface: `tt-safe`'s open phase marks, newest first.
-///
-/// Rows are `tt-safe marks`' own format — `project/issue phase`, start time,
-/// elapsed — assembled from `crate::marks`, which owns the row format as well as
-/// the file format so the CLI and the TUI cannot disagree. Elapsed is *asked for*
-/// per frame rather than stored, which is what makes the numbers count up between
-/// directory reads.
+/// The `Marks` surface: `project/issue phase`, start time and elapsed, newest
+/// first. Rows come from `crate::marks` so the CLI and the TUI cannot disagree;
+/// elapsed is asked for per frame, so it counts up between directory reads.
 fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
-    /// Narrowest the label column gets, so a box of short labels still lines its
-    /// times up where the owner's approved shape puts them.
+    /// Narrowest the label column gets, so short labels still line their times up.
     const LABEL_WIDTH: usize = 18;
 
     let mut block = Block::default()
@@ -682,9 +601,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
         ));
     let inner = block.inner(area);
 
-    // The panes' own border count, on the panes' own mechanism, driven off the
-    // rows this frame really has rather than a constant — so a box squeezed by a
-    // short terminal still tells the truth about what is off screen.
+    // Driven off the rows this frame really has, not a constant.
     if let Some(count) = app.marks_count(inner.height as usize) {
         block = block.title_top(
             Line::from(Span::styled(
@@ -696,8 +613,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let marks = app.visible_marks();
-    // One label column for the whole box, so the start times and elapsed times
-    // read as columns instead of trailing each label at its own indent.
+    // One label column for the whole box, so the times read as columns.
     let label_width = marks
         .iter()
         .map(|mark| mark.label().chars().count())
@@ -737,26 +653,14 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The `Summary` surface: how the current scope split across projects.
-///
-/// Display-only — no cursor, no focus border, nothing to select — so the whole
-/// surface is a `Paragraph` in a block. Totals go through `duration::format`, so
-/// a row reads exactly as the footer and the CLI would print the same span.
-///
-/// **The title bar is the substance.** `Summary (S)` on the left, and right
-/// aligned opposite it the scope and the standing `all projects` marker. The
-/// marker's words never change; its colour does, moving from `TITLE` to
-/// `HIGHLIGHT` at the moment a filtered footer total starts disagreeing with
-/// these unfiltered rows. That is the whole mechanism by which the disagreement
-/// reads as intentional, so the two must stay driven off the one predicate the
-/// footer uses.
+/// The `Summary` surface: how the current scope split across projects. The title
+/// bar's `all projects` marker keeps its words in both filter states and changes
+/// only colour, off the same predicate the footer's total uses.
 fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
-    /// Narrowest the project column gets, so a box of short names still lines its
-    /// totals up where the owner's approved shape puts them.
+    /// Narrowest the project column gets, so short names still line their totals up.
     const LABEL_WIDTH: usize = 14;
-    /// Widths of the three right-flushed number columns: total, entry count,
-    /// share. Fixed rather than content-derived, so the columns do not shift
-    /// under a re-scope that happens to widen one figure.
+    /// The three right-flushed number columns. Fixed, not content-derived, so a
+    /// re-scope that widens one figure cannot shift them.
     const TOTAL_WIDTH: usize = 8;
     const COUNT_WIDTH: usize = 5;
     const SHARE_WIDTH: usize = 6;
@@ -784,8 +688,7 @@ fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = app.visible_project_summary(inner.height as usize);
-    // One project column for the whole box, widened only by a name that overflows
-    // it, so the numbers read as columns instead of trailing each name.
+    // One project column for the whole box, so the numbers read as columns.
     let label_width = rows
         .iter()
         .map(|row| row.project.chars().count())
@@ -863,10 +766,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
 
     let inner = block.inner(area);
 
-    // Scrolled lists say so on the top border, opposite the title: ` 2/8 `. The
-    // top border is dead space, so this costs no row and no inner column — a
-    // Scrollbar would have to steal one of the two, and a thumb only hints that
-    // more exists where the count states how much.
+    // On the top border, which is dead space: costs no row and no inner column.
     if let Some(indicator) = app.pane_scroll_indicator(pane, inner.height as usize) {
         block = block.title_top(
             Line::from(Span::styled(
@@ -877,10 +777,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         );
     }
 
-    // The cursor marker is the entries table's, so the two lists read as one
-    // system. It is a gutter the List reserves on *every* row, so it comes off the
-    // width the rows lay themselves out in — otherwise the right-flushed counts
-    // would be pushed off the end.
+    // The marker is a gutter on every row, so it comes off the rows' layout width.
     let width = (inner.width as usize).saturating_sub(CURSOR_MARKER.len());
     let items: Vec<ListItem> = if values.is_empty() {
         vec![ListItem::new(Span::styled(
@@ -891,9 +788,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         values
             .iter()
             .map(|(value, count)| {
-                // Value left, match count flushed right within the block. The lead
-                // column the value already sat in carries the selection mark, so
-                // marking one costs no width and shifts nothing.
+                // The lead column carries the selection mark, so it costs no width.
                 let selected = app.pane_value_is_selected(pane, value);
                 let mark = if selected { "•" } else { " " };
                 let count = count.to_string();
@@ -913,10 +808,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
             .collect()
     };
 
-    // Shown whether or not the pane has focus: the border accent is what says
-    // "keys land here", while the marker says where this pane's cursor will resume,
-    // which is worth knowing from the other side of the surface. The entries table
-    // shows its own marker unconditionally for the same reason.
+    // Shown with or without focus: it says where this pane's cursor will resume.
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::default().bg(theme::SELECTED_BG))
@@ -1084,7 +976,6 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(help, chunks[6]);
 
-    // Cursor: use cursor_pos for correct mid-text cursor placement
     let cursor_text_width = |text: &str, pos: usize| -> u16 {
         let byte_idx = text.char_indices().nth(pos).map(|(i, _)| i).unwrap_or(text.len());
         Line::from(&text[..byte_idx]).width() as u16
@@ -1295,8 +1186,7 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
             (rows, app.table_state.selected())
         };
 
-    // Projects read as `(tt)` and tags as `#impl`, the same sigils the CLI listing
-    // uses, so the title says which pane a value came from without a legend.
+    // `(tt)` and `#impl`, the CLI's own sigils, so the title needs no legend.
     let title = if app.is_filtering() {
         let values: Vec<String> = app
             .selected_projects
@@ -1309,18 +1199,8 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         " Entries ".to_string()
     };
 
-    // Tags used to be `Length(14)`, so the cell clipped at the same 14 columns on a
-    // 30-inch screen as on a half-open laptop. `Fill(1)` beside the description's
-    // `Min(12)` splits whatever is left between the only two columns whose content
-    // has no fixed width, so both grow with the terminal — the full tag list of the
-    // widest row shows from ~146 columns.
-    //
-    // The fixed columns are cut to exactly what they render (`2026-08-17`, `14:30`,
-    // and the `Duration` header, which is wider than any duration) instead of
-    // carrying two or three columns of padding each: `column_spacing` already puts
-    // a gap between cells, and those 7 reclaimed columns are what makes the
-    // 80-column case gain on *both* variable columns (tags 14 -> 19, description
-    // 17 -> 19) rather than trading one for the other.
+    // `Fill(1)` and `Min(12)` share what the fixed columns leave, so both grow with
+    // the terminal. The fixed widths are exactly what they render, with no padding.
     let table = Table::new(
         rows,
         [
