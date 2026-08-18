@@ -7,7 +7,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::TableState};
-use crate::storage::load_data;
+use crate::marks::Mark;
+use crate::storage::{PathStamp, load_data};
 use crate::tracker::TimeData;
 
 pub mod theme;
@@ -15,9 +16,12 @@ pub mod types;
 mod search;
 mod navigation;
 mod entry_form;
+mod marks_surface;
+mod panes;
+mod summary;
 mod render;
 
-pub use types::{InputField, InputMode, SortOrder, ViewMode};
+pub use types::{Focus, InputField, InputMode, Pane, SortOrder, ViewMode};
 
 pub(crate) struct App {
     pub(crate) data: TimeData,
@@ -28,22 +32,67 @@ pub(crate) struct App {
     pub(crate) input_mode: InputMode,
     pub(crate) input_field: InputField,
     pub(crate) input_description: String,
+    pub(crate) input_project: String,
     pub(crate) input_tags: String,
     pub(crate) input_start_time: String,
     pub(crate) input_end_time: String,
     pub(crate) input_duration: String,
     pub(crate) search_term: String,
-    pub(crate) tag_filter: Vec<String>,
+    /// The values picked in each pane. OR within a set, AND across the two — see
+    /// `filtered_entries`.
+    pub(crate) selected_projects: Vec<String>,
+    pub(crate) selected_tags: Vec<String>,
     pub(crate) editing_entry_id: Option<u64>,
     pub(crate) sort_order: SortOrder,
     /// Cursor position within the currently active input field (char index, not byte index).
     pub(crate) cursor_pos: usize,
+    /// Fingerprint of the store as of the last load, so the event loop can spot
+    /// writes made outside the TUI without reading the file every tick.
+    pub(crate) store_stamp: Option<PathStamp>,
+    /// `tt-safe`'s open phase marks as of the last read, newest first, kept so a
+    /// frame never reads the directory.
+    pub(crate) marks: Vec<Mark>,
+    /// Fingerprint of the *mark directory*, so the event loop can spot marks
+    /// begun or dropped outside the TUI without listing it every tick.
+    ///
+    /// **The blind spot, deliberately:** creating or deleting a mark file changes
+    /// the directory's mtime, but `tt-safe touch` rewriting `<mark>.last` in
+    /// place does not — an in-place write to a file inside a directory leaves the
+    /// directory itself untouched. So this stamp catches `begin`, `end` and
+    /// `cancel`, i.e. every event that changes *which* marks are open, and is
+    /// blind to heartbeats. That is exactly why the surface shows only
+    /// start-derived data (`Mark::start`, and elapsed derived from it at render
+    /// time). Anything heartbeat-derived — a last-beat column, a staleness cue —
+    /// would appear to work while the mark list happened to be changing and then
+    /// silently go stale, so do not add one on top of this stamp: it would need a
+    /// stamp per mark file, or the append-only `<mark>.beats` file, or both.
+    pub(crate) marks_stamp: Option<PathStamp>,
+    /// Whether the Projects / Tags panes are open. Both default to off, so the
+    /// pane surface has zero height and first-run layout is unchanged.
+    pub(crate) show_projects: bool,
+    pub(crate) show_tags: bool,
+    /// Whether the Marks surface is open. Off by default like the panes, so its
+    /// row is absent from the layout plan and first-run layout is unchanged.
+    pub(crate) show_marks: bool,
+    /// Whether the Summary surface at the bottom is open. Off by default for the
+    /// same reason as the others: hidden, its row is left out of the layout plan
+    /// entirely, so the collapsed screen is byte-for-byte the old one.
+    pub(crate) show_summary: bool,
+    /// What `Tab` has given focus to, and where each pane's cursor rests.
+    pub(crate) focus: Focus,
+    pub(crate) project_cursor: usize,
+    pub(crate) tag_cursor: usize,
 }
 
 impl App {
     fn new() -> Result<Self> {
-        Ok(Self {
+        // Stamp before loading — see `App::reload`.
+        let store_stamp = crate::storage::store_stamp();
+        let mut app = Self {
             data: load_data()?,
+            store_stamp,
+            marks: Vec::new(),
+            marks_stamp: None,
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
             view_mode: ViewMode::Day,
@@ -51,16 +100,49 @@ impl App {
             input_mode: InputMode::Normal,
             input_field: InputField::Description,
             input_description: String::new(),
+            input_project: String::new(),
             input_tags: String::new(),
             input_start_time: String::new(),
             input_end_time: String::new(),
             input_duration: String::new(),
             search_term: String::new(),
-            tag_filter: Vec::new(),
+            selected_projects: Vec::new(),
+            selected_tags: Vec::new(),
             editing_entry_id: None,
             sort_order: SortOrder::NewestFirst,
             cursor_pos: 0,
-        })
+            show_projects: false,
+            show_tags: false,
+            show_marks: false,
+            show_summary: false,
+            focus: Focus::Table,
+            project_cursor: 0,
+            tag_cursor: 0,
+        };
+        // The first tick is 250 ms away; reading now means the first frame is as
+        // current as every frame after it.
+        app.sync_from_marks();
+        Ok(app)
+    }
+
+    /// Apply `edit` to the store under its exclusive lock, then refresh the
+    /// in-memory view from what actually landed.
+    ///
+    /// `App.data` is loaded once at startup, so mutating that snapshot and saving
+    /// it back would rewrite the whole file and silently drop anything written
+    /// since — and reuse a stale `next_id`. Every TUI mutation goes through here
+    /// instead: the intent is computed from the view, but applied to the freshly
+    /// loaded store.
+    pub(crate) fn mutate_store<T>(&mut self, edit: impl FnOnce(&mut TimeData) -> T) -> Result<T> {
+        let (result, fresh) = crate::storage::with_data(|data| {
+            let result = edit(data);
+            Ok((result, data.clone()))
+        })?;
+        self.data = fresh;
+        // Our own write moved the file on; stamping it here keeps the next tick
+        // from reloading what we already hold.
+        self.store_stamp = crate::storage::store_stamp();
+        Ok(result)
     }
 }
 
@@ -99,20 +181,54 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('q') | KeyCode::Esc => {
                                 if app.is_searching() {
                                     app.clear_search();
-                                } else if app.is_tag_filtering() {
-                                    app.clear_tag_filter();
+                                } else if app.is_filtering() {
+                                    app.clear_filters();
                                 } else {
                                     app.should_quit = true;
                                 }
                             }
-                            KeyCode::Char('j') | KeyCode::Down => app.next(),
-                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                            // j/k move inside the focused pane when there is one,
+                            // and fall through to the table otherwise.
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if !app.pane_next() {
+                                    app.next();
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if !app.pane_previous() {
+                                    app.previous();
+                                }
+                            }
+                            // One key, disambiguated by focus: in a pane it toggles
+                            // the value under the cursor into the filter, and on the
+                            // table it opens the selected entry's detail popover.
+                            // `toggle_pane_value` reporting false *is* the focus
+                            // check — there is no second place for the two meanings
+                            // to disagree about which is which.
+                            KeyCode::Enter => {
+                                if !app.toggle_pane_value() {
+                                    app.open_detail();
+                                }
+                            }
+                            KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
+                            KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
+                            // No focus argument, unlike the panes: the marks
+                            // surface is display-only, so opening it cannot
+                            // move `j`/`k` or `Enter` anywhere.
+                            KeyCode::Char('M') => app.toggle_marks(),
+                            // Display-only like the marks surface, so no focus
+                            // argument here either. Capital `S` only: lowercase
+                            // `s` stops the active entry.
+                            KeyCode::Char('S') => app.toggle_summary(),
+                            KeyCode::Tab => app.cycle_focus(),
+                            // crossterm reports Shift-Tab as its own code, not Tab
+                            // with a SHIFT modifier.
+                            KeyCode::BackTab => app.cycle_focus_back(),
                             KeyCode::Char('d') => app.delete_selected()?,
                             KeyCode::Char('s') => app.stop_active()?,
                             KeyCode::Char('r') => app.reload()?,
                             KeyCode::Char('a') => app.start_adding(),
                             KeyCode::Char('e') => app.start_editing(),
-                            KeyCode::Char('f') => app.filter_by_selected_tags(),
                             KeyCode::Char('/') => app.start_search(),
                             KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
                             KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
@@ -197,10 +313,48 @@ pub fn run_tui() -> Result<()> {
                             }
                             _ => {}
                         },
+                        // Modal like Help — no second surface can be open at once —
+                        // but not inert: the popover renders whatever
+                        // `selected_entry()` returns, so moving the table cursor is
+                        // the whole implementation of "the overlay follows the list".
+                        // There is no cached entry and no second cursor to keep in
+                        // sync. `Enter` closes what `Enter` opened.
+                        InputMode::Detail => match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                                app.input_mode = InputMode::Normal;
+                            }
+                            // The table's own next/previous, not the Normal arm's
+                            // pane-first variant: this overlay is about entries, so a
+                            // focused pane must not capture j/k while it is open.
+                            KeyCode::Char('j') | KeyCode::Down => app.next(),
+                            KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                            // The form is modal too, so it replaces the popover rather
+                            // than nesting inside it — `start_editing` sets the mode.
+                            KeyCode::Char('e') => app.start_editing(),
+                            // Unconfirmed, matching the table: inventing a
+                            // confirmation that exists only here would make the same
+                            // key mean two different things. The popover then reports
+                            // whatever the selection fell to, and closes if the delete
+                            // emptied the view.
+                            KeyCode::Char('d') => {
+                                app.delete_selected()?;
+                                if app.selected_entry().is_none() {
+                                    app.input_mode = InputMode::Normal;
+                                }
+                            }
+                            _ => {}
+                        },
                     }
                 }
             }
         }
+
+        // The 250 ms poll above is the loop's clock: whether it returned a key or
+        // timed out, this is where we notice a store written from outside — and,
+        // on the same tick and with no second timer, a mark begun or dropped
+        // outside too.
+        app.sync_from_store()?;
+        app.sync_from_marks();
 
         if app.should_quit {
             break;
@@ -209,4 +363,1594 @@ pub fn run_tui() -> Result<()> {
 
     restore_terminal(&mut terminal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage;
+    /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`, since env is
+    /// process-wide — and shares its lock with `marks`' own env test, which would
+    /// otherwise repoint `TT_MARK_DIR` underneath these.
+    use crate::storage::env_guard;
+    use crate::tracker::TimeEntry;
+    use std::path::PathBuf;
+
+    /// Point `HOME` at a fresh scratch dir so `ProjectDirs` resolves the store
+    /// inside it, and `TT_MARK_DIR` at a mark directory inside the same dir.
+    /// Tests must never touch the user's real store or their real marks — live
+    /// agent sessions write both continuously.
+    fn sandbox(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tt-store-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("HOME", &dir) };
+        unsafe { std::env::set_var("TT_MARK_DIR", dir.join("marks")) };
+        let path = storage::get_data_path().unwrap();
+        assert!(
+            path.starts_with(&dir),
+            "sandbox HOME not in effect: {path:?}"
+        );
+        let marks = crate::marks::mark_dir().expect("a mark dir");
+        assert!(
+            marks.starts_with(&dir),
+            "sandbox TT_MARK_DIR not in effect: {marks:?}"
+        );
+        dir
+    }
+
+    /// The sandbox's mark directory, created on demand.
+    fn mark_sandbox() -> PathBuf {
+        let dir = crate::marks::mark_dir().expect("a mark dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a mark file the way `tt-safe begin` does: the name is the phase key,
+    /// the content is a unix-seconds start timestamp. Never shells out to
+    /// `tt-safe` — the real mark directory has live marks in it.
+    fn begin_mark(dir: &std::path::Path, key: &str, minutes_ago: i64) {
+        let start = Local::now() - chrono::Duration::minutes(minutes_ago);
+        std::fs::write(dir.join(key), format!("{}\n", start.timestamp())).unwrap();
+    }
+
+    fn entry(id: u64, description: &str) -> TimeEntry {
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: None,
+            tags: Vec::new(),
+            start_time: Local::now(),
+            end_time: None,
+        }
+    }
+
+    fn seed(entries: Vec<TimeEntry>, next_id: u64) {
+        storage::save_data(&TimeData {
+            entries,
+            next_id,
+            schema_version: 1,
+        })
+        .unwrap();
+    }
+
+    /// A write from outside the TUI, through the same `with_data` path `tt log`
+    /// uses — i.e. what an agent session does while the TUI sits on its snapshot.
+    fn agent_write(description: &str) -> u64 {
+        storage::with_data(|data| {
+            Ok(data
+                .add_entry(
+                    description.to_string(),
+                    Some("probe".to_string()),
+                    vec!["probe".to_string()],
+                    Local::now(),
+                    Some(Local::now()),
+                )
+                .id)
+        })
+        .unwrap()
+    }
+
+    fn on_disk() -> TimeData {
+        storage::load_data().unwrap()
+    }
+
+    fn descriptions(data: &TimeData) -> Vec<&str> {
+        data.entries
+            .iter()
+            .map(|e| e.description.as_str())
+            .collect()
+    }
+
+    fn select(app: &mut App, description: &str) {
+        let idx = app
+            .filtered_entries()
+            .iter()
+            .position(|e| e.description == description)
+            .expect("entry not in view");
+        app.table_state.select(Some(idx));
+    }
+
+    #[test]
+    fn delete_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("delete");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        select(&mut app, "doomed");
+        app.delete_selected().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["keep", "probe"]);
+        assert_eq!(descriptions(&app.data), vec!["keep", "probe"]);
+    }
+
+    #[test]
+    fn deleting_an_already_removed_id_is_a_no_op() {
+        let _guard = env_guard();
+        sandbox("delete-gone");
+        seed(vec![entry(0, "keep"), entry(1, "doomed")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "doomed");
+        // Someone else removed it first, then wrote an entry of their own
+        storage::with_data(|data| {
+            data.entries.retain(|e| e.id != 1);
+            Ok(())
+        })
+        .unwrap();
+        agent_write("probe");
+
+        app.delete_selected().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["keep", "probe"]);
+    }
+
+    #[test]
+    fn stop_active_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("stop");
+        seed(vec![entry(0, "running")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        app.stop_active().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["running", "probe"]);
+        assert!(
+            data.entries[0].end_time.is_some(),
+            "the active entry should have been stopped"
+        );
+    }
+
+    #[test]
+    fn add_keeps_a_concurrent_agent_write_and_takes_a_fresh_id() {
+        let _guard = env_guard();
+        sandbox("add");
+        seed(vec![entry(0, "existing")], 1);
+
+        let mut app = App::new().unwrap();
+        // The agent claims id 1, which the TUI's snapshot still thinks is free
+        let agent_id = agent_write("probe");
+        assert_eq!(agent_id, 1);
+
+        app.start_adding();
+        app.input_description = "from the tui".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        let data = on_disk();
+        assert_eq!(
+            descriptions(&data),
+            vec!["existing", "probe", "from the tui"]
+        );
+        let tui_id = data
+            .entries
+            .iter()
+            .find(|e| e.description == "from the tui")
+            .unwrap()
+            .id;
+        assert_ne!(tui_id, agent_id, "the TUI entry reused the agent's id");
+        assert_eq!(tui_id, 2);
+        let mut ids: Vec<u64> = data.entries.iter().map(|e| e.id).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "duplicate ids in the store");
+    }
+
+    fn selected_description(app: &App) -> String {
+        let idx = app.table_state.selected().expect("nothing selected");
+        app.filtered_entries()[idx].description.clone()
+    }
+
+    #[test]
+    fn sync_picks_up_an_outside_write_and_keeps_the_selection() {
+        let _guard = env_guard();
+        sandbox("sync");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "second");
+        agent_write("probe");
+
+        app.sync_from_store().unwrap();
+
+        assert!(descriptions(&app.data).contains(&"probe"));
+        assert_eq!(selected_description(&app), "second");
+    }
+
+    #[test]
+    fn sync_is_skipped_while_a_form_is_open() {
+        let _guard = env_guard();
+        sandbox("sync-form");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        for mode in [
+            InputMode::AddingEntry,
+            InputMode::EditingEntry,
+            InputMode::Searching,
+        ] {
+            app.input_mode = mode;
+            app.input_description = "half typed".to_string();
+            app.sync_from_store().unwrap();
+            assert_eq!(descriptions(&app.data), vec!["first"]);
+            assert_eq!(app.input_description, "half typed");
+        }
+
+        // …and the change is picked up once the mode is Normal again.
+        app.input_mode = InputMode::Normal;
+        app.sync_from_store().unwrap();
+        assert!(descriptions(&app.data).contains(&"probe"));
+    }
+
+    /// The phase keys of the marks the app currently holds, newest first.
+    fn mark_keys(app: &App) -> Vec<String> {
+        app.marks
+            .iter()
+            .map(|m| match &m.issue {
+                Some(issue) => format!("{}.{}.{}", m.project, issue, m.phase),
+                None => format!("{}.-.{}", m.project, m.phase),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_mark_begun_outside_the_tui_appears_on_the_next_tick_and_cancelling_removes_it() {
+        let _guard = env_guard();
+        sandbox("marks-tick");
+        seed(vec![entry(0, "first")], 1);
+        let marks = mark_sandbox();
+
+        // Nothing open: an empty mark directory is an empty list, not an error.
+        let mut app = App::new().unwrap();
+        assert!(app.marks.is_empty());
+
+        begin_mark(&marks, "tt.14.impl", 2);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
+
+        // A second mark, begun while the first is still open.
+        begin_mark(&marks, "vinge.-.plan", 126);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl", "vinge.-.plan"]);
+
+        // `tt-safe cancel` / `tt-safe end` both remove the file.
+        std::fs::remove_file(marks.join("tt.14.impl")).unwrap();
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["vinge.-.plan"]);
+    }
+
+    /// The directory stamp's whole purpose, and its documented blind spot in one
+    /// test: an in-place rewrite of a file *inside* the mark directory leaves the
+    /// directory's own mtime alone, so a settled stamp means no re-read at all.
+    #[test]
+    fn an_unchanged_mark_directory_is_not_read_again() {
+        let _guard = env_guard();
+        sandbox("marks-noread");
+        seed(vec![entry(0, "first")], 1);
+        let marks = mark_sandbox();
+        begin_mark(&marks, "tt.14.impl", 2);
+
+        let mut app = App::new().unwrap();
+        let first = app.marks.clone();
+        assert_eq!(mark_keys(&app), vec!["tt.14.impl"]);
+
+        // Let the directory's mtime settle out of the current second, so the stamp
+        // is trustworthy rather than deliberately stale.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Rewrite the mark's *contents* in place, same length, without adding or
+        // removing a file. The directory is untouched, so a re-read would be the
+        // only way this could show up — and it must not.
+        begin_mark(&marks, "tt.14.impl", 999);
+        app.sync_from_marks();
+        assert_eq!(app.marks, first, "the directory did not change: no re-read");
+
+        // Creating a file *does* move the directory on, and the whole list is then
+        // re-read — including the rewritten start the previous tick ignored.
+        begin_mark(&marks, "loremind.64.plan", 38);
+        app.sync_from_marks();
+        assert_eq!(mark_keys(&app), vec!["loremind.64.plan", "tt.14.impl"]);
+    }
+
+    #[test]
+    fn sync_falls_back_to_a_nearby_row_when_the_selection_is_gone() {
+        let _guard = env_guard();
+        sandbox("sync-gone");
+        seed(vec![entry(0, "a"), entry(1, "b"), entry(2, "c")], 3);
+
+        let mut app = App::new().unwrap();
+        let last = app.filtered_entries().len() - 1;
+        app.table_state.select(Some(last));
+        let doomed = app.filtered_entries()[last].id;
+        storage::with_data(|data| {
+            data.entries.retain(|e| e.id != doomed);
+            Ok(())
+        })
+        .unwrap();
+
+        app.sync_from_store().unwrap();
+
+        let len = app.filtered_entries().len();
+        assert_eq!(len, 2);
+        assert_eq!(app.table_state.selected(), Some(len - 1));
+    }
+
+    #[test]
+    fn an_untouched_store_reports_no_change_but_an_unsettled_mtime_does() {
+        let _guard = env_guard();
+        sandbox("sync-quiet");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        // Let the mtime fall out of the current second, past the granularity guard.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(
+            app.store_is_unchanged(),
+            "a quiet store should not trigger a reload"
+        );
+
+        agent_write("probe");
+        assert!(!app.store_is_unchanged(), "an outside write was missed");
+
+        // A stamp identical to the one on disk still counts as changed while the
+        // mtime sits inside the current second, since a second write in that
+        // second could leave both mtime and length untouched.
+        app.store_stamp = storage::store_stamp();
+        assert!(
+            !app.store_is_unchanged(),
+            "an unsettled stamp should not be trusted"
+        );
+    }
+
+    #[test]
+    fn edit_keeps_a_concurrent_agent_write() {
+        let _guard = env_guard();
+        sandbox("edit");
+        seed(vec![entry(0, "before")], 1);
+
+        let mut app = App::new().unwrap();
+        agent_write("probe");
+        select(&mut app, "before");
+        app.start_editing();
+        app.input_description = "after".to_string();
+        app.submit_edit().unwrap();
+
+        let data = on_disk();
+        assert_eq!(descriptions(&data), vec!["after", "probe"]);
+        assert_eq!(descriptions(&app.data), vec!["after", "probe"]);
+    }
+
+    /// The form's Project field is optional: whitespace-only means "no project",
+    /// which must land as JSON `null` rather than an empty string.
+    #[test]
+    fn the_form_writes_the_project_and_leaves_a_blank_one_null() {
+        let _guard = env_guard();
+        sandbox("project-form");
+        seed(Vec::new(), 0);
+
+        let mut app = App::new().unwrap();
+        app.start_adding();
+        app.input_description = "with a project".to_string();
+        app.input_project = "  acme  ".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        app.start_adding();
+        app.input_description = "without one".to_string();
+        app.input_project = "   ".to_string();
+        app.input_duration = "15m".to_string();
+        app.submit_entry().unwrap();
+
+        let data = on_disk();
+        let project = |desc: &str| {
+            data.entries
+                .iter()
+                .find(|e| e.description == desc)
+                .unwrap()
+                .project
+                .clone()
+        };
+        assert_eq!(project("with a project"), Some("acme".to_string()));
+        assert_eq!(project("without one"), None);
+
+        let raw = std::fs::read_to_string(storage::get_data_path().unwrap()).unwrap();
+        assert!(
+            raw.contains("\"project\": null"),
+            "blank project not null: {raw}"
+        );
+        assert!(
+            !raw.contains("\"project\": \"\""),
+            "blank project stored as \"\": {raw}"
+        );
+    }
+
+    fn dated(
+        id: u64,
+        description: &str,
+        project: &str,
+        tags: &[&str],
+        date: NaiveDate,
+    ) -> TimeEntry {
+        logged(id, description, project, tags, date, 60)
+    }
+
+    /// [`dated`] with a duration, for the summary's per-project totals.
+    fn logged(
+        id: u64,
+        description: &str,
+        project: &str,
+        tags: &[&str],
+        date: NaiveDate,
+        minutes: i64,
+    ) -> TimeEntry {
+        let start = date
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: (!project.is_empty()).then(|| project.to_string()),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            start_time: start,
+            end_time: Some(start + chrono::Duration::minutes(minutes)),
+        }
+    }
+
+    /// A store spanning three scopes: two days inside the current week plus one
+    /// entry a week back, so day / week / all each see a different set.
+    fn seed_panes() -> App {
+        let today = Local::now().date_naive();
+        let week_start = TimeData::week_start(today);
+        let day_one = week_start;
+        let day_two = week_start + chrono::Duration::days(1);
+        let last_week = week_start - chrono::Duration::days(7);
+        seed(
+            vec![
+                dated(0, "a", "tt", &["impl", "tt/8"], day_one),
+                dated(1, "b", "tt", &["plan"], day_one),
+                dated(2, "c", "loremind", &["impl", "ops"], day_one),
+                dated(3, "d", "vinge", &["ops"], day_two),
+                dated(4, "e", "vinge", &["impl"], last_week),
+                dated(5, "f", "", &[], day_one),
+            ],
+            6,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = day_one;
+        app
+    }
+
+    /// A pane's rows as `value=count`, in the order they are listed.
+    fn values(app: &App, pane: Pane) -> String {
+        app.pane_values(pane)
+            .iter()
+            .map(|(value, count)| format!("{value}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Each pane offers the distinct values of the current view scope with their
+    /// match counts — and an entry with no project contributes no Projects row.
+    #[test]
+    fn pane_values_follow_the_view_scope() {
+        let _guard = env_guard();
+        sandbox("pane-scope");
+        let mut app = seed_panes();
+
+        app.view_mode = ViewMode::Day;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 loremind=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=2 ops=1 plan=1 tt/8=1");
+
+        app.view_mode = ViewMode::Week;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 loremind=1 vinge=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=2 ops=2 plan=1 tt/8=1");
+
+        app.view_mode = ViewMode::All;
+        assert_eq!(values(&app, Pane::Projects), "tt=2 vinge=2 loremind=1");
+        assert_eq!(values(&app, Pane::Tags), "impl=3 ops=2 plan=1 tt/8=1");
+    }
+
+    /// The panes read the scope *before* the filter, so a pane never hides the
+    /// value the user has just filtered on.
+    #[test]
+    fn pane_values_ignore_the_active_filter_and_search() {
+        let _guard = env_guard();
+        sandbox("pane-prefilter");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        let before = app.pane_values(Pane::Tags);
+
+        app.selected_tags = vec!["plan".to_string()];
+        app.search_term = "nothing matches this".to_string();
+        assert!(app.filtered_entries().is_empty(), "filter did not bite");
+        assert_eq!(app.pane_values(Pane::Tags), before);
+        assert_eq!(app.pane_values(Pane::Projects).len(), 2);
+    }
+
+    /// The 6-row cap makes long lists scroll; the indicator is what stops a
+    /// scrolled-away value from looking like it was never there. It has to be
+    /// absent when everything already fits, or it is just noise.
+    #[test]
+    fn the_scroll_indicator_appears_only_when_values_do_not_fit() {
+        let _guard = env_guard();
+        sandbox("pane-scroll-indicator");
+        let today = Local::now().date_naive();
+        let tags: Vec<String> = (0..8).map(|n| format!("tag{n}")).collect();
+        let entries: Vec<TimeEntry> = tags
+            .iter()
+            .enumerate()
+            .map(|(n, tag)| dated(n as u64, "x", "tt", &[tag.as_str()], today))
+            .collect();
+        seed(entries, 8);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        // Opening the pane focuses it, so `pane_next` moves its cursor.
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.pane_values(Pane::Tags).len(), 8);
+
+        // Six rows on screen, eight values: the position tracks the cursor over
+        // every value, wrap included.
+        for expected in 1..=8 {
+            assert_eq!(
+                app.pane_scroll_indicator(Pane::Tags, 6).as_deref(),
+                Some(format!("{expected}/8").as_str())
+            );
+            app.pane_next();
+        }
+        assert_eq!(
+            app.pane_scroll_indicator(Pane::Tags, 6).as_deref(),
+            Some("1/8"),
+            "the cursor did not wrap back to the first value"
+        );
+
+        // Room for all eight — and for more than eight — means no indicator.
+        assert_eq!(app.pane_scroll_indicator(Pane::Tags, 8), None);
+        assert_eq!(app.pane_scroll_indicator(Pane::Tags, 12), None);
+        // Projects has a single value, so it never shows one at the shared height.
+        assert_eq!(app.pane_scroll_indicator(Pane::Projects, 6), None);
+    }
+
+    #[test]
+    fn the_surface_has_no_height_until_a_pane_is_opened() {
+        let _guard = env_guard();
+        sandbox("pane-height");
+        let mut app = seed_panes();
+        assert!(!app.show_projects && !app.show_tags);
+        assert_eq!(app.pane_surface_height(), 0);
+
+        app.toggle_pane(Pane::Projects);
+        assert!(app.pane_surface_height() > 0);
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.pane_surface_height(), 0);
+    }
+
+    /// An app with `n` open marks, newest first, in a sandboxed mark directory.
+    fn seed_marks(names: &[(&str, i64)]) -> App {
+        let dir = mark_sandbox();
+        for (key, minutes_ago) in names {
+            begin_mark(&dir, key, *minutes_ago);
+        }
+        App::new().unwrap()
+    }
+
+    #[test]
+    fn the_marks_surface_has_no_height_until_it_is_toggled_on() {
+        let _guard = env_guard();
+        sandbox("marks-height");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = seed_marks(&[]);
+
+        assert!(!app.show_marks);
+        assert_eq!(app.marks_surface_height(), 0, "hidden: no row at all");
+
+        // Empty, but open: one row, so the box can say there is nothing.
+        app.toggle_marks();
+        assert_eq!(app.marks_surface_height(), 3);
+
+        // Then two borders plus one row per mark, capped at three.
+        let dir = mark_sandbox();
+        for (n, expected) in [(1, 3), (2, 4), (3, 5), (4, 5), (5, 5)] {
+            begin_mark(&dir, &format!("proj.{n}.impl"), n);
+            app.marks_stamp = None; // force a re-read; the tick would do this
+            app.sync_from_marks();
+            assert_eq!(app.marks.len(), n as usize);
+            assert_eq!(app.marks_surface_height(), expected, "{n} marks");
+        }
+
+        app.toggle_marks();
+        assert_eq!(app.marks_surface_height(), 0, "hidden again: no row again");
+    }
+
+    #[test]
+    fn the_surface_lists_the_three_newest_marks_and_counts_the_rest() {
+        let _guard = env_guard();
+        sandbox("marks-cap");
+        seed(vec![entry(0, "first")], 1);
+        // Four simultaneous marks, oldest last.
+        let app = seed_marks(&[
+            ("tt.14.impl", 2),
+            ("loremind.64.plan", 38),
+            ("vinge.-.plan", 126),
+            ("ops.-.rota", 300),
+        ]);
+
+        let shown: Vec<String> = app.visible_marks().iter().map(Mark::label).collect();
+        assert_eq!(
+            shown,
+            vec!["tt/14 impl", "loremind/64 plan", "vinge plan"],
+            "the three newest, newest first"
+        );
+        // Three rows on screen, four open: existence, not position.
+        assert_eq!(app.marks_count(3).as_deref(), Some("3/4"));
+    }
+
+    #[test]
+    fn the_border_count_reports_how_many_marks_exist() {
+        let _guard = env_guard();
+        sandbox("marks-count");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = seed_marks(&[]);
+        assert_eq!(app.marks_count(3), None, "nothing open: nothing to count");
+
+        let dir = mark_sandbox();
+        for (n, expected) in [(1, "1"), (2, "2"), (3, "3")] {
+            begin_mark(&dir, &format!("proj.{n}.impl"), n);
+            app.marks_stamp = None;
+            app.sync_from_marks();
+            assert_eq!(
+                app.marks_count(3).as_deref(),
+                Some(expected),
+                "all {n} fit: a bare total"
+            );
+        }
+    }
+
+    /// The surface is display-only: no focus, no cursor, nothing for `Tab` or
+    /// `Enter` to land on.
+    #[test]
+    fn toggling_the_marks_surface_leaves_focus_and_the_table_alone() {
+        let _guard = env_guard();
+        sandbox("marks-focus");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+        let mut app = seed_marks(&[("tt.14.impl", 2)]);
+
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.toggle_marks();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "opening it");
+        app.toggle_marks();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "closing it");
+
+        // And `Tab`'s ring is still the table plus the visible panes only.
+        app.toggle_marks();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "the ring skips the marks surface");
+
+        // `Enter` still means the detail popover on the table, not this surface.
+        app.focus = Focus::Table;
+        app.open_detail();
+        assert!(matches!(app.input_mode, InputMode::Detail));
+    }
+
+    #[test]
+    fn tab_cycles_focus_through_the_visible_panes_only() {
+        let _guard = env_guard();
+        sandbox("pane-focus");
+        let mut app = seed_panes();
+
+        // No pane open: Tab is a no-op.
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        // Opening a pane focuses it, so the ring is walked from the table.
+        app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+    }
+
+    /// The request behind this: opening a pane must also focus it, so the pane the
+    /// user just asked for is the one `j`/`k`/`Enter` drive — no `Tab` in between.
+    #[test]
+    fn opening_a_pane_focuses_it() {
+        let _guard = env_guard();
+        sandbox("pane-open-focus");
+        let mut app = seed_panes();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focused_pane(), Some(Pane::Projects));
+
+        // Opening the *other* pane while one is focused moves focus to the new one.
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+
+        // …in either order.
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+    }
+
+    /// Closing a pane and opening it again resumes its cursor where it was: the
+    /// cursor lives on `App`, not on the pane's visibility.
+    #[test]
+    fn a_reopened_pane_resumes_its_cursor() {
+        let _guard = env_guard();
+        sandbox("pane-reopen-cursor");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.toggle_pane(Pane::Tags);
+        app.pane_next();
+        app.pane_next();
+        assert_eq!(app.pane_cursor(Pane::Tags), 2);
+
+        app.toggle_pane(Pane::Tags);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        assert_eq!(app.pane_cursor(Pane::Tags), 2);
+    }
+
+    /// `Shift-Tab` must undo `Tab` for every pane-visibility combination, so the
+    /// two together are a ring the user can walk in either direction.
+    #[test]
+    fn shift_tab_cycles_focus_in_the_exact_reverse_order() {
+        let _guard = env_guard();
+        sandbox("pane-focus-back");
+
+        for (projects, tags) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut app = seed_panes();
+            if projects {
+                app.toggle_pane(Pane::Projects);
+            }
+            if tags {
+                app.toggle_pane(Pane::Tags);
+            }
+            // Opening focuses the pane opened; the ring is walked from the table.
+            app.focus = Focus::Table;
+
+            // The ring walked forwards, from the table, is the reference order.
+            let ring_len = 1 + app.visible_panes().len();
+            let mut forward = Vec::new();
+            for _ in 0..ring_len {
+                app.cycle_focus();
+                forward.push(app.focus);
+            }
+            assert_eq!(
+                app.focus,
+                Focus::Table,
+                "forward did not return to the table"
+            );
+
+            // Backwards from the table must visit the same states in reverse.
+            let mut backward = Vec::new();
+            for _ in 0..ring_len {
+                app.cycle_focus_back();
+                backward.push(app.focus);
+            }
+            backward.reverse();
+            let mut expected = forward.clone();
+            expected.rotate_right(1);
+            assert_eq!(
+                backward, expected,
+                "reverse cycling is not the inverse of forward for \
+                 projects={projects} tags={tags}"
+            );
+
+            // …and one step back always undoes one step forward.
+            for _ in 0..ring_len {
+                let before = app.focus;
+                app.cycle_focus();
+                app.cycle_focus_back();
+                assert_eq!(app.focus, before, "Shift-Tab did not undo Tab");
+                app.cycle_focus();
+            }
+        }
+    }
+
+    /// A pane hidden while focused leaves focus off the ring; both directions have
+    /// to recover from that rather than panicking or landing somewhere invisible.
+    #[test]
+    fn shift_tab_recovers_when_the_focused_pane_was_hidden() {
+        let _guard = env_guard();
+        sandbox("pane-focus-back-hidden");
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+
+        // Hide Tags out from under the focus without going through toggle_pane's
+        // hand-off, which is the only way this state can be observed.
+        app.show_tags = false;
+        assert!(app.focused_pane().is_none());
+        app.cycle_focus_back();
+        assert_eq!(
+            app.focus,
+            Focus::Pane(Pane::Projects),
+            "reverse left focus off screen"
+        );
+
+        app.show_tags = true;
+        app.focus = Focus::Pane(Pane::Tags);
+        app.show_tags = false;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+    }
+
+    /// Closing the focused pane lands focus on the other pane when that one is
+    /// still open, and on the table when it was the last one.
+    #[test]
+    fn hiding_the_focused_pane_falls_back_to_the_other_pane_then_the_table() {
+        let _guard = env_guard();
+        sandbox("pane-focus-drop");
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+
+        // The last open pane closing leaves nothing on the surface to focus.
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Table);
+        assert!(app.focused_pane().is_none());
+
+        // With the other pane still open, focus moves there rather than to the table.
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+
+        // Closing an *unfocused* pane leaves focus alone.
+        app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+    }
+
+    /// `j`/`k` wrap inside the focused pane and leave the table alone; with no
+    /// pane focused they report "not handled" so the table moves instead.
+    #[test]
+    fn pane_cursor_moves_only_while_a_pane_has_focus() {
+        let _guard = env_guard();
+        sandbox("pane-cursor");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.table_state.select(Some(0));
+
+        assert!(!app.pane_next(), "no pane focused, yet j was swallowed");
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+
+        app.toggle_pane(Pane::Tags);
+        let len = app.pane_values(Pane::Tags).len();
+        assert_eq!(len, 4);
+        assert!(app.pane_next());
+        assert_eq!(app.pane_cursor(Pane::Tags), 1);
+        assert!(app.pane_previous());
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+        // k at the top wraps to the last value
+        assert!(app.pane_previous());
+        assert_eq!(app.pane_cursor(Pane::Tags), len - 1);
+        // …and j at the bottom wraps back
+        assert!(app.pane_next());
+        assert_eq!(app.pane_cursor(Pane::Tags), 0);
+        assert_eq!(app.table_state.selected(), Some(0), "the table moved too");
+    }
+
+    /// A cursor left past the end by a scope change is clamped, not panicking.
+    #[test]
+    fn a_stale_pane_cursor_is_clamped_to_the_new_value_list() {
+        let _guard = env_guard();
+        sandbox("pane-cursor-stale");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::All;
+        app.project_cursor = 2;
+        assert_eq!(app.pane_cursor(Pane::Projects), 2);
+
+        // Day scope has fewer projects than All
+        app.view_mode = ViewMode::Day;
+        assert_eq!(app.pane_values(Pane::Projects).len(), 2);
+        assert_eq!(app.pane_cursor(Pane::Projects), 1);
+    }
+
+    /// The descriptions of the entries currently in view, in table order.
+    fn in_view(app: &App) -> Vec<String> {
+        app.filtered_entries()
+            .iter()
+            .map(|e| e.description.clone())
+            .collect()
+    }
+
+    /// Move focus onto `pane` and put its cursor on `value`.
+    fn point_at(app: &mut App, pane: Pane, value: &str) {
+        if !app.pane_is_visible(pane) {
+            app.toggle_pane(pane);
+        }
+        while app.focused_pane() != Some(pane) {
+            app.cycle_focus();
+        }
+        let idx = app
+            .pane_values(pane)
+            .iter()
+            .position(|(v, _)| v == value)
+            .unwrap_or_else(|| panic!("{value} not offered by the pane"));
+        match pane {
+            Pane::Projects => app.project_cursor = idx,
+            Pane::Tags => app.tag_cursor = idx,
+        }
+    }
+
+    /// `Enter` is the toggle, and it is disambiguated by focus: in a pane it filters
+    /// on the value under the cursor, on the table it is not a pane action at all.
+    #[test]
+    fn enter_toggles_the_value_under_the_pane_cursor() {
+        let _guard = env_guard();
+        sandbox("pane-toggle");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+
+        point_at(&mut app, Pane::Projects, "tt");
+        assert!(app.toggle_pane_value(), "Enter was not handled by the pane");
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(in_view(&app), vec!["a", "b"]);
+        assert!(app.is_filtering());
+        assert!(app.pane_value_is_selected(Pane::Projects, "tt"));
+
+        // A second Enter on the same value clears it again.
+        assert!(app.toggle_pane_value());
+        assert!(app.selected_projects.is_empty());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+        assert!(!app.is_filtering());
+
+        // With focus on the table there is no pane value to toggle: Enter reports
+        // "not handled" and touches nothing, leaving the arm free for the popover.
+        app.focus = Focus::Table;
+        assert!(!app.toggle_pane_value());
+        assert!(app.selected_projects.is_empty() && app.selected_tags.is_empty());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// The other half of that one key: with the table focused, `Enter` opens the
+    /// detail popover, and with a pane focused it must not.
+    #[test]
+    fn enter_opens_the_detail_popover_only_from_the_table() {
+        let _guard = env_guard();
+        sandbox("detail-focus");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.table_state.select(Some(0));
+
+        // This is exactly what the Normal-mode Enter arm does.
+        let enter = |app: &mut App| {
+            if !app.toggle_pane_value() {
+                app.open_detail();
+            }
+        };
+
+        point_at(&mut app, Pane::Projects, "tt");
+        enter(&mut app);
+        assert!(
+            app.input_mode == InputMode::Normal,
+            "Enter in a pane opened the popover instead of filtering"
+        );
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+
+        app.focus = Focus::Table;
+        enter(&mut app);
+        assert!(
+            app.input_mode == InputMode::Detail,
+            "Enter on the table did not open the popover"
+        );
+        // Opening it changes nothing else: same selection, same filter.
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(0));
+    }
+
+    /// What the `InputMode::Detail` arm does with j/k, `e` and `d`. Written as one
+    /// closure per key so the test drives the same calls the arm does.
+    #[test]
+    fn the_detail_popover_traverses_the_list_and_acts_on_what_it_shows() {
+        let _guard = env_guard();
+        sandbox("detail-traverse");
+        seed(vec![entry(0, "a"), entry(1, "b"), entry(2, "c")], 3);
+
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+        app.open_detail();
+        let ids: Vec<u64> = app.filtered_entries().iter().map(|e| e.id).collect();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+
+        // j/k walk the list and the popover reports the new row, wrapping at both
+        // ends rather than sticking or blanking.
+        app.next();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[1]));
+        app.previous();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+        app.previous();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[2]));
+        app.next();
+        assert_eq!(app.selected_entry().map(|e| e.id), Some(ids[0]));
+        assert!(app.input_mode == InputMode::Detail, "traversal closed it");
+
+        // `e` hands the entry on screen to the form, which replaces the popover.
+        app.start_editing();
+        assert!(app.input_mode == InputMode::EditingEntry);
+        assert_eq!(app.editing_entry_id, Some(ids[0]));
+
+        // `d` deletes it and the popover stays open on the new selection.
+        app.input_mode = InputMode::Detail;
+        let delete = |app: &mut App| {
+            app.delete_selected().unwrap();
+            if app.selected_entry().is_none() {
+                app.input_mode = InputMode::Normal;
+            }
+        };
+        delete(&mut app);
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(app.filtered_entries().len(), 2);
+        assert!(app.selected_entry().is_some());
+
+        // …and the delete that empties the view closes it instead of leaving an
+        // empty modal behind.
+        delete(&mut app);
+        delete(&mut app);
+        assert_eq!(app.filtered_entries().len(), 0);
+        assert!(app.input_mode == InputMode::Normal);
+    }
+
+    /// `Detail` is deliberately *not* in `sync_from_store`'s guarded set: there is no
+    /// half-typed input to clobber, and the id anchoring means an agent's write while
+    /// the popover is open cannot swap the entry being read.
+    #[test]
+    fn an_outside_write_reaches_the_open_detail_popover_without_moving_it() {
+        let _guard = env_guard();
+        sandbox("detail-sync");
+        seed(vec![entry(0, "first"), entry(1, "second")], 2);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "second");
+        app.open_detail();
+        let shown = app.selected_entry().map(|e| e.id);
+        agent_write("probe");
+
+        app.sync_from_store().unwrap();
+
+        assert!(descriptions(&app.data).contains(&"probe"));
+        assert!(app.input_mode == InputMode::Detail);
+        assert_eq!(
+            app.selected_entry().map(|e| e.id),
+            shown,
+            "the popover changed entry under the reader"
+        );
+        assert_eq!(selected_description(&app), "second");
+    }
+
+    /// An empty view has nothing to show, so there is no modal to escape from.
+    #[test]
+    fn the_detail_popover_stays_shut_with_nothing_selected() {
+        let _guard = env_guard();
+        sandbox("detail-empty");
+        seed(vec![], 0);
+        let mut app = App::new().unwrap();
+        assert!(app.selected_entry().is_none());
+
+        app.open_detail();
+        assert!(app.input_mode == InputMode::Normal);
+    }
+
+    /// OR within a pane, AND across the panes.
+    #[test]
+    fn selections_or_within_a_pane_and_and_across_panes() {
+        let _guard = env_guard();
+        sandbox("pane-filter-semantics");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+
+        point_at(&mut app, Pane::Projects, "tt");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b"]);
+
+        // A second project widens the set — the two are OR'd.
+        point_at(&mut app, Pane::Projects, "loremind");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b", "c"]);
+
+        // A tag narrows within them — the panes are AND'd.
+        point_at(&mut app, Pane::Tags, "impl");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "c"]);
+
+        // …and OR still holds inside the Tags pane too.
+        point_at(&mut app, Pane::Tags, "plan");
+        app.toggle_pane_value();
+        assert_eq!(in_view(&app), vec!["a", "b", "c"]);
+
+        app.clear_filters();
+        assert!(!app.is_filtering());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// The footer's total is the filtered one whenever a filter is on, so the number
+    /// on screen always describes the rows on screen.
+    #[test]
+    fn the_filtered_total_tracks_the_selection() {
+        let _guard = env_guard();
+        sandbox("pane-filter-total");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        // Four one-hour entries in scope.
+        assert_eq!(app.filtered_total().num_hours(), 4);
+
+        point_at(&mut app, Pane::Projects, "tt");
+        app.toggle_pane_value();
+        assert_eq!(app.filtered_total().num_hours(), 2);
+        assert!(app.is_filtering());
+    }
+
+    /// A store with unequal per-project times across three scopes, two entries
+    /// with no project at all, and a tie the name has to break.
+    ///
+    /// Day (`day_one`): tt 90m over two entries, loremind 90m, no project 30m —
+    /// 210m. Week adds vinge 120m and a second unprojected 45m — 375m. All adds
+    /// loremind 60m from last week — 435m.
+    fn seed_summary() -> App {
+        let today = Local::now().date_naive();
+        let week_start = TimeData::week_start(today);
+        let day_one = week_start;
+        let day_two = week_start + chrono::Duration::days(1);
+        let last_week = week_start - chrono::Duration::days(7);
+        seed(
+            vec![
+                logged(0, "a", "tt", &["impl"], day_one, 60),
+                logged(1, "b", "tt", &["plan"], day_one, 30),
+                logged(2, "c", "loremind", &["impl"], day_one, 90),
+                logged(3, "d", "", &[], day_one, 30),
+                logged(4, "e", "vinge", &["ops"], day_two, 120),
+                logged(5, "f", "  ", &["ops"], day_two, 45),
+                logged(6, "g", "loremind", &["impl"], last_week, 60),
+            ],
+            7,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = day_one;
+        app
+    }
+
+    /// The three view scopes with a name to report failures against — `ViewMode`
+    /// itself is not `Debug`, and it is not this test's place to make it one.
+    fn scopes() -> [(ViewMode, &'static str); 3] {
+        [
+            (ViewMode::Day, "day"),
+            (ViewMode::Week, "week"),
+            (ViewMode::All, "all"),
+        ]
+    }
+
+    /// The summary's rows as `project=minutes/entries/share%`, in order.
+    fn summary(app: &App) -> String {
+        app.project_summary()
+            .iter()
+            .map(|row| {
+                format!(
+                    "{}={}m/{}/{}%",
+                    row.project,
+                    row.total.num_minutes(),
+                    row.entries,
+                    row.share
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Per-project totals and counts per scope, largest total first with the tie
+    /// between `tt` and `loremind` broken by name, and both unprojected entries
+    /// collapsed into a single `(no project)` row rather than dropped.
+    #[test]
+    fn project_summary_totals_and_counts_follow_the_view_scope() {
+        let _guard = env_guard();
+        sandbox("summary-scope");
+        let mut app = seed_summary();
+
+        app.view_mode = ViewMode::Day;
+        assert_eq!(
+            summary(&app),
+            "loremind=90m/1/43% tt=90m/2/43% (no project)=30m/1/14%"
+        );
+
+        app.view_mode = ViewMode::Week;
+        assert_eq!(
+            summary(&app),
+            "vinge=120m/1/32% loremind=90m/1/24% tt=90m/2/24% (no project)=75m/2/20%"
+        );
+
+        app.view_mode = ViewMode::All;
+        assert_eq!(
+            summary(&app),
+            "loremind=150m/2/34% vinge=120m/1/28% tt=90m/2/21% (no project)=75m/2/17%"
+        );
+
+        // One row for absence in every scope, however many entries lack a project
+        // — including the one whose project is whitespace only.
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            assert_eq!(
+                app.project_summary()
+                    .iter()
+                    .filter(|row| row.project == super::summary::NO_PROJECT)
+                    .count(),
+                1,
+                "{name} did not collapse absence into one row"
+            );
+        }
+    }
+
+    /// The rows account for the whole scope: their totals sum to the scope total
+    /// (which is why the `(no project)` row has to exist), and their shares sum to
+    /// within a point of 100 — rounded honestly rather than fudged to 100 exactly.
+    #[test]
+    fn project_summary_rows_account_for_the_whole_scope() {
+        let _guard = env_guard();
+        sandbox("summary-sums");
+        let mut app = seed_summary();
+
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            let rows = app.project_summary();
+            let scope_total: i64 = app
+                .scope_entries()
+                .iter()
+                .map(|e| e.duration().num_seconds())
+                .sum();
+            let summed: i64 = rows.iter().map(|r| r.total.num_seconds()).sum();
+            assert_eq!(summed, scope_total, "{name} rows do not sum to the scope");
+            let entries: usize = rows.iter().map(|r| r.entries).sum();
+            assert_eq!(entries, app.scope_entries().len(), "{name} entry counts");
+
+            let shares: u32 = rows.iter().map(|r| u32::from(r.share)).sum();
+            assert!(
+                (99..=101).contains(&shares),
+                "{name} shares sum to {shares}, not ~100"
+            );
+        }
+    }
+
+    /// The decision the whole surface hangs on: the summary folds `scope_entries`,
+    /// so a project or tag filter — which does change `filtered_entries` — leaves
+    /// it completely alone. Folding `filtered_entries` instead is the rejected
+    /// behaviour, and this test is what catches that one-word change.
+    #[test]
+    fn project_summary_ignores_the_active_filter_and_search() {
+        let _guard = env_guard();
+        sandbox("summary-prefilter");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        let before = app.project_summary();
+        let in_scope = app.scope_entries().len();
+
+        // A project filter is the case that would collapse a filter-following
+        // summary to a single 100% row.
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(
+            app.filtered_entries().len() < in_scope,
+            "filter did not bite"
+        );
+        assert_eq!(app.project_summary(), before);
+
+        // A tag filter, and then a search on top, are no different.
+        app.selected_projects.clear();
+        app.selected_tags = vec!["ops".to_string()];
+        assert!(
+            app.filtered_entries().len() < in_scope,
+            "filter did not bite"
+        );
+        assert_eq!(app.project_summary(), before);
+
+        app.search_term = "nothing matches this".to_string();
+        assert!(app.filtered_entries().is_empty());
+        assert_eq!(app.project_summary(), before);
+    }
+
+    /// An empty scope has nothing to divide by: an empty list, not a panic. Same
+    /// for a scope whose entries are all zero length, which reaches the share
+    /// calculation with a zero total.
+    #[test]
+    fn an_empty_or_zero_length_scope_summarises_without_dividing_by_zero() {
+        let _guard = env_guard();
+        sandbox("summary-empty");
+        seed(Vec::new(), 0);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        assert!(app.project_summary().is_empty());
+        app.view_mode = ViewMode::All;
+        assert!(app.project_summary().is_empty());
+
+        // A populated store still has empty scopes: a day nobody worked.
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &["impl"], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.selected_date = today - chrono::Duration::days(400);
+        assert!(app.project_summary().is_empty());
+
+        // Zero-length entries: rows exist, the scope total is zero, and the shares
+        // are 0% rather than a division by zero.
+        seed(
+            vec![
+                logged(0, "a", "tt", &[], today, 0),
+                logged(1, "b", "", &[], today, 0),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        // Nothing separates them by total, so the name tie-break decides.
+        assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
+    }
+
+    /// Hidden, the surface has no height at all, so `ui` leaves its row out of the
+    /// layout plan rather than reserving a zero-height one — that omission is what
+    /// keeps the collapsed screen identical to the one before it existed.
+    #[test]
+    fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
+        let _guard = env_guard();
+        sandbox("summary-height");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Day;
+
+        assert!(!app.show_summary);
+        assert_eq!(app.summary_surface_height(), 0, "hidden: no row at all");
+
+        // Two borders plus one row per project: the day has three.
+        app.toggle_summary();
+        assert_eq!(app.summary_surface_height(), 5);
+        // Re-scoping re-sizes it: the week has four projects, all entries too.
+        app.view_mode = ViewMode::Week;
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // An empty scope still gets one row, so the box can say it is empty.
+        app.view_mode = ViewMode::Day;
+        app.selected_date = Local::now().date_naive() - chrono::Duration::days(400);
+        assert!(app.project_summary().is_empty());
+        assert_eq!(app.summary_surface_height(), 3);
+
+        app.toggle_summary();
+        assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
+    }
+
+    /// Toggling the surface is display-only: it moves no focus and touches no
+    /// selection, unlike `toggle_pane`.
+    #[test]
+    fn toggling_the_summary_surface_leaves_focus_and_the_table_alone() {
+        let _guard = env_guard();
+        sandbox("summary-focus");
+        let mut app = seed_summary();
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.table_state.select(Some(1));
+
+        app.toggle_summary();
+        assert!(app.show_summary);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        app.toggle_summary();
+        assert!(!app.show_summary);
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    /// The title marker names the scope in words, tracks `1`/`2`/`3`, and always
+    /// carries the `all projects` statement — in both filter states, because it
+    /// describes what the surface covers rather than warning about a filter.
+    #[test]
+    fn the_title_marker_names_the_scope_and_always_says_all_projects() {
+        let _guard = env_guard();
+        sandbox("summary-marker");
+        let mut app = seed_summary();
+        app.toggle_summary();
+
+        for (mode, word) in scopes() {
+            app.set_view_mode(mode);
+            assert_eq!(app.summary_marker(6), format!("{word} · all projects"));
+        }
+
+        // A filter changes the emphasis, never the words.
+        app.set_view_mode(ViewMode::Day);
+        assert!(!app.total_is_filtered());
+        let unfiltered = app.summary_marker(6);
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(app.total_is_filtered(), "the footer total is now narrowed");
+        assert_eq!(app.summary_marker(6), unfiltered);
+    }
+
+    /// Overflow says `shown/total` on the same title, driven off the height the
+    /// frame really has — and says nothing at all while every project fits, since
+    /// the title already reads `all projects`.
+    #[test]
+    fn more_projects_than_fit_are_counted_on_the_title() {
+        let _guard = env_guard();
+        sandbox("summary-overflow");
+        let today = Local::now().date_naive();
+        let entries: Vec<TimeEntry> = (0..9)
+            .map(|n| logged(n, "x", &format!("p{n}"), &[], today, 30 + n as i64))
+            .collect();
+        seed(entries, 9);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
+        assert_eq!(app.summary_surface_height(), 8);
+        assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
+        assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
+        assert_eq!(app.visible_project_summary(6).len(), 6);
+
+        // A shorter box counts what *it* left out, not what the cap would have.
+        assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
+        assert_eq!(app.visible_project_summary(2).len(), 2);
+
+        // Room for all nine: no count, because the rows already say it.
+        assert_eq!(app.summary_count(9), None);
+        assert_eq!(app.summary_marker(9), "day · all projects");
+    }
+
+    /// The summary and the footer total are one statement: with nothing filtered
+    /// the rows sum to the footer's figure, and with a filter on the rows stay put
+    /// while the footer drops — which is precisely when the marker is emphasised.
+    #[test]
+    fn the_rows_sum_to_the_footer_total_until_a_filter_narrows_it() {
+        let _guard = env_guard();
+        sandbox("summary-vs-footer");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+
+        let rows = app.project_summary();
+        let summed: chrono::Duration = rows
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, row| acc + row.total);
+        // Unfiltered, the footer prints the scope total for the week.
+        let week_start = TimeData::week_start(app.selected_date);
+        assert!(!app.total_is_filtered());
+        assert_eq!(summed, app.data.total_for_week(week_start));
+
+        app.selected_projects = vec!["tt".to_string()];
+        assert!(app.total_is_filtered(), "the marker is now emphasised");
+        assert!(
+            app.filtered_total() < summed,
+            "the footer total should have dropped below the summary's"
+        );
+        assert_eq!(app.project_summary(), rows, "the summary must not move");
+    }
+
+    /// `/` must reach every field a row shows: the owner asked to "search on
+    /// anything", and a field the table prints but the search cannot find is the bug
+    /// that asked for.
+    #[test]
+    fn search_matches_every_field_a_row_shows() {
+        let _guard = env_guard();
+        sandbox("search-any-field");
+        let today = Local::now().date_naive();
+        let start = today
+            .and_hms_opt(14, 30, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        seed(
+            vec![
+                TimeEntry {
+                    id: 42,
+                    description: "wrote the migration".to_string(),
+                    project: Some("loremind".to_string()),
+                    tags: vec!["impl".to_string()],
+                    start_time: start,
+                    end_time: Some(start + chrono::Duration::hours(2)),
+                },
+                dated(7, "unrelated", "vinge", &["ops"], today),
+            ],
+            43,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        assert_eq!(in_view(&app).len(), 2);
+
+        for needle in [
+            "migration", // description
+            "LOREMIND",  // project, case-insensitively
+            "impl",      // a tag
+            "42",        // the id
+            "14:",       // a fragment of the start time
+            "16:30",     // the end time
+            "2h 0m",     // the formatted duration
+            &today.format("%Y-%m-%d").to_string(),
+        ] {
+            app.search_term = needle.to_string();
+            let view = in_view(&app);
+            assert!(
+                view.contains(&"wrote the migration".to_string()),
+                "search {needle:?} missed the entry: {view:?}"
+            );
+        }
+
+        // The date matches both entries; every other needle above is unique to one.
+        app.search_term = "loremind".to_string();
+        assert_eq!(in_view(&app), vec!["wrote the migration"]);
+        app.search_term = "no such thing".to_string();
+        assert!(in_view(&app).is_empty());
+    }
+
+    /// `e` pre-fills the Project field, and clearing it drops the project.
+    #[test]
+    fn editing_round_trips_the_project_field() {
+        let _guard = env_guard();
+        sandbox("project-edit");
+        let mut seeded = entry(0, "has a project");
+        seeded.project = Some("acme".to_string());
+        seed(vec![seeded], 1);
+
+        let mut app = App::new().unwrap();
+        select(&mut app, "has a project");
+        app.start_editing();
+        assert_eq!(app.input_project, "acme");
+
+        app.input_project = "beta".to_string();
+        app.submit_edit().unwrap();
+        assert_eq!(on_disk().entries[0].project, Some("beta".to_string()));
+
+        select(&mut app, "has a project");
+        app.start_editing();
+        app.input_project.clear();
+        app.submit_edit().unwrap();
+        assert_eq!(on_disk().entries[0].project, None);
+    }
 }

@@ -8,6 +8,9 @@ use crate::icons;
 pub struct TimeEntry {
     pub id: u64,
     pub description: String,
+    /// Project this entry belongs to, if known
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     pub start_time: DateTime<Local>,
@@ -31,6 +34,40 @@ pub fn parse_tags(text: &str) -> (String, Vec<String>) {
     (clean_parts.join(" "), tags)
 }
 
+/// Infer the project for an entry from its tags.
+///
+/// `parse_tags` harvests `#…` words from anywhere in the description, so the first
+/// tag is not reliably the project. The project is the tag `X` for which some other
+/// tag starts with `X/` (the `#project` / `#project/issue` pair the wrapper emits);
+/// failing that, the first tag; with no tags, `None`.
+pub fn infer_project(tags: &[String]) -> Option<String> {
+    let with_child = tags.iter().enumerate().find(|(i, candidate)| {
+        let prefix = format!("{}/", candidate);
+        tags.iter()
+            .enumerate()
+            .any(|(j, other)| j != *i && other.starts_with(&prefix))
+    });
+
+    with_child
+        .map(|(_, candidate)| candidate)
+        .or_else(|| tags.first())
+        .cloned()
+}
+
+/// One-time migration: infer `project` for entries that lack one, then stamp the
+/// schema version. A no-op once the store is at version 1 or above.
+pub fn migrate(data: &mut TimeData) {
+    if data.schema_version >= 1 {
+        return;
+    }
+    for entry in &mut data.entries {
+        if entry.project.is_none() {
+            entry.project = infer_project(&entry.tags);
+        }
+    }
+    data.schema_version = 1;
+}
+
 impl TimeEntry {
     pub fn duration(&self) -> Duration {
         let end = self.end_time.unwrap_or_else(Local::now);
@@ -39,6 +76,22 @@ impl TimeEntry {
 
     pub fn format_duration(&self) -> String {
         duration::format(self.duration())
+    }
+
+    /// The date column, as the entries table prints it.
+    pub fn format_date(&self) -> String {
+        self.start_time.format("%Y-%m-%d").to_string()
+    }
+
+    pub fn format_start_time(&self) -> String {
+        self.start_time.format("%H:%M").to_string()
+    }
+
+    /// The end-time column: a clock time, or an em dash while the entry runs.
+    pub fn format_end_time(&self) -> String {
+        self.end_time
+            .map(|t| t.format("%H:%M").to_string())
+            .unwrap_or_else(|| "—".to_string())
     }
 
     pub fn is_active(&self) -> bool {
@@ -69,12 +122,58 @@ impl TimeEntry {
     pub fn has_any_tag(&self, tags: &[String]) -> bool {
         tags.iter().any(|t| self.has_tag(t))
     }
+
+    /// Check if the entry's project is any of the given ones (case-insensitive).
+    ///
+    /// An entry with no project matches nothing: absence is not a value anyone can
+    /// select, so it can never be one of `projects`.
+    pub fn has_any_project(&self, projects: &[String]) -> bool {
+        let Some(project) = self
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
+            return false;
+        };
+        let project = project.to_lowercase();
+        projects.iter().any(|p| p.trim().to_lowercase() == project)
+    }
+
+    /// Everything a row or the detail popover can show, lower-cased and joined —
+    /// the haystack `/` searches.
+    ///
+    /// The owner asked to "search on anything", so this is built from the same
+    /// formatters the table renders with: a field the UI can show is a field the
+    /// search reaches, and the two cannot drift apart.
+    pub fn search_haystack(&self) -> String {
+        [
+            self.id.to_string(),
+            self.description.clone(),
+            self.project.clone().unwrap_or_default(),
+            self.format_tags(),
+            self.format_date(),
+            self.format_start_time(),
+            self.format_end_time(),
+            self.format_duration(),
+        ]
+        .join(" ")
+        .to_lowercase()
+    }
+
+    /// Whether `needle` (already lower-cased) appears anywhere in this entry.
+    pub fn matches_search(&self, needle_lower: &str) -> bool {
+        self.search_haystack().contains(needle_lower)
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct TimeData {
     pub entries: Vec<TimeEntry>,
     pub next_id: u64,
+    /// Store schema version; legacy files read as 0 and are migrated to 1
+    #[serde(default)]
+    pub schema_version: u32,
 }
 
 impl TimeData {
@@ -113,6 +212,7 @@ impl TimeData {
     pub fn add_entry(
         &mut self,
         description: String,
+        project: Option<String>,
         tags: Vec<String>,
         start_time: DateTime<Local>,
         end_time: Option<DateTime<Local>>,
@@ -120,6 +220,7 @@ impl TimeData {
         let entry = TimeEntry {
             id: self.next_id,
             description,
+            project,
             tags,
             start_time,
             end_time,
@@ -184,12 +285,14 @@ impl TimeData {
         &mut self,
         id: u64,
         description: String,
+        project: Option<String>,
         tags: Vec<String>,
         start_time: DateTime<Local>,
         end_time: Option<DateTime<Local>>,
     ) -> bool {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             entry.description = description;
+            entry.project = project;
             entry.tags = tags;
             entry.start_time = start_time;
             entry.end_time = end_time;
@@ -202,5 +305,104 @@ impl TimeData {
     /// Get an entry by ID
     pub fn get_entry(&self, id: u64) -> Option<&TimeEntry> {
         self.entries.iter().find(|e| e.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(values: &[&str]) -> Vec<String> {
+        values.iter().map(|t| t.to_string()).collect()
+    }
+
+    fn entry(id: u64, project: Option<&str>, entry_tags: &[&str]) -> TimeEntry {
+        TimeEntry {
+            id,
+            description: format!("entry {}", id),
+            project: project.map(|p| p.to_string()),
+            tags: tags(entry_tags),
+            start_time: Local::now(),
+            end_time: None,
+        }
+    }
+
+    #[test]
+    fn infers_project_from_sibling_tag_not_first_tag() {
+        assert_eq!(
+            infer_project(&tags(&[
+                "62",
+                "77",
+                "90/#91/#94/#95",
+                "loremind",
+                "loremind/62",
+                "ops"
+            ])),
+            Some("loremind".to_string())
+        );
+    }
+
+    #[test]
+    fn infers_project_from_sibling_tag_when_summary_token_is_first() {
+        assert_eq!(
+            infer_project(&tags(&["63:", "loremind", "loremind/63", "plan"])),
+            Some("loremind".to_string())
+        );
+    }
+
+    #[test]
+    fn falls_back_to_first_tag_when_no_sibling_pair() {
+        assert_eq!(
+            infer_project(&tags(&["tt", "impl"])),
+            Some("tt".to_string())
+        );
+    }
+
+    #[test]
+    fn infers_no_project_without_tags() {
+        assert_eq!(infer_project(&[]), None);
+    }
+
+    #[test]
+    fn migrate_fills_missing_projects_and_sets_schema_version() {
+        let mut data = TimeData {
+            entries: vec![
+                entry(1, None, &["tt", "impl"]),
+                entry(2, None, &["63:", "loremind", "loremind/63", "plan"]),
+                entry(3, Some("explicit"), &["tt", "impl"]),
+                entry(4, None, &[]),
+            ],
+            next_id: 5,
+            schema_version: 0,
+        };
+
+        migrate(&mut data);
+
+        assert_eq!(data.schema_version, 1);
+        assert_eq!(data.entries[0].project.as_deref(), Some("tt"));
+        assert_eq!(data.entries[1].project.as_deref(), Some("loremind"));
+        assert_eq!(data.entries[2].project.as_deref(), Some("explicit"));
+        assert_eq!(data.entries[3].project, None);
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        let mut data = TimeData {
+            entries: vec![entry(1, None, &["tt", "impl"])],
+            next_id: 2,
+            schema_version: 0,
+        };
+
+        migrate(&mut data);
+        let after_first = serde_json::to_string(&data).unwrap();
+
+        // A tag vector that would now infer differently must not be re-applied
+        data.entries[0].tags = tags(&["other", "other/1"]);
+        migrate(&mut data);
+
+        data.entries[0].tags = tags(&["tt", "impl"]);
+        assert_eq!(serde_json::to_string(&data).unwrap(), after_first);
+        assert_eq!(data.entries[0].project.as_deref(), Some("tt"));
+        assert_eq!(data.schema_version, 1);
     }
 }

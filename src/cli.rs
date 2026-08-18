@@ -21,6 +21,9 @@ pub enum Commands {
         /// Description of the task
         #[arg(required = true)]
         description: Vec<String>,
+        /// Project this entry belongs to
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Stop the current active task
     Stop,
@@ -35,6 +38,9 @@ pub enum Commands {
         /// Comma-separated tags (e.g. tagA,tagB,tagC)
         #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
+        /// Project this entry belongs to
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Show all entries for today
     Today,
@@ -48,7 +54,18 @@ pub enum Commands {
     Active,
 }
 
-pub fn start(description: Vec<String>) -> Result<()> {
+/// Render a project for a single-line listing: ` (demo)`, or nothing when unset.
+///
+/// `--project` sets the field only — it never adds or rewrites a tag — so the
+/// project is displayed separately from the tag list everywhere.
+fn project_display(project: Option<&String>) -> String {
+    match project {
+        Some(p) => format!(" ({})", p),
+        None => String::new(),
+    }
+}
+
+pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
     let raw_desc = description.join(" ");
     let (desc, tags) = parse_tags(&raw_desc);
     let start_time = Local::now();
@@ -59,7 +76,13 @@ pub fn start(description: Vec<String>) -> Result<()> {
         if let Some(active) = data.active_entry() {
             return Ok(Some((active.description.clone(), active.start_time)));
         }
-        data.add_entry(desc.clone(), tags.clone(), start_time, None);
+        data.add_entry(
+            desc.clone(),
+            project.clone(),
+            tags.clone(),
+            start_time,
+            None,
+        );
         Ok(None)
     })?;
 
@@ -81,9 +104,10 @@ pub fn start(description: Vec<String>) -> Result<()> {
     };
 
     println!(
-        "{}  Started: \"{}\"{} at {}",
+        "{}  Started: \"{}\"{}{} at {}",
         icons::ACTIVE,
         desc,
+        project_display(project.as_ref()),
         tags_display,
         start_time.format("%H:%M:%S")
     );
@@ -112,7 +136,12 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Result<()> {
+pub fn log(
+    description: String,
+    time_str: String,
+    extra_tags: Vec<String>,
+    project: Option<String>,
+) -> Result<()> {
     let dur = duration::parse(&time_str);
     let end_time = Local::now();
     let start_time = end_time - dur;
@@ -124,7 +153,13 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
         }
     }
     with_data(|data| {
-        data.add_entry(desc.clone(), tags.clone(), start_time, Some(end_time));
+        data.add_entry(
+            desc.clone(),
+            project.clone(),
+            tags.clone(),
+            start_time,
+            Some(end_time),
+        );
         Ok(())
     })?;
 
@@ -135,9 +170,10 @@ pub fn log(description: String, time_str: String, extra_tags: Vec<String>) -> Re
     };
 
     println!(
-        "{} Logged: \"{}\"{} - Duration: {}",
+        "{} Logged: \"{}\"{}{} - Duration: {}",
         icons::LOGGED,
         desc,
+        project_display(project.as_ref()),
         tags_display,
         duration::format(dur)
     );
@@ -162,10 +198,11 @@ pub fn today() -> Result<()> {
             format!(" [{}]", entry.format_tags())
         };
         println!(
-            "{}{} - {}{} ({})",
+            "{}{} - {}{}{} ({})",
             status,
             entry.start_time.format("%H:%M"),
             entry.description,
+            project_display(entry.project.as_ref()),
             tags_display,
             entry.format_duration()
         );
@@ -191,11 +228,12 @@ pub fn list() -> Result<()> {
             format!(" [{}]", entry.format_tags())
         };
         println!(
-            "{}{} {} - {}{} ({})",
+            "{}{} {} - {}{}{} ({})",
             status,
             entry.start_time.format("%Y-%m-%d"),
             entry.start_time.format("%H:%M"),
             entry.description,
+            project_display(entry.project.as_ref()),
             tags_display,
             entry.format_duration()
         );
@@ -208,6 +246,9 @@ pub fn status() -> Result<()> {
 
     if let Some(active) = data.active_entry() {
         println!("{}  Currently tracking: \"{}\"", icons::ACTIVE, active.description);
+        if let Some(project) = &active.project {
+            println!("   Project: {}", project);
+        }
         if !active.tags.is_empty() {
             println!("   Tags: {}", active.format_tags());
         }

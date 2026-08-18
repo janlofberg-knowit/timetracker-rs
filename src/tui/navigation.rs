@@ -1,12 +1,91 @@
 use anyhow::Result;
 use chrono::{Duration, Local};
-use crate::storage::save_data;
+use crate::storage::PathStamp;
 use super::App;
-use super::types::ViewMode;
+use super::types::{InputMode, ViewMode};
 
 impl App {
+    /// Record the store's fingerprint, then load it.
+    ///
+    /// Stamping *before* the read is deliberate: a write landing between the two
+    /// leaves the stamp older than the data we hold, which costs one redundant
+    /// reload. Stamping afterwards would record a fingerprint newer than the data,
+    /// and the update would be lost for good.
     pub(crate) fn reload(&mut self) -> Result<()> {
+        self.store_stamp = crate::storage::store_stamp();
         self.data = crate::storage::load_data()?;
+        Ok(())
+    }
+
+    /// Whether the store on disk still matches the snapshot in memory.
+    ///
+    /// The "could this stamp change again without looking different" reasoning
+    /// lives in `PathStamp::unchanged`, so the mark directory's own check next
+    /// door cannot drift from it.
+    pub(crate) fn store_is_unchanged(&self) -> bool {
+        PathStamp::unchanged(self.store_stamp, crate::storage::store_stamp())
+    }
+
+    /// Pick up marks begun, ended or cancelled outside the TUI. Called once per
+    /// event-loop tick, right beside [`sync_from_store`](Self::sync_from_store)
+    /// and off the same 250 ms `event::poll`.
+    ///
+    /// Unguarded by `input_mode`, unlike the store: the mark list is display-only
+    /// and replacing it cannot clobber text being typed. Unguarded by
+    /// `show_marks` too, so `App.marks` is current the instant the surface opens
+    /// rather than one tick later — while the surface is closed this costs one
+    /// `stat` per tick and no directory read at all.
+    pub(crate) fn sync_from_marks(&mut self) {
+        let Some(dir) = crate::marks::mark_dir() else {
+            self.marks.clear();
+            return;
+        };
+        // Stamp before reading, for the reason `reload` stamps before loading: a
+        // write landing between the two costs one redundant read, where stamping
+        // afterwards would lose the change for good.
+        let current = PathStamp::read(&dir);
+        if PathStamp::unchanged(self.marks_stamp, current) {
+            return;
+        }
+        self.marks_stamp = current;
+        self.marks = crate::marks::open_marks_in(&dir);
+    }
+
+    /// Pick up writes made outside the TUI — an agent's `tt log`, another shell —
+    /// without disturbing what the user is doing. Called once per event-loop tick.
+    pub(crate) fn sync_from_store(&mut self) -> Result<()> {
+        // Replacing `data` mid-form would clobber the text being typed. Skipping is
+        // safe: a later tick picks the change up once the mode is Normal again.
+        if matches!(
+            self.input_mode,
+            InputMode::AddingEntry | InputMode::EditingEntry | InputMode::Searching
+        ) {
+            return Ok(());
+        }
+        if self.store_is_unchanged() {
+            return Ok(());
+        }
+
+        // `table_state` holds an index into `filtered_entries()`, which re-sorts on
+        // every call, so the index means nothing once the data changes underneath.
+        // Anchor on the selected entry's id instead.
+        let previous_idx = self.table_state.selected();
+        let anchor_id =
+            previous_idx.and_then(|idx| self.filtered_entries().get(idx).map(|entry| entry.id));
+
+        self.reload()?;
+
+        let (anchored_idx, len) = {
+            let entries = self.filtered_entries();
+            let anchored = anchor_id.and_then(|id| entries.iter().position(|e| e.id == id));
+            (anchored, entries.len())
+        };
+        self.table_state.select(match (anchored_idx, previous_idx) {
+            (Some(idx), _) => Some(idx),
+            // The anchor is gone: stay as near the old position as the new list allows.
+            (None, Some(idx)) => Some(idx.min(len.saturating_sub(1))),
+            (None, None) => None,
+        });
         Ok(())
     }
 
@@ -36,25 +115,44 @@ impl App {
         self.table_state.select(Some(i));
     }
 
+    /// The entry the table cursor is on, as the current view orders it.
+    pub(crate) fn selected_entry(&self) -> Option<&crate::tracker::TimeEntry> {
+        let idx = self.table_state.selected()?;
+        self.filtered_entries().into_iter().nth(idx)
+    }
+
+    /// `Enter` with the table focused: show the selected entry in full.
+    ///
+    /// Nothing selected means nothing to show — an empty view must not open an
+    /// empty modal the user then has to escape from.
+    pub(crate) fn open_detail(&mut self) {
+        if self.selected_entry().is_some() {
+            self.input_mode = InputMode::Detail;
+        }
+    }
+
     pub(crate) fn delete_selected(&mut self) -> Result<()> {
-        let filtered = self.filtered_entries();
-        if let Some(idx) = self.table_state.selected() {
-            if idx < filtered.len() {
-                let entry_id = filtered[idx].id;
-                self.data.entries.retain(|e| e.id != entry_id);
-                save_data(&self.data)?;
-                let new_len = self.filtered_entries().len();
-                if idx >= new_len && new_len > 0 {
-                    self.table_state.select(Some(new_len - 1));
-                }
-            }
+        // Resolve the id from the view, then drop the borrow: the removal itself
+        // happens against the freshly loaded store, not this snapshot.
+        let Some(idx) = self.table_state.selected() else {
+            return Ok(());
+        };
+        let Some(entry_id) = self.selected_entry().map(|e| e.id) else {
+            return Ok(());
+        };
+
+        // An id that is already gone simply matches nothing — not an error.
+        self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
+
+        let new_len = self.filtered_entries().len();
+        if idx >= new_len && new_len > 0 {
+            self.table_state.select(Some(new_len - 1));
         }
         Ok(())
     }
 
     pub(crate) fn stop_active(&mut self) -> Result<()> {
-        self.data.stop_active();
-        save_data(&self.data)?;
+        self.mutate_store(|data| data.stop_active())?;
         Ok(())
     }
 

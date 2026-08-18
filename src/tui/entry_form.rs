@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate};
-use crate::storage::save_data;
 use super::App;
 use super::types::{InputField, InputMode, ViewMode};
 
@@ -17,6 +16,7 @@ impl App {
         self.input_mode = InputMode::AddingEntry;
         self.input_field = InputField::Description;
         self.input_description.clear();
+        self.input_project.clear();
         self.input_tags.clear();
         self.input_start_time.clear();
         self.input_end_time.clear();
@@ -27,6 +27,7 @@ impl App {
     pub(crate) fn cancel_adding(&mut self) {
         self.input_mode = InputMode::Normal;
         self.input_description.clear();
+        self.input_project.clear();
         self.input_tags.clear();
         self.input_start_time.clear();
         self.input_end_time.clear();
@@ -43,6 +44,7 @@ impl App {
                     (
                         entry.id,
                         entry.description.clone(),
+                        entry.project.clone().unwrap_or_default(),
                         entry.tags.join(" "),
                         entry.start_time.format("%Y-%m-%d %H:%M").to_string(),
                         entry.end_time.map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
@@ -52,9 +54,10 @@ impl App {
             })
         };
 
-        if let Some((id, description, tags, start_time, end_time, duration)) = entry_data {
+        if let Some((id, description, project, tags, start_time, end_time, duration)) = entry_data {
             self.editing_entry_id = Some(id);
             self.input_description = description;
+            self.input_project = project;
             self.input_tags = tags;
             self.input_start_time = start_time;
             self.input_end_time = end_time.unwrap_or_default();
@@ -73,8 +76,13 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.add_entry(self.input_description.clone(), tags, start_time, end_time);
-        save_data(&self.data)?;
+        let description = self.input_description.clone();
+        let project = self.parse_project();
+        // Added against the freshly loaded store, so the id comes from the current
+        // `next_id` rather than the one this session started with.
+        self.mutate_store(|data| {
+            data.add_entry(description, project, tags, start_time, end_time);
+        })?;
         self.cancel_adding();
         Ok(())
     }
@@ -91,8 +99,12 @@ impl App {
             return Ok(());
         };
         let tags = self.parse_tags();
-        self.data.update_entry(entry_id, self.input_description.clone(), tags, start_time, end_time);
-        save_data(&self.data)?;
+        let description = self.input_description.clone();
+        let project = self.parse_project();
+        // Updating an id that is no longer in the store returns false, not an error.
+        self.mutate_store(|data| {
+            data.update_entry(entry_id, description, project, tags, start_time, end_time)
+        })?;
         self.cancel_adding();
         Ok(())
     }
@@ -101,7 +113,8 @@ impl App {
         let leaving = self.input_field;
         self.apply_time_calculations(leaving);
         self.input_field = match self.input_field {
-            InputField::Description => InputField::Tags,
+            InputField::Description => InputField::Project,
+            InputField::Project => InputField::Tags,
             InputField::Tags => InputField::Duration,
             InputField::Duration => InputField::StartTime,
             InputField::StartTime => InputField::EndTime,
@@ -115,7 +128,8 @@ impl App {
         self.apply_time_calculations(leaving);
         self.input_field = match self.input_field {
             InputField::Description => InputField::EndTime,
-            InputField::Tags => InputField::Description,
+            InputField::Project => InputField::Description,
+            InputField::Tags => InputField::Project,
             InputField::Duration => InputField::Tags,
             InputField::StartTime => InputField::Duration,
             InputField::EndTime => InputField::StartTime,
@@ -127,6 +141,7 @@ impl App {
         let pos = self.cursor_pos;
         let s = match self.input_field {
             InputField::Description => &mut self.input_description,
+            InputField::Project => &mut self.input_project,
             InputField::Tags => &mut self.input_tags,
             InputField::StartTime => &mut self.input_start_time,
             InputField::EndTime => &mut self.input_end_time,
@@ -141,6 +156,7 @@ impl App {
         let pos = self.cursor_pos;
         let s = match self.input_field {
             InputField::Description => &mut self.input_description,
+            InputField::Project => &mut self.input_project,
             InputField::Tags => &mut self.input_tags,
             InputField::StartTime => &mut self.input_start_time,
             InputField::EndTime => &mut self.input_end_time,
@@ -160,6 +176,7 @@ impl App {
     pub(crate) fn active_field_input(&self) -> &str {
         match self.input_field {
             InputField::Description => &self.input_description,
+            InputField::Project => &self.input_project,
             InputField::Tags => &self.input_tags,
             InputField::StartTime => &self.input_start_time,
             InputField::EndTime => &self.input_end_time,
@@ -418,6 +435,16 @@ impl App {
             .selected()
             .and_then(|idx| filtered.get(idx))
             .map(|entry| entry.start_time.date_naive())
+    }
+
+    /// The project as typed, trimmed; an empty field means "no project".
+    fn parse_project(&self) -> Option<String> {
+        let project = self.input_project.trim();
+        if project.is_empty() {
+            None
+        } else {
+            Some(project.to_string())
+        }
     }
 
     fn parse_tags(&self) -> Vec<String> {
