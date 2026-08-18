@@ -70,16 +70,17 @@ pub enum Commands {
     },
 }
 
-/// The agent layer's mark commands, ported from `bin/tt-safe`.
+/// The agent layer's commands, ported from `bin/tt-safe`.
 ///
 /// The first nested subcommand in this CLI, and nested rather than flat on
 /// purpose: the positionals are the wrapper's verbatim, so every call site in the
-/// agent instructions is a textual `tt-safe ` → `tt agent ` swap, and the four
-/// verbs stay visibly one namespace instead of four top-level commands that only
-/// an agent ever types.
+/// agent instructions is a textual `tt-safe ` → `tt agent ` swap, and the verbs
+/// stay visibly one namespace instead of a handful of top-level commands that
+/// only an agent ever types.
 ///
-/// These commands touch mark files and nothing else — see `crate::agent` and
-/// `main`'s dispatch order.
+/// Most of them touch mark files and nothing else; the ones that log an entry say
+/// so through [`AgentCommands::touches_store`], which decides where in `main` they
+/// dispatch.
 #[derive(Subcommand)]
 pub enum AgentCommands {
     /// Open a mark for a phase, keeping the start of one already open
@@ -105,6 +106,60 @@ pub enum AgentCommands {
     },
     /// List every open mark
     List,
+    /// Log one finished piece of work, with no mark involved
+    Item {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+        /// 3-6 words of plain prose, with no issue number in them
+        summary: Option<String>,
+        /// Whole minutes, rounded up to the nearest quarter hour
+        minutes: Option<String>,
+    },
+    /// Close a marked phase, measuring it to its last heartbeat
+    End {
+        project: String,
+        /// Issue number, or `-` for a phase with no issue
+        issue: String,
+        phase: String,
+        /// 3-6 words of plain prose, with no issue number in them
+        summary: Option<String>,
+        /// Whole minutes, overriding the mark's own timestamps entirely — and
+        /// winning over both flags below
+        minutes: Option<String>,
+        /// Log the whole measured span, recording the flagged silence without
+        /// removing it
+        #[arg(long, conflicts_with = "trim")]
+        full: bool,
+        /// Log the measured span minus every flagged gap, splitting the entry at
+        /// each one
+        #[arg(long)]
+        trim: bool,
+    },
+}
+
+impl AgentCommands {
+    /// Whether this subcommand creates or reads a `tt` entry.
+    ///
+    /// `main` returns the ones that do **not** ahead of its
+    /// `storage::with_data(migrate)` preamble, so a heartbeat never takes the
+    /// store's exclusive lock — the same thing `bin/tt-safe` skips its own lock
+    /// for the mark verbs to achieve. The ones that do have to dispatch *after*
+    /// it, or they would write an unmigrated store.
+    ///
+    /// An exhaustive `match` rather than a `matches!`, deliberately: a new
+    /// subcommand cannot be added without deciding which side of the preamble it
+    /// belongs on.
+    pub fn touches_store(&self) -> bool {
+        match self {
+            AgentCommands::Begin { .. }
+            | AgentCommands::Touch { .. }
+            | AgentCommands::Cancel { .. }
+            | AgentCommands::List => false,
+            AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
+        }
+    }
 }
 
 /// Parse one `--idle` value: `<start>-<end>` in epoch seconds.

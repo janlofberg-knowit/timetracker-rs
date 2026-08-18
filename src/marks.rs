@@ -554,6 +554,145 @@ pub fn cancel_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Res
     Ok(())
 }
 
+// --- what `end` measures --------------------------------------------------
+//
+// The reader and the arithmetic live here rather than in `agent.rs` because this
+// module already owns the beats file for the writer: a second place that knew the
+// format would be a second place that could drift from it. `agent.rs` gets a
+// [`Phase`] and a list of gaps, and never learns where either came from.
+
+/// One marked phase as `end` needs to read it back.
+///
+/// Everything is unix seconds, the format the mark files are written in, so no
+/// timezone or clock rendering enters the arithmetic at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Phase {
+    /// The instant the mark was opened.
+    pub started: i64,
+    /// Every heartbeat the file offered, **in file order**, with lines whose
+    /// first field is not a bare timestamp dropped. Not sorted and not
+    /// deduplicated: [`gaps_over`] does that judging itself, and sorting here
+    /// would hide an out-of-order beat it is meant to skip.
+    pub beats: Vec<i64>,
+    /// The beats file's **last line** read as a bare timestamp — the instant a
+    /// phase is measured to.
+    ///
+    /// The last line, deliberately **not** the largest beat: `bin/tt-safe:292`
+    /// is `tail -n 1`, so an out-of-order trailing beat becomes the end and the
+    /// larger earlier ones are then filtered out by [`gaps_over`]'s own `>= end`
+    /// test. `None` when there is no beats file, when it is empty, or when that
+    /// line is not a bare number — the caller then has nothing better to measure
+    /// to than now.
+    pub ended: Option<i64>,
+}
+
+/// A line's leading field as a bare timestamp, or `None`.
+///
+/// `while read -r beat _` takes the first whitespace-delimited field, and
+/// `case "$beat" in ''|*[!0-9]*)` rejects anything that is not all digits.
+fn beat_of(line: &str) -> Option<i64> {
+    let field = line.split_whitespace().next()?;
+    all_digits(field).then(|| field.parse().ok())?
+}
+
+/// Whether `text` is a non-empty run of ASCII digits — bash's
+/// `case "$x" in ''|*[!0-9]*)` test, which is stricter than [`str::parse`]
+/// (no sign, no whitespace, no `+`).
+fn all_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Read a marked phase back: its start, its heartbeats and the instant to measure
+/// to, or `None` when the phase is not marked at all.
+///
+/// The beats source follows `bin/tt-safe:284-286`: normally the `beats/` file,
+/// but when that file does **not exist** and the legacy `<mark>.last` sibling
+/// does, the legacy single value is read as a one-beat sequence. An existing but
+/// **empty** `beats/` file therefore wins over `.last` — a session that has
+/// upgraded is not dragged back to the pre-`beats/` heartbeat.
+///
+/// A mark whose contents are not a timestamp is an error naming the path, not a
+/// silent zero: the shell does bash arithmetic on a non-number there, no oracle
+/// case pins the result, and a clean error beats reproducing garbage.
+pub fn read_phase_in(
+    dir: &Path,
+    project: &str,
+    issue: &str,
+    phase: &str,
+) -> io::Result<Option<Phase>> {
+    let key = mark_key(project, issue, phase);
+    let mark = mark_path(dir, &key);
+    if !mark.is_file() {
+        return Ok(None);
+    }
+    let started = read_start(&mark)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} does not hold a unix timestamp", mark.display()),
+            )
+        })?
+        .timestamp();
+
+    let beats_file = beats_path(dir, &key);
+    let legacy = legacy_beat_path(dir, &key);
+    let source = if !beats_file.exists() && legacy.exists() {
+        legacy
+    } else {
+        beats_file
+    };
+
+    // A missing or unreadable beats file is not an error: it leaves the single
+    // start→end interval to judge, which is the honest reading of a phase that
+    // never produced evidence of anything happening inside it.
+    let body = fs::read_to_string(&source).unwrap_or_default();
+    let beats = body.lines().filter_map(beat_of).collect();
+    let ended = body.lines().next_back().filter(|line| all_digits(line));
+
+    Ok(Some(Phase {
+        started,
+        beats,
+        ended: ended.and_then(|line| line.parse().ok()),
+    }))
+}
+
+/// Every stretch of silence longer than `threshold_minutes`, as chronological
+/// `(from, to)` epoch pairs.
+///
+/// Pure and total: no I/O, and never an error — "no gaps" is an answer, not a
+/// failure (`bin/tt-safe:235-260`). The sequence judged is `start, beats…, end`,
+/// so the leading and trailing intervals count too: silence before the first
+/// heartbeat or after the last one is still silence, and a phase with no beats at
+/// all is one unvouched stretch across its whole span.
+///
+/// A beat is skipped when it does not advance the sequence — a duplicate within
+/// one second, an out-of-order line, or a beat outside the mark's own window —
+/// and `prev` advances only on an accepted beat, so a skipped beat cannot shorten
+/// the gap around it.
+///
+/// The threshold test is `(beat - prev) / 60 > threshold`: **integer-floor
+/// minutes, strictly greater**, so at the default 45 a 45m59s hole is not a gap
+/// and 46m00s is.
+pub fn gaps_over(start: i64, end: i64, beats: &[i64], threshold_minutes: i64) -> Vec<(i64, i64)> {
+    let mut gaps = Vec::new();
+    let mut prev = start;
+
+    for &beat in beats {
+        if beat <= prev || beat >= end {
+            continue;
+        }
+        if (beat - prev) / 60 > threshold_minutes {
+            gaps.push((prev, beat));
+        }
+        prev = beat;
+    }
+
+    if end > prev && (end - prev) / 60 > threshold_minutes {
+        gaps.push((prev, end));
+    }
+    gaps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,5 +1317,147 @@ mod tests {
         // Cancelling what was never begun is not an error.
         cancel_in(&dir, "tt", "8", "impl").unwrap();
         cancel_in(&dir, "never", "1", "begun").unwrap();
+    }
+
+    // --- what `end` measures ----------------------------------------------
+
+    #[test]
+    fn a_phase_with_no_beats_is_one_unvouched_stretch() {
+        // The honest reading of a phase that produced no evidence at all: the
+        // whole span is a single silence, judged like any other.
+        assert_eq!(gaps_over(0, 46 * 60, &[], 45), vec![(0, 46 * 60)]);
+        assert_eq!(gaps_over(0, 10 * 60, &[], 45), vec![]);
+    }
+
+    #[test]
+    fn silence_before_the_first_beat_is_a_gap() {
+        let start = 1_000_000;
+        let first = start + 60 * 60;
+        let gaps = gaps_over(start, first + 300, &[first], 45);
+        assert_eq!(gaps, vec![(start, first)]);
+    }
+
+    #[test]
+    fn silence_after_the_last_beat_is_a_gap() {
+        let start = 1_000_000;
+        let beat = start + 300;
+        let end = beat + 60 * 60;
+        assert_eq!(gaps_over(start, end, &[beat], 45), vec![(beat, end)]);
+    }
+
+    #[test]
+    fn a_beat_that_does_not_advance_the_sequence_is_skipped() {
+        let start = 1_000_000;
+        let beat = start + 10 * 60;
+        let end = start + 70 * 60;
+        // A duplicate, an out-of-order line and a beat past `end` are all
+        // ignored, and none of them advances `prev` — so the hole after `beat`
+        // is measured from `beat` itself and still flagged.
+        let beats = [beat, beat, beat - 60, end + 600, end];
+        assert_eq!(gaps_over(start, end, &beats, 45), vec![(beat, end)]);
+    }
+
+    #[test]
+    fn the_threshold_is_floor_minutes_and_strictly_greater() {
+        let start = 1_000_000;
+        // 45m59s floors to 45, which is not *greater* than 45.
+        assert_eq!(gaps_over(start, start + 45 * 60 + 59, &[], 45), vec![]);
+        // 46m00s is.
+        let end = start + 46 * 60;
+        assert_eq!(gaps_over(start, end, &[], 45), vec![(start, end)]);
+    }
+
+    #[test]
+    fn two_holes_come_back_in_chronological_order() {
+        let start = 1_000_000;
+        let beats = [
+            start + 10 * 60,
+            start + 70 * 60,
+            start + 80 * 60,
+            start + 140 * 60,
+        ];
+        let end = start + 150 * 60;
+        assert_eq!(
+            gaps_over(start, end, &beats, 45),
+            vec![(beats[0], beats[1]), (beats[2], beats[3])]
+        );
+    }
+
+    #[test]
+    fn a_phase_reads_back_its_start_beats_and_last_line() {
+        let dir = sandbox("phase-read");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        // The last line is deliberately not the largest: `end` measures to the
+        // last beat recorded, not to the highest one.
+        write(&dir, "beats/proj.7.impl", "1000600\n1002000\n1001200\n");
+
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.started, 1_000_000);
+        assert_eq!(phase.beats, vec![1_000_600, 1_002_000, 1_001_200]);
+        assert_eq!(phase.ended, Some(1_001_200));
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_bare_timestamp_is_dropped() {
+        let dir = sandbox("phase-garbage");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        write(
+            &dir,
+            "beats/proj.7.impl",
+            "\nnope\n1000600 note\n-5\nx1000700\n",
+        );
+
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        // The leading field of `1000600 note` is a bare timestamp, so the beat
+        // counts — but the *line* is not, so it is no instant to measure to.
+        assert_eq!(phase.beats, vec![1_000_600]);
+        assert_eq!(phase.ended, None);
+    }
+
+    #[test]
+    fn a_legacy_last_heartbeat_is_read_as_a_single_beat() {
+        let dir = sandbox("phase-legacy");
+        write(&dir, "proj.7.impl", "1000000\n");
+        write(&dir, "proj.7.impl.last", "1000600\n");
+
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.beats, vec![1_000_600]);
+        assert_eq!(phase.ended, Some(1_000_600));
+    }
+
+    #[test]
+    fn an_empty_beats_file_supersedes_a_legacy_last_heartbeat() {
+        let dir = sandbox("phase-empty-beats");
+        write(&dir, "proj.7.impl", "1000000\n");
+        write(&dir, "proj.7.impl.last", "1000600\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        write(&dir, "beats/proj.7.impl", "");
+
+        // Existence, not content: an upgraded session is never dragged back to
+        // the pre-`beats/` heartbeat.
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.beats, Vec::<i64>::new());
+        assert_eq!(phase.ended, None);
+    }
+
+    #[test]
+    fn an_unmarked_phase_reads_back_as_nothing() {
+        let dir = sandbox("phase-unmarked");
+        assert_eq!(read_phase_in(&dir, "proj", "7", "impl").unwrap(), None);
+    }
+
+    #[test]
+    fn a_mark_that_is_not_a_timestamp_is_an_error_naming_the_path() {
+        let dir = sandbox("phase-bad-mark");
+        write(&dir, "proj.7.impl", "not a timestamp\n");
+
+        let err = read_phase_in(&dir, "proj", "7", "impl").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("proj.7.impl"),
+            "the error names the path: {err}"
+        );
     }
 }
