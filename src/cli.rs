@@ -246,7 +246,7 @@ pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
     if let Some((active_desc, active_start)) = already_tracking {
         println!(
             "{}  Already tracking: \"{}\" (started at {})",
-            icons::WARNING,
+            icons::warning(),
             active_desc,
             active_start.format("%H:%M")
         );
@@ -256,7 +256,7 @@ pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
 
     println!(
         "{}  Started: \"{}\"{}{} at {}",
-        icons::ACTIVE,
+        icons::active(),
         desc,
         project_display(project.as_ref()),
         tags_display(&tags),
@@ -279,7 +279,7 @@ pub fn stop() -> Result<()> {
     })?;
 
     if let Some((desc, dur)) = stopped {
-        println!("{}  Stopped: \"{}\" - Duration: {}", icons::STOPPED, desc, dur);
+        println!("{}  Stopped: \"{}\" - Duration: {}", icons::stopped(), desc, dur);
     } else {
         println!("No active task to stop.");
     }
@@ -340,7 +340,7 @@ pub fn log(
 
     println!(
         "{} Logged: \"{}\"{}{} - Duration: {}",
-        icons::LOGGED,
+        icons::logged(),
         desc,
         project_display(project.as_ref()),
         tags_display(&tags),
@@ -415,7 +415,7 @@ pub fn status() -> Result<()> {
     let data = load_data()?;
 
     if let Some(active) = data.active_entry() {
-        println!("{}  Currently tracking: \"{}\"", icons::ACTIVE, active.description);
+        println!("{}  Currently tracking: \"{}\"", icons::active(), active.description);
         if let Some(project) = &active.project {
             println!("   Project: {}", project);
         }

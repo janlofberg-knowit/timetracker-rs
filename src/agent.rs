@@ -142,7 +142,7 @@ fn list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{} Open marks:\n", icons::MARKS);
+    println!("{} Open marks:\n", icons::agent());
     for row in marks::rows(&marks) {
         println!("  {}", row);
     }

@@ -191,6 +191,7 @@ logged = "📝"
 warning = "⚠️"
 calendar = "📅"
 list = "📋"
+agent = "🤖"
 
 [duration]
 entry_high_hours = 4   # single-entry duration coloring
