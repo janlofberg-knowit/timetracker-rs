@@ -1,3 +1,8 @@
+---
+name: tt-time-logging
+description: Time-logging contract for coding agents working in a repo tracked with the `tt` CLI (timetracker-rs) — when to log, how to name entries, and how to handle agent-phase marks (begin/touch/end).
+---
+
 # Time logging contract
 
 For any coding agent working in a repo where the operator tracks time with `tt`.
@@ -6,10 +11,6 @@ Tool-agnostic — this needs a shell and nothing else.
 Everything here is `tt` itself. Run
 `cargo install --git https://github.com/linus-skold/timetracker-rs` and the whole
 workflow is on your `PATH`.
-
-Also published as an installable skill — `npx skills add linus-skold/timetracker-rs`
-pulls in `skills/tt-time-logging/SKILL.md`, which mirrors this file. Keep the two
-in sync when either changes.
 
 ## Rules
 
