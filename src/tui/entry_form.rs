@@ -66,15 +66,21 @@ impl App {
         }
     }
 
-    pub(crate) fn submit_entry(&mut self) -> Result<()> {
+    /// Validates the current form input and resolves it into entry fields.
+    /// Returns `None` if the form isn't currently submittable (empty
+    /// description, unresolvable start/end times).
+    fn build_entry_fields(&self) -> Option<(String, Vec<String>, DateTime<Local>, Option<DateTime<Local>>)> {
         if self.input_description.is_empty() {
-            return Ok(());
+            return None;
         }
-        let Some((start_time, end_time)) = self.resolve_times() else {
+        let (start_time, end_time) = self.resolve_times()?;
+        Some((self.input_description.clone(), self.parse_tags(), start_time, end_time))
+    }
+
+    pub(crate) fn submit_entry(&mut self) -> Result<()> {
+        let Some((description, tags, start_time, end_time)) = self.build_entry_fields() else {
             return Ok(());
         };
-        let tags = self.parse_tags();
-        let description = self.input_description.clone();
         let project = self.parse_project();
         // Added against the freshly loaded store, so the id is the current `next_id`.
         self.mutate_store(|data| {
@@ -85,18 +91,12 @@ impl App {
     }
 
     pub(crate) fn submit_edit(&mut self) -> Result<()> {
-        let entry_id = match self.editing_entry_id {
-            Some(id) => id,
-            None => return Ok(()),
-        };
-        if self.input_description.is_empty() {
-            return Ok(());
-        }
-        let Some((start_time, end_time)) = self.resolve_times() else {
+        let Some(entry_id) = self.editing_entry_id else {
             return Ok(());
         };
-        let tags = self.parse_tags();
-        let description = self.input_description.clone();
+        let Some((description, tags, start_time, end_time)) = self.build_entry_fields() else {
+            return Ok(());
+        };
         let project = self.parse_project();
         // Updating an id that is no longer in the store returns false, not an error.
         self.mutate_store(|data| {
@@ -346,6 +346,7 @@ impl App {
 
     /// Parse a date-only string. Supported formats: `DD/MM`, `MM-DD`, `YYYY-MM-DD`.
     fn parse_date_part(s: &str, current_year: i32) -> Option<NaiveDate> {
+        // DD/MM
         if s.contains('/') {
             let mut parts = s.splitn(2, '/');
             if let (Some(d), Some(m)) = (parts.next(), parts.next()) {
@@ -354,14 +355,13 @@ impl App {
                 }
             }
         }
+        // YYYY-MM-DD
         if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
             return Some(nd);
         }
-        if s.len() == 5 && s.contains('-') {
-            let with_year = format!("{}-{}", current_year, s);
-            if let Ok(nd) = NaiveDate::parse_from_str(&with_year, "%Y-%m-%d") {
-                return Some(nd);
-            }
+        // MM-DD - assumes current year
+        if let Ok(nd) = NaiveDate::parse_from_str(&format!("{}-{}", current_year, s), "%Y-%m-%d") {
+            return Some(nd);
         }
         None
     }

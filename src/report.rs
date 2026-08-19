@@ -153,7 +153,7 @@ pub fn render(rollup: &Rollup, label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{} {label} — {}\n\n",
-        icons::CALENDAR,
+        icons::calendar(),
         fmt_duration::format(seconds_to_duration(rollup.total_seconds))
     ));
 
@@ -197,7 +197,7 @@ pub fn render(rollup: &Rollup, label: &str) -> String {
     if rollup.overlaps > 0 {
         out.push_str(&format!(
             "{} {} overlapping span(s) — retro `tt log` back-dates from now, so\n",
-            icons::WARNING,
+            icons::warning(),
             rollup.overlaps
         ));
         out.push_str(
@@ -522,7 +522,7 @@ mod tests {
         assert!(
             rendered.starts_with(&format!(
                 "{} Today, 2026-08-18 — 1h 30m\n\n",
-                icons::CALENDAR
+                icons::calendar()
             )),
             "header carries the icon, the label and the total: {rendered:?}"
         );
@@ -553,7 +553,7 @@ mod tests {
         let b = entry(2, Some("tt"), &["tt/2", "impl"], (9, 30), 60);
         let rendered = render(&rollup(&[&a, &b]), "Today, 2026-08-18");
         assert!(
-            rendered.contains(&format!("{} 1 overlapping span(s)", icons::WARNING)),
+            rendered.contains(&format!("{} 1 overlapping span(s)", icons::warning())),
             "{rendered:?}"
         );
         assert!(rendered.contains("Log at each commit, not in batches."));

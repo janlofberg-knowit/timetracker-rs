@@ -88,15 +88,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Some(entry) => (
             format!(
                 "{}  {} - {} ",
-                crate::icons::ACTIVE,
+                crate::icons::active(),
                 entry.description,
                 entry.format_duration()
             ),
-            Style::default().fg(theme::ACTIVE).bold(),
+            Style::default().fg(theme::active()).bold(),
         ),
         None => (
             "No active task".to_string(),
-            Style::default().fg(theme::INACTIVE).italic(),
+            Style::default().fg(theme::inactive()).italic(),
         ),
     };
     let header = Paragraph::new(status_text)
@@ -104,8 +104,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::BORDER))
-                .title(Span::styled(" Status ", Style::default().fg(theme::TITLE))),
+                .border_style(Style::default().fg(theme::border()))
+                .title(Span::styled(" Status ", Style::default().fg(theme::title()))),
         );
     f.render_widget(header, rows.area(LayoutRow::Status));
 
@@ -138,15 +138,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
     let tabs = Tabs::new(tab_titles)
         .select(selected_tab)
-        .style(Style::default().fg(theme::INACTIVE))
-        .highlight_style(Style::default().fg(theme::ACCENT).bold())
+        .style(Style::default().fg(theme::inactive()))
+        .highlight_style(Style::default().fg(theme::accent()).bold())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::BORDER))
+                .border_style(Style::default().fg(theme::border()))
                 .title(Span::styled(
                     format!(" {} | {} | {} ", app.view_mode.title(), date_info, app.sort_order.label()),
-                    Style::default().fg(theme::HIGHLIGHT),
+                    Style::default().fg(theme::highlight()),
                 )),
         );
     f.render_widget(tabs, rows.area(LayoutRow::Tabs));
@@ -192,7 +192,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let footer = rows.area(LayoutRow::Footer);
     let footer_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme::border()));
     let footer_inner = footer_block.inner(footer);
     f.render_widget(footer_block, footer);
 
@@ -205,44 +205,49 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(footer_inner);
 
     let hint_spans = vec![
-        Span::styled(format!(" {}", total_label), Style::default().fg(theme::TITLE)),
-        Span::styled(total_str, Style::default().fg(theme::HIGHLIGHT).bold()),
-        Span::styled(" | ", Style::default().fg(theme::BORDER)),
+        Span::styled(format!(" {}", total_label), Style::default().fg(theme::title())),
+        Span::styled(total_str, Style::default().fg(theme::highlight()).bold()),
+        Span::styled(" | ", Style::default().fg(theme::border())),
         // Detail goes first; this zone clips from the right at 80 columns.
-        Span::styled("Enter", Style::default().fg(theme::ACCENT)),
-        Span::styled(": detail | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("t", Style::default().fg(theme::ACCENT)),
-        Span::styled(": today | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("/", Style::default().fg(theme::ACCENT)),
-        Span::styled(": search | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("a", Style::default().fg(theme::ACCENT)),
-        Span::styled(": add | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("e", Style::default().fg(theme::ACCENT)),
-        Span::styled(": edit | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("d", Style::default().fg(theme::ACCENT)),
-        Span::styled(": del… | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("s", Style::default().fg(theme::ACCENT)),
-        Span::styled(": stop", Style::default().fg(theme::INACTIVE)),
+        Span::styled("Enter", Style::default().fg(theme::accent())),
+        Span::styled(": detail | ", Style::default().fg(theme::inactive())),
+        Span::styled("t", Style::default().fg(theme::accent())),
+        Span::styled(": today | ", Style::default().fg(theme::inactive())),
+        Span::styled("/", Style::default().fg(theme::accent())),
+        Span::styled(": search | ", Style::default().fg(theme::inactive())),
+        Span::styled("a", Style::default().fg(theme::accent())),
+        Span::styled(": add | ", Style::default().fg(theme::inactive())),
+        Span::styled("e", Style::default().fg(theme::accent())),
+        Span::styled(": edit | ", Style::default().fg(theme::inactive())),
+        Span::styled("d", Style::default().fg(theme::accent())),
+        Span::styled(": del… | ", Style::default().fg(theme::inactive())),
+        Span::styled("s", Style::default().fg(theme::accent())),
+        Span::styled(": stop", Style::default().fg(theme::inactive())),
     ];
     let hints = Paragraph::new(Line::from(hint_spans));
     f.render_widget(hints, footer_chunks[0]);
 
     // A surface's key is accented while it is open, dim while hidden.
-    let key_style =
-        |on: bool| Style::default().fg(if on { theme::ACCENT } else { theme::INACTIVE });
+    let key_style = |on: bool| {
+        Style::default().fg(if on {
+            theme::accent()
+        } else {
+            theme::inactive()
+        })
+    };
     let panes_open = !app.visible_panes().is_empty();
     let keys_hint = Paragraph::new(Line::from(vec![
-        Span::styled(" | ", Style::default().fg(theme::BORDER)),
+        Span::styled(" | ", Style::default().fg(theme::border())),
         Span::styled("P", key_style(app.show_projects)),
-        Span::styled("/", Style::default().fg(theme::BORDER)),
+        Span::styled("/", Style::default().fg(theme::border())),
         Span::styled("T", key_style(app.show_tags)),
-        Span::styled("/", Style::default().fg(theme::BORDER)),
+        Span::styled("/", Style::default().fg(theme::border())),
         Span::styled("A", key_style(app.show_marks)),
-        Span::styled(" | ", Style::default().fg(theme::BORDER)),
+        Span::styled(" | ", Style::default().fg(theme::border())),
         Span::styled("Tab", key_style(panes_open)),
-        Span::styled(" | ", Style::default().fg(theme::BORDER)),
-        Span::styled("?", Style::default().fg(theme::ACCENT)),
-        Span::styled(": help", Style::default().fg(theme::INACTIVE)),
+        Span::styled(" | ", Style::default().fg(theme::border())),
+        Span::styled("?", Style::default().fg(theme::accent())),
+        Span::styled(": help", Style::default().fg(theme::inactive())),
     ]));
     f.render_widget(keys_hint, footer_chunks[1]);
 
@@ -280,7 +285,7 @@ fn render_overlay(
     let overlay_style = Style::default().bg(theme::OVERLAY_BG);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::ACCENT))
+        .border_style(Style::default().fg(theme::accent()))
         .title(title)
         .title_top(Line::from(marker).right_aligned())
         .style(overlay_style);
@@ -300,12 +305,15 @@ fn overlay_hints(pairs: &[(&'static str, &'static str)]) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     for (i, (k, what)) in pairs.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("  ", Style::default().fg(theme::BORDER)));
+            spans.push(Span::styled("  ", Style::default().fg(theme::border())));
         }
-        spans.push(Span::styled(*k, Style::default().fg(theme::ACCENT).bold()));
+        spans.push(Span::styled(
+            *k,
+            Style::default().fg(theme::accent()).bold(),
+        ));
         spans.push(Span::styled(
             format!(" {}", what),
-            Style::default().fg(theme::INACTIVE),
+            Style::default().fg(theme::inactive()),
         ));
     }
     Line::from(spans)
@@ -313,13 +321,13 @@ fn overlay_hints(pairs: &[(&'static str, &'static str)]) -> Line<'static> {
 
 pub fn render_help_popup(f: &mut Frame) {
     fn key(k: &'static str) -> Span<'static> {
-        Span::styled(k, Style::default().fg(theme::ACCENT).bold())
+        Span::styled(k, Style::default().fg(theme::accent()).bold())
     }
     fn sep(s: &'static str) -> Span<'static> {
-        Span::styled(s, Style::default().fg(theme::INACTIVE))
+        Span::styled(s, Style::default().fg(theme::inactive()))
     }
     fn heading(s: &'static str) -> Line<'static> {
-        Line::from(Span::styled(s, Style::default().fg(theme::HIGHLIGHT).bold()))
+        Line::from(Span::styled(s, Style::default().fg(theme::highlight()).bold()))
     }
 
     let lines: Vec<Line> = vec![
@@ -368,9 +376,9 @@ pub fn render_help_popup(f: &mut Frame) {
         lines.len() as u16 + 3,
         Span::styled(
             " Keybindings ",
-            Style::default().fg(theme::HIGHLIGHT).bold(),
+            Style::default().fg(theme::highlight()).bold(),
         ),
-        Span::styled(" ? ", Style::default().fg(theme::INACTIVE)),
+        Span::styled(" ? ", Style::default().fg(theme::inactive())),
         overlay_hints(&[("esc", "close")]),
     );
     f.render_widget(
@@ -392,7 +400,7 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
     };
 
     let value = Style::default().fg(Color::White);
-    let dim = Style::default().fg(theme::INACTIVE);
+    let dim = Style::default().fg(theme::inactive());
 
     // The subject line, so a cursor on the wrong row shows up here.
     let mut subject = vec![Span::styled(format!("  {}", entry.description), value)];
@@ -401,7 +409,7 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
     }
     subject.push(Span::styled(
         format!("  {}", entry.format_duration()),
-        Style::default().fg(theme::ACCENT).bold(),
+        Style::default().fg(theme::accent()).bold(),
     ));
     let mut lines = vec![Line::from(subject)];
 
@@ -417,13 +425,13 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
         lines.push(Line::from(vec![
             Span::styled("  -> ", dim),
             Span::styled(format!("{} pieces: ", durations.len()), value),
-            Span::styled(durations.join(", "), Style::default().fg(theme::ACCENT)),
+            Span::styled(durations.join(", "), Style::default().fg(theme::accent())),
         ]));
         lines.push(Line::from(vec![
             Span::styled("     ", dim),
             Span::styled(
                 crate::duration::format(entry.duration() - kept),
-                Style::default().fg(theme::ACCENT).bold(),
+                Style::default().fg(theme::accent()).bold(),
             ),
             Span::styled(" removed", dim),
         ]));
@@ -443,8 +451,8 @@ fn render_confirm_popup(f: &mut Frame, app: &App) {
         f,
         width,
         lines.len() as u16 + 3,
-        Span::styled(title, Style::default().fg(theme::HIGHLIGHT).bold()),
-        Span::styled(" confirm ", Style::default().fg(theme::INACTIVE)),
+        Span::styled(title, Style::default().fg(theme::highlight()).bold()),
+        Span::styled(" confirm ", Style::default().fg(theme::inactive())),
         // Exactly what the `Confirm` arm binds, `enter` among the cancels.
         overlay_hints(&[
             (pending.action.confirm_keys(), "yes"),
@@ -472,7 +480,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     fn label(text: &str) -> Span<'_> {
         Span::styled(
             format!("  {:<width$}", text, width = LABEL),
-            Style::default().fg(theme::TITLE),
+            Style::default().fg(theme::title()),
         )
     }
 
@@ -506,7 +514,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
                     " ".repeat(2 + LABEL)
                 };
                 Line::from(vec![
-                    Span::styled(head, Style::default().fg(theme::TITLE)),
+                    Span::styled(head, Style::default().fg(theme::title())),
                     Span::styled(text, style),
                 ])
             })
@@ -523,13 +531,13 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     lines.extend(field(
         "Project",
         entry.project.as_deref().unwrap_or("—"),
-        Style::default().fg(theme::ACCENT),
+        Style::default().fg(theme::accent()),
         value_width,
     ));
     lines.extend(field(
         "Tags",
         &tags,
-        Style::default().fg(theme::HIGHLIGHT),
+        Style::default().fg(theme::highlight()),
         value_width,
     ));
     lines.extend(field("Date", &entry.format_date(), value, value_width));
@@ -544,14 +552,14 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     lines.extend(field(
         "Duration",
         &entry.format_duration(),
-        Style::default().fg(theme::ACCENT).bold(),
+        Style::default().fg(theme::accent()).bold(),
         value_width,
     ));
     // Idle rows only when the entry has any.
     for (i, gap) in entry.idle.iter().enumerate() {
         lines.push(Line::from(vec![
             label(if i == 0 { "Idle" } else { "" }),
-            Span::styled(gap.format_span(), Style::default().fg(theme::INACTIVE)),
+            Span::styled(gap.format_span(), Style::default().fg(theme::inactive())),
         ]));
     }
     lines.push(Line::from(Span::raw("")));
@@ -563,9 +571,9 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
     lines.push(Line::from(Span::raw("")));
 
     let (marker, marker_style) = if entry.is_active() {
-        (" active ", Style::default().fg(theme::ACTIVE).bold())
+        (" active ", Style::default().fg(theme::active()).bold())
     } else {
-        (" logged ", Style::default().fg(theme::INACTIVE))
+        (" logged ", Style::default().fg(theme::inactive()))
     };
     let content = render_overlay(
         f,
@@ -573,7 +581,7 @@ fn render_detail_popup(f: &mut Frame, app: &App) {
         lines.len() as u16 + 3,
         Span::styled(
             format!(" Entry #{} ", entry.id),
-            Style::default().fg(theme::HIGHLIGHT).bold(),
+            Style::default().fg(theme::highlight()).bold(),
         ),
         Span::styled(marker, marker_style),
         // Every hint here is bound in the `InputMode::Detail` arm.
@@ -594,10 +602,10 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
 
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::BORDER))
+        .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " Agents (A) ",
-            Style::default().fg(theme::TITLE),
+            Style::default().fg(theme::title()),
         ));
     let inner = block.inner(area);
 
@@ -606,7 +614,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
         block = block.title_top(
             Line::from(Span::styled(
                 format!(" {} ", count),
-                Style::default().fg(theme::INACTIVE),
+                Style::default().fg(theme::inactive()),
             ))
             .right_aligned(),
         );
@@ -624,7 +632,7 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = if marks.is_empty() {
         vec![Line::from(Span::styled(
             " no phases in progress",
-            Style::default().fg(theme::INACTIVE).italic(),
+            Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
         marks
@@ -639,11 +647,11 @@ fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::styled(
                         format!(" {}", mark.started_at()),
-                        Style::default().fg(theme::INACTIVE),
+                        Style::default().fg(theme::inactive()),
                     ),
                     Span::styled(
                         format!("   ({})", mark.elapsed()),
-                        Style::default().fg(theme::HIGHLIGHT),
+                        Style::default().fg(theme::highlight()),
                     ),
                 ])
             })
@@ -667,17 +675,17 @@ fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
 
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::BORDER))
+        .border_style(Style::default().fg(theme::border()))
         .title(Span::styled(
             " Summary (S) ",
-            Style::default().fg(theme::TITLE),
+            Style::default().fg(theme::title()),
         ));
     let inner = block.inner(area);
 
     let marker_style = Style::default().fg(if app.total_is_filtered() {
-        theme::HIGHLIGHT
+        theme::highlight()
     } else {
-        theme::TITLE
+        theme::title()
     });
     block = block.title_top(
         Line::from(Span::styled(
@@ -699,7 +707,7 @@ fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = if rows.is_empty() {
         vec![Line::from(Span::styled(
             " nothing in scope",
-            Style::default().fg(theme::INACTIVE).italic(),
+            Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
         rows.iter()
@@ -712,15 +720,15 @@ fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::styled(
                         format!("{:>TOTAL_WIDTH$}", crate::duration::format(row.total)),
-                        Style::default().fg(theme::HIGHLIGHT),
+                        Style::default().fg(theme::highlight()),
                     ),
                     Span::styled(
                         format!("{:>COUNT_WIDTH$}", row.entries),
-                        Style::default().fg(theme::INACTIVE),
+                        Style::default().fg(theme::inactive()),
                     ),
                     Span::styled(
                         format!("{:>SHARE_WIDTH$}", format!("{}%", row.share)),
-                        Style::default().fg(theme::ACCENT),
+                        Style::default().fg(theme::accent()),
                     ),
                 ])
             })
@@ -751,16 +759,16 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if focused {
-            theme::ACCENT
+            theme::accent()
         } else {
-            theme::BORDER
+            theme::border()
         }))
         .title(Span::styled(
             pane.title(),
             Style::default().fg(if focused {
-                theme::HIGHLIGHT
+                theme::highlight()
             } else {
-                theme::TITLE
+                theme::title()
             }),
         ));
 
@@ -771,7 +779,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         block = block.title_top(
             Line::from(Span::styled(
                 format!(" {} ", indicator),
-                Style::default().fg(theme::INACTIVE),
+                Style::default().fg(theme::inactive()),
             ))
             .right_aligned(),
         );
@@ -782,7 +790,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
     let items: Vec<ListItem> = if values.is_empty() {
         vec![ListItem::new(Span::styled(
             " nothing in view",
-            Style::default().fg(theme::INACTIVE).italic(),
+            Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
         values
@@ -795,14 +803,14 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
                 let used = 1 + value.chars().count() + count.chars().count() + 1;
                 let gap = width.saturating_sub(used).max(1);
                 let value_style = if selected {
-                    Style::default().fg(theme::ACCENT).bold()
+                    Style::default().fg(theme::accent()).bold()
                 } else {
                     Style::default().fg(Color::White)
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{}{}", mark, value), value_style),
                     Span::raw(" ".repeat(gap)),
-                    Span::styled(count, Style::default().fg(theme::HIGHLIGHT)),
+                    Span::styled(count, Style::default().fg(theme::highlight())),
                 ]))
             })
             .collect()
@@ -811,7 +819,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
     // Shown with or without focus: it says where this pane's cursor will resume.
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().bg(theme::SELECTED_BG))
+        .highlight_style(Style::default().bg(theme::selected_bg()))
         .highlight_symbol(CURSOR_MARKER);
     let mut state = ListState::default();
     if !values.is_empty() {
@@ -823,9 +831,9 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
 fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {
     let is_active = app.input_mode == InputMode::Searching;
     let border_style = if is_active {
-        Style::default().fg(theme::ACCENT)
+        Style::default().fg(theme::accent())
     } else {
-        Style::default().fg(theme::BORDER)
+        Style::default().fg(theme::border())
     };
 
     let match_count = app.filtered_entries().len();
@@ -841,9 +849,9 @@ fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {
         .title(Span::styled(
             format!(" Search{} ", match_info),
             if is_active {
-                Style::default().fg(theme::HIGHLIGHT)
+                Style::default().fg(theme::highlight())
             } else {
-                Style::default().fg(theme::TITLE)
+                Style::default().fg(theme::title())
             },
         ));
 
@@ -855,7 +863,7 @@ fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let search_input = Paragraph::new(search_text)
         .style(if app.search_term.is_empty() && is_active {
-            Style::default().fg(theme::INACTIVE).italic()
+            Style::default().fg(theme::inactive()).italic()
         } else {
             Style::default().fg(Color::White)
         })
@@ -903,16 +911,16 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(if active {
-                Style::default().fg(theme::ACCENT)
+                Style::default().fg(theme::accent())
             } else {
-                Style::default().fg(theme::INACTIVE)
+                Style::default().fg(theme::inactive())
             })
             .title(Span::styled(
                 label,
                 if active {
-                    Style::default().fg(theme::HIGHLIGHT)
+                    Style::default().fg(theme::highlight())
                 } else {
-                    Style::default().fg(theme::TITLE)
+                    Style::default().fg(theme::title())
                 },
             ))
     }
@@ -960,19 +968,19 @@ fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let help = Paragraph::new(Line::from(vec![
-        Span::styled("Tab", Style::default().fg(theme::ACCENT)),
-        Span::styled(": switch field | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("Enter", Style::default().fg(theme::ACCENT)),
-        Span::styled(": save | ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("Esc", Style::default().fg(theme::ACCENT)),
-        Span::styled(": cancel  ", Style::default().fg(theme::INACTIVE)),
-        Span::styled("Need ≥2 of: Start, End, Duration", Style::default().fg(theme::BORDER)),
+        Span::styled("Tab", Style::default().fg(theme::accent())),
+        Span::styled(": switch field | ", Style::default().fg(theme::inactive())),
+        Span::styled("Enter", Style::default().fg(theme::accent())),
+        Span::styled(": save | ", Style::default().fg(theme::inactive())),
+        Span::styled("Esc", Style::default().fg(theme::accent())),
+        Span::styled(": cancel  ", Style::default().fg(theme::inactive())),
+        Span::styled("Need ≥2 of: Start, End, Duration", Style::default().fg(theme::border())),
     ]))
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::BORDER))
-            .title(Span::styled(form_title, Style::default().fg(theme::HIGHLIGHT))),
+            .border_style(Style::default().fg(theme::border()))
+            .title(Span::styled(form_title, Style::default().fg(theme::highlight()))),
     );
     f.render_widget(help, chunks[6]);
 
@@ -1022,23 +1030,21 @@ fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
             let is_today = *date == Local::now().date_naive();
             let hours = dur.num_hours();
 
-            let dur_color = if hours >= 8 {
-                theme::DURATION_HIGH
-            } else if hours >= 4 {
-                theme::DURATION_MED
-            } else {
-                theme::DURATION_LOW
-            };
+            let dur_color = theme::duration_color(
+                hours,
+                theme::theme().day_duration_high_h,
+                theme::theme().day_duration_med_h,
+            );
 
             let (day_style, date_style) = if is_today {
                 (
-                    Style::default().fg(theme::HIGHLIGHT).bold(),
-                    Style::default().fg(theme::HIGHLIGHT),
+                    Style::default().fg(theme::highlight()).bold(),
+                    Style::default().fg(theme::highlight()),
                 )
             } else {
                 (
-                    Style::default().fg(theme::ACCENT),
-                    Style::default().fg(theme::TITLE),
+                    Style::default().fg(theme::accent()),
+                    Style::default().fg(theme::title()),
                 )
             };
 
@@ -1061,26 +1067,24 @@ fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::BORDER))
-            .title(Span::styled(" Daily Totals ", Style::default().fg(theme::TITLE))),
+            .border_style(Style::default().fg(theme::border()))
+            .title(Span::styled(" Daily Totals ", Style::default().fg(theme::title()))),
     );
     f.render_widget(table, area);
 }
 
 fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
     let hours = entry.duration().num_hours();
-    let dur_color = if hours >= 4 {
-        theme::DURATION_HIGH
-    } else if hours >= 2 {
-        theme::DURATION_MED
-    } else {
-        theme::DURATION_LOW
-    };
+    let dur_color = theme::duration_color(
+        hours,
+        theme::theme().entry_duration_high_h,
+        theme::theme().entry_duration_med_h,
+    );
 
     let status_style = if entry.is_active() {
-        Style::default().fg(theme::ACTIVE)
+        Style::default().fg(theme::active())
     } else {
-        Style::default().fg(theme::INACTIVE)
+        Style::default().fg(theme::inactive())
     };
 
     let row_style = if stripe {
@@ -1090,11 +1094,11 @@ fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
     };
 
     Row::new(vec![
-        Cell::from(entry.format_date()).style(Style::default().fg(theme::TITLE)),
-        Cell::from(entry.format_start_time()).style(Style::default().fg(theme::ACCENT)),
-        Cell::from(entry.format_end_time()).style(Style::default().fg(theme::INACTIVE)),
+        Cell::from(entry.format_date()).style(Style::default().fg(theme::title())),
+        Cell::from(entry.format_start_time()).style(Style::default().fg(theme::accent())),
+        Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive())),
         Cell::from(entry.description.clone()),
-        Cell::from(entry.format_tags()).style(Style::default().fg(theme::HIGHLIGHT)),
+        Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight())),
         Cell::from(entry.format_duration()).style(Style::default().fg(dur_color)),
         Cell::from(entry.status_icon()).style(status_style),
     ])
@@ -1109,16 +1113,16 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
     Row::new(vec![
         Cell::from(weekday).style(
             Style::default()
-                .fg(theme::HIGHLIGHT)
+                .fg(theme::highlight())
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from(""),
         Cell::from(""),
-        Cell::from(date_str).style(Style::default().fg(theme::TITLE)),
+        Cell::from(date_str).style(Style::default().fg(theme::title())),
         Cell::from(""),
         Cell::from(total_str).style(
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from(""),
@@ -1133,13 +1137,13 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|h| {
             Cell::from(h).style(
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             )
         });
     let header_row = Row::new(header_cells)
         .height(1)
-        .style(Style::default().bg(theme::HEADER_BG));
+        .style(Style::default().bg(theme::header_bg()));
 
     let entries = app.filtered_entries();
 
@@ -1217,10 +1221,10 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::BORDER))
-            .title(Span::styled(title, Style::default().fg(theme::TITLE))),
+            .border_style(Style::default().fg(theme::border()))
+            .title(Span::styled(title, Style::default().fg(theme::title()))),
     )
-    .row_highlight_style(Style::default().bg(theme::SELECTED_BG))
+    .row_highlight_style(Style::default().bg(theme::selected_bg()))
     .highlight_symbol(CURSOR_MARKER);
 
     let mut render_state = TableState::default().with_selected(visual_selected);

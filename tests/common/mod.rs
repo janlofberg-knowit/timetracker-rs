@@ -102,6 +102,13 @@ impl Case {
         self.marks.join("beats").join(key)
     }
 
+    /// Write a `config.toml` into the sandbox, at the path `config::load` reads.
+    pub fn write_config(&self, body: &str) {
+        let dir = self.home.join(".config/timetracker-rs");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), body).unwrap();
+    }
+
     /// Fabricate an open mark started at an absolute epoch.
     pub fn write_mark(&self, key: &str, start: i64) {
         fs::write(self.mark_file(key), format!("{start}\n")).unwrap();
