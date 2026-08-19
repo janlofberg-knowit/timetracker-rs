@@ -88,12 +88,13 @@ tt report --project timetracker-rs --json
 
 ---
 
-### `tt list`
+### `tt list [-n <limit>]`
 
-Show the 20 most recent entries across all days.
+Show the most recent entries across all days (defaults to the last 20).
 
 ```sh
 tt list
+tt list -n 50
 ```
 
 ---
@@ -149,3 +150,54 @@ Tags can be added to any entry in two ways:
 2. **Explicit flag** with `tt log --tags tagA,tagB,tagC`
 
 Both methods can be combined and duplicates are automatically removed.
+
+---
+
+## Data storage
+
+Entries are stored as JSON in your OS's standard data directory (via the `directories` crate), e.g. `~/.local/share/tt/data.json` on Linux or `%APPDATA%\tt\data\data.json` on Windows.
+
+## Configuration
+
+Theme colors, icons, duration-color thresholds, and the default `tt list` limit can be overridden with a TOML config file at:
+
+- Linux/macOS: `~/.config/timetracker-rs/config.toml`
+- Windows: `%APPDATA%\timetracker-rs\config.toml`
+
+All fields are optional; anything left unset falls back to the built-in default.
+
+```toml
+# Optionally pull in settings from another file first; this file's own
+# values (below) then override anything the included file sets.
+include = "~/dotfiles/timetracker-theme.toml"
+
+[theme]
+accent = "#8ab4f8"
+active = "#81c78a"
+inactive = "#909090"
+header_bg = "#303030"
+selected_bg = "#424242"
+highlight = "#ffd54f"
+duration_high = "#ef9a9a"
+duration_med = "#ffe082"
+duration_low = "#a5d6a7"
+border = "#585858"
+title = "#bababa"
+
+[icons]
+active = "▶️"
+stopped = "⏹️"
+logged = "📝"
+warning = "⚠️"
+calendar = "📅"
+list = "📋"
+
+[duration]
+entry_high_hours = 4   # single-entry duration coloring
+entry_med_hours = 2
+day_high_hours = 8     # daily-total duration coloring (week view)
+day_med_hours = 4
+
+[list]
+default_limit = 20     # default for `tt list` when -n isn't passed
+```

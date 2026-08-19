@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod agent;
 mod cli;
+mod config;
 mod duration;
 mod icons;
 mod marks;
@@ -66,7 +67,7 @@ fn main() -> Result<()> {
             project,
             json,
         } => cli::report(all, week, since, until, project, json),
-        Commands::List => cli::list(),
+        Commands::List { limit } => cli::list(limit),
         Commands::Tui => tui::run_tui(),
         Commands::Status => cli::status(),
         Commands::Active => cli::active(),

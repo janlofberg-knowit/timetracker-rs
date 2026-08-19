@@ -2,11 +2,12 @@ use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
 
+use crate::config;
 use crate::duration;
 use crate::icons;
 use crate::report;
 use crate::storage::{load_data, with_data};
-use crate::tracker::{IdleInterval, parse_tags};
+use crate::tracker::{IdleInterval, format_tags, parse_tags};
 
 #[derive(Parser)]
 #[command(name = "tt", about = "Simple time tracking CLI")]
@@ -57,7 +58,12 @@ pub enum Commands {
     /// Show all entries for today
     Today,
     /// Show all entries
-    List,
+    List {
+        /// Maximum number of entries to show (defaults to the `list.default_limit`
+        /// config value, or 20 if unset)
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+    },
     /// Open interactive TUI
     Tui,
     /// Show current status
@@ -198,6 +204,16 @@ fn parse_idle(value: &str) -> Result<IdleInterval, String> {
     Ok(IdleInterval::new(start, end))
 }
 
+/// Bracketed, space-prefixed tag display for println! output, e.g. " [#a #b]",
+/// or "" when there are no tags.
+fn tags_display(tags: &[String]) -> String {
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", format_tags(tags))
+    }
+}
+
 /// Render a project for a single-line listing: ` (demo)`, or nothing when unset.
 /// The project is a field, never a tag, so it prints separately from the tags.
 fn project_display(project: Option<&String>) -> String {
@@ -238,18 +254,12 @@ pub fn start(description: Vec<String>, project: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    let tags_display = if tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "))
-    };
-
     println!(
         "{}  Started: \"{}\"{}{} at {}",
         icons::ACTIVE,
         desc,
         project_display(project.as_ref()),
-        tags_display,
+        tags_display(&tags),
         start_time.format("%H:%M:%S")
     );
     Ok(())
@@ -328,18 +338,12 @@ pub fn log(
         Ok(dur)
     })?;
 
-    let tags_display = if tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" "))
-    };
-
     println!(
         "{} Logged: \"{}\"{}{} - Duration: {}",
         icons::LOGGED,
         desc,
         project_display(project.as_ref()),
-        tags_display,
+        tags_display(&tags),
         duration::format(stored)
     );
     Ok(())
@@ -354,7 +358,7 @@ pub fn today() -> Result<()> {
         return Ok(());
     }
 
-    println!("{} Today's entries:\n", icons::CALENDAR);
+    println!("{} Today's entries:\n", icons::calendar());
     for entry in &today_entries {
         let status = if entry.is_active() { entry.status_icon() } else { "  " };
         let tags_display = if entry.tags.is_empty() {
@@ -376,7 +380,8 @@ pub fn today() -> Result<()> {
     Ok(())
 }
 
-pub fn list() -> Result<()> {
+pub fn list(limit: Option<usize>) -> Result<()> {
+    let limit = limit.unwrap_or_else(|| config::load().list.default_limit.unwrap_or(20));
     let data = load_data()?;
 
     if data.entries.is_empty() {
@@ -384,8 +389,8 @@ pub fn list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{} All entries:\n", icons::LIST);
-    for entry in data.entries.iter().rev().take(20) {
+    println!("{} All entries:\n", icons::list());
+    for entry in data.entries.iter().rev().take(limit) {
         let status = if entry.is_active() { entry.status_icon() } else { "  " };
         let tags_display = if entry.tags.is_empty() {
             String::new()

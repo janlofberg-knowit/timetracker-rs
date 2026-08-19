@@ -93,6 +93,11 @@ pub fn migrate(data: &mut TimeData) {
     data.schema_version = 1;
 }
 
+/// Format tags for display (with # prefix), e.g. "#backend #bug"
+pub fn format_tags(tags: &[String]) -> String {
+    tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ")
+}
+
 impl TimeEntry {
     pub fn duration(&self) -> Duration {
         let end = self.end_time.unwrap_or_else(Local::now);
@@ -126,7 +131,7 @@ impl TimeEntry {
     /// Returns the status icon for this entry (active or empty)
     pub fn status_icon(&self) -> &'static str {
         if self.is_active() {
-            icons::ACTIVE
+            icons::active()
         } else {
             ""
         }
@@ -134,7 +139,7 @@ impl TimeEntry {
 
     /// Format tags for display (with # prefix)
     pub fn format_tags(&self) -> String {
-        self.tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ")
+        format_tags(&self.tags)
     }
 
     /// Check if entry has a specific tag (case-insensitive)
