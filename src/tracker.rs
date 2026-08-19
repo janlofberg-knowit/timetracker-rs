@@ -16,15 +16,11 @@ pub struct TimeEntry {
     pub start_time: DateTime<Local>,
     pub end_time: Option<DateTime<Local>>,
     /// Silent stretches inside this entry's span, as `tt log --idle` recorded them.
-    ///
-    /// `#[serde(default)]` and no schema bump: absent means empty means the
-    /// duration is unchanged, so there is nothing to backfill.
     #[serde(default)]
     pub idle: Vec<IdleInterval>,
 }
 
-/// One silent stretch inside an entry — a heartbeat gap `tt-safe` already judged
-/// too long (#12), recorded so it can be shown and trimmed away later.
+/// One silent stretch inside an entry.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct IdleInterval {
     pub start: DateTime<Local>,
@@ -40,8 +36,7 @@ impl IdleInterval {
         self.end.signed_duration_since(self.start)
     }
 
-    /// `09:50 – 10:20 (30m)`, as the detail popover lists it — clock times, since
-    /// the epoch seconds the interval was recorded from are a wire format.
+    /// `09:50 – 10:20 (30m)`, as the detail popover lists it.
     pub fn format_span(&self) -> String {
         format!(
             "{} – {} ({})",
@@ -69,12 +64,8 @@ pub fn parse_tags(text: &str) -> (String, Vec<String>) {
     (clean_parts.join(" "), tags)
 }
 
-/// Infer the project for an entry from its tags.
-///
-/// `parse_tags` harvests `#…` words from anywhere in the description, so the first
-/// tag is not reliably the project. The project is the tag `X` for which some other
-/// tag starts with `X/` (the `#project` / `#project/issue` pair the wrapper emits);
-/// failing that, the first tag; with no tags, `None`.
+/// Infer the project from an entry's tags: the tag `X` for which some other tag
+/// starts with `X/`; failing that, the first tag; with no tags, `None`.
 pub fn infer_project(tags: &[String]) -> Option<String> {
     let with_child = tags.iter().enumerate().find(|(i, candidate)| {
         let prefix = format!("{}/", candidate);
@@ -89,8 +80,7 @@ pub fn infer_project(tags: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// One-time migration: infer `project` for entries that lack one, then stamp the
-/// schema version. A no-op once the store is at version 1 or above.
+/// One-time migration: infer any missing `project`, then stamp schema version 1.
 pub fn migrate(data: &mut TimeData) {
     if data.schema_version >= 1 {
         return;
@@ -158,10 +148,8 @@ impl TimeEntry {
         tags.iter().any(|t| self.has_tag(t))
     }
 
-    /// Check if the entry's project is any of the given ones (case-insensitive).
-    ///
-    /// An entry with no project matches nothing: absence is not a value anyone can
-    /// select, so it can never be one of `projects`.
+    /// Whether the entry's project is one of `projects` (case-insensitive). An
+    /// entry with no project matches nothing.
     pub fn has_any_project(&self, projects: &[String]) -> bool {
         let Some(project) = self
             .project
@@ -175,12 +163,8 @@ impl TimeEntry {
         projects.iter().any(|p| p.trim().to_lowercase() == project)
     }
 
-    /// Everything a row or the detail popover can show, lower-cased and joined —
-    /// the haystack `/` searches.
-    ///
-    /// The owner asked to "search on anything", so this is built from the same
-    /// formatters the table renders with: a field the UI can show is a field the
-    /// search reaches, and the two cannot drift apart.
+    /// The haystack `/` searches: everything a row or the popover can show, built
+    /// from the same formatters the table renders with. Keep the two in step.
     pub fn search_haystack(&self) -> String {
         [
             self.id.to_string(),
@@ -202,27 +186,17 @@ impl TimeEntry {
     }
 
     /// The spans this entry would be left as if its idle stretches were trimmed
-    /// away, earliest first — and an empty vec whenever nothing would change.
+    /// away, earliest first. Pure, so the trim prompt can state the outcome before
+    /// [`TimeData::split_at_idle`](TimeData::split_at_idle) writes exactly these
+    /// spans; do not copy the arithmetic elsewhere.
     ///
-    /// Pure and read-only, so it can be asked *before* the mutation: the trim
-    /// confirmation prompt states its outcome from this, and
-    /// [`TimeData::split_at_idle`](TimeData::split_at_idle) then writes exactly
-    /// these spans. One definition of what a trim does (#35 decision 1) — a second
-    /// copy of this arithmetic in the renderer is what this method exists to
-    /// prevent.
+    /// Each interval is clamped to the entry's span and dropped if that empties it;
+    /// the rest are sorted and overlapping or touching neighbours merged, so such a
+    /// pair cuts **one** hole. The result is the complement of those holes, so a
+    /// hole at an endpoint contributes nothing.
     ///
-    /// Each stored interval is clamped to the entry's own span and dropped if that
-    /// leaves it empty; what remains is sorted and overlapping neighbours are
-    /// merged, so an interval reaching past an endpoint or overlapping the next one
-    /// cuts **one** hole instead of leaving a zero-length piece wedged between two
-    /// of them. The spans are then the complement of those holes within the span, so
-    /// a hole touching an endpoint contributes nothing and zero-length pieces fall
-    /// out rather than being special-cased.
-    ///
-    /// Empty means "no trim": no `end_time` (a running entry has no end to split
-    /// against, and only `tt log` records idle), no idle left after clamping, or
-    /// idle covering the whole span — in the last case the entry is left as it is,
-    /// since deleting what the owner logged is not a trim.
+    /// Empty means no trim: no `end_time`, nothing left after clamping, or idle
+    /// covering the whole span, which leaves the entry as it is.
     pub fn trim_spans(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
         let span_start = self.start_time;
         let Some(span_end) = self.end_time else {
@@ -269,7 +243,7 @@ impl TimeEntry {
 pub struct TimeData {
     pub entries: Vec<TimeEntry>,
     pub next_id: u64,
-    /// Store schema version; legacy files read as 0 and are migrated to 1
+    /// Store schema version; an unversioned file reads as 0 and migrates to 1
     #[serde(default)]
     pub schema_version: u32,
 }
@@ -406,34 +380,15 @@ impl TimeData {
         self.entries.iter().find(|e| e.id == id)
     }
 
-    /// Split the entry with `id` on **every** idle interval it carries, so the
-    /// silent stretches drop out of the timeline.
+    /// Split the entry with `id` on every idle interval it carries — the store
+    /// mechanic behind the user-facing trim. Returns the pieces' ids, earliest
+    /// first, or an empty vec when nothing changed.
     ///
-    /// Takes no intervals — it reads the entry's stored `idle`, which is the reason
-    /// that field exists. It splits on all of them because threshold policy lives
-    /// entirely in `tt-safe`, which only ever records gaps it has already judged too
-    /// long (#12); `tt` holds no opinion about what counts as a gap.
+    /// The earliest piece keeps the original id in place, later pieces take fresh
+    /// ids from `next_id`, and every piece inherits description, project and tags.
     ///
-    /// The store mechanic is a **split** while the user-facing verb is **trim**
-    /// (`tt log --trim`, the popover's `[t]`). That is a deliberate distinction, not
-    /// an inconsistency: one entry becomes two or more and every endpoint stays
-    /// true, which "trim" would misdescribe.
-    ///
-    /// The first (earliest) piece keeps the original id via an in-place update and
-    /// later pieces take fresh ids from `next_id`, so a caller holding the id still
-    /// has something to point at afterwards. Pieces inherit description, project and
-    /// tags, and keep only the idle intervals falling inside them — after a split on
-    /// every interval, none.
-    ///
-    /// Pure over `&mut self` with no I/O: the caller owns the store transaction.
-    /// Returns the resulting pieces' ids, earliest first, or an empty vec when
-    /// nothing changed.
-    ///
-    /// The *pieces* are not computed here: [`TimeEntry::trim_spans`] owns that
-    /// arithmetic — the clamp, the merge, the complement, the running-entry guard and
-    /// every "nothing would change" case — so the trim confirmation can state the
-    /// outcome from the same definition this writes. This method is the mutation and
-    /// the id policy only.
+    /// [`TimeEntry::trim_spans`] owns the arithmetic; this is the mutation and the
+    /// id policy only, pure over `&mut self` so the caller owns the transaction.
     pub fn split_at_idle(&mut self, id: u64) -> Vec<u64> {
         let Some(entry) = self.get_entry(id) else {
             return Vec::new();
@@ -560,8 +515,7 @@ mod tests {
         assert_eq!(data.entries[3].project, None);
     }
 
-    /// A fixed wall clock, so every assertion below can be derived from the
-    /// fixture's own offsets rather than from a literal.
+    /// A fixed wall clock, so assertions read as offsets rather than literals.
     fn base() -> DateTime<Local> {
         NaiveDate::from_ymd_opt(2026, 8, 18)
             .unwrap()
@@ -571,8 +525,7 @@ mod tests {
             .unwrap()
     }
 
-    /// One logged entry of `span_minutes`, carrying idle intervals given as
-    /// minute offsets from its start.
+    /// One logged entry of `span_minutes`, with idle as minute offsets from start.
     fn logged_with_idle(span_minutes: i64, gaps: &[(i64, i64)]) -> TimeData {
         let start = base();
         TimeData {
@@ -625,7 +578,6 @@ mod tests {
         assert_eq!(ids[1], 8, "the later piece takes the next id");
         assert_eq!(data.next_id, 9);
         assert_eq!(spans(&data), vec![(0, 50), (50 + 30, 120)]);
-        // Every piece inherits the entry's identity and carries no idle of its own.
         for entry in &data.entries {
             assert_eq!(entry.description, "logged span");
             assert_eq!(entry.project.as_deref(), Some("tt"));
@@ -701,8 +653,7 @@ mod tests {
         assert_eq!(after, original - idle_total);
     }
 
-    /// `trim_spans` as minute offsets from `base`, so a case reads as the shape it
-    /// is testing rather than as timestamps.
+    /// `trim_spans` as minute offsets from `base`.
     fn trim_offsets(span_minutes: i64, gaps: &[(i64, i64)]) -> Vec<(i64, i64)> {
         logged_with_idle(span_minutes, gaps).entries[0]
             .trim_spans()
@@ -716,20 +667,14 @@ mod tests {
             .collect()
     }
 
-    /// The helper the trim confirmation reads before anything is written, and the
-    /// one `split_at_idle` then writes — so these cases pin the shared definition of
-    /// what a trim does, not a second copy of it.
     #[test]
     fn trim_spans_cuts_the_span_at_every_hole() {
-        // One hole in the middle: two spans.
         assert_eq!(trim_offsets(120, &[(50, 80)]), vec![(0, 50), (80, 120)]);
-        // Two holes: three spans.
         assert_eq!(
             trim_offsets(180, &[(30, 45), (100, 130)]),
             vec![(0, 30), (45, 100), (130, 180)]
         );
-        // Unsorted input is sorted first, so the order of the stored intervals
-        // cannot change the answer.
+        // Unsorted input is sorted first, so stored order cannot change the answer.
         assert_eq!(
             trim_offsets(180, &[(100, 130), (30, 45)]),
             vec![(0, 30), (45, 100), (130, 180)]
@@ -742,8 +687,7 @@ mod tests {
         assert_eq!(trim_offsets(90, &[(70, 90)]), vec![(0, 70)]);
     }
 
-    /// Overlapping and touching neighbours merge into one hole, so the complement
-    /// never contains a zero-length piece wedged between two of them.
+    /// Overlapping and touching neighbours merge into one hole.
     #[test]
     fn trim_spans_merges_overlapping_intervals_into_one_hole() {
         assert_eq!(
@@ -761,8 +705,7 @@ mod tests {
         );
     }
 
-    /// Empty means "no trim", and it is the answer to every case where nothing
-    /// would change — so a caller has one thing to check.
+    /// Empty is the answer to every case where nothing would change.
     #[test]
     fn trim_spans_is_empty_when_nothing_would_change() {
         assert!(trim_offsets(90, &[]).is_empty(), "no idle at all");
@@ -787,7 +730,7 @@ mod tests {
             "entries": [
                 {
                     "id": 1,
-                    "description": "legacy entry",
+                    "description": "an older entry",
                     "project": "tt",
                     "tags": ["tt", "impl"],
                     "start_time": "2026-08-18T09:00:00+02:00",
@@ -805,8 +748,7 @@ mod tests {
         migrate(&mut data);
         assert_eq!(data.schema_version, 1, "no version bump, no migration");
 
-        // …and round-trips: the new field is written, and reading it back changes
-        // nothing about the entry.
+        // …and round-trips unchanged.
         let round_tripped: TimeData =
             serde_json::from_str(&serde_json::to_string(&data).unwrap()).unwrap();
         assert!(round_tripped.entries[0].idle.is_empty());

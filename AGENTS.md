@@ -3,9 +3,9 @@
 For any coding agent working in a repo where the operator tracks time with `tt`.
 Tool-agnostic — this needs a shell and nothing else.
 
-Everything here is `tt` itself. There is no wrapper to install and no companion
-script: `cargo install --git https://github.com/linus-skold/timetracker-rs` and the
-whole workflow is on your `PATH`.
+Everything here is `tt` itself. Run
+`cargo install --git https://github.com/linus-skold/timetracker-rs` and the whole
+workflow is on your `PATH`.
 
 ## Rules
 

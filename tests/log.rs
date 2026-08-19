@@ -1,15 +1,10 @@
-//! `tt log` end to end, driving the real binary in a sandbox.
-//!
-//! `cli::log`'s own unit tests cover the store's shape after a split. What only an
-//! end-to-end run can check is the **message**, which for a long time reported the
-//! span it was asked for rather than the span it stored (#58, wart 1). The store
-//! and stdout are therefore asserted against each other here, never separately.
+//! `tt log` end to end, in a sandbox. The store and stdout are asserted against
+//! each other, never separately: the message states the span stored, not requested.
 
 mod common;
 
 use common::Case;
 
-/// The `- Duration:` tail of a successful log, in whole minutes.
 fn printed_minutes(stdout: &str) -> i64 {
     let tail = stdout
         .split("- Duration: ")
@@ -23,9 +18,7 @@ fn printed_minutes(stdout: &str) -> i64 {
 #[test]
 fn trim_reports_the_span_it_stored_and_not_the_span_it_was_asked_for() {
     let case = Case::new("log-trim-message");
-    // A one-hour entry with a 20-minute hole strictly inside it, so the trim leaves
-    // two pieces and 40 minutes. Anchored on the process's own clock: `tt log`
-    // back-dates from now, so the interval has to be expressed relative to now too.
+    // `tt log` back-dates from its own `now`, so the hole is expressed relative to now.
     let now = common::now();
     let hole = (now - 40 * 60, now - 20 * 60);
 
@@ -43,10 +36,8 @@ fn trim_reports_the_span_it_stored_and_not_the_span_it_was_asked_for() {
     let entries = case.store().entries;
     assert_eq!(entries.len(), 2, "the hole is interior, so it cuts in two");
     let stored: i64 = entries.iter().map(|entry| entry.seconds()).sum();
-    // One second of slack per piece: the entry is back-dated from the process's own
-    // `now`, a moment after this test read the clock, so each piece carries a
-    // fraction of a second that `num_seconds` truncates away. The pieces' *sum* is
-    // exact — it is the read-back that rounds.
+    // One second of slack per piece: each is back-dated a moment after this test read
+    // the clock, so `num_seconds` truncates a fraction away. The *sum* is exact.
     assert!(
         (40 * 60 - entries.len() as i64..=40 * 60).contains(&stored),
         "60 minutes less the 20-minute hole, got {stored}s: {entries:?}"
@@ -61,9 +52,6 @@ fn trim_reports_the_span_it_stored_and_not_the_span_it_was_asked_for() {
 
 #[test]
 fn a_plain_log_still_reports_the_span_it_was_asked_for() {
-    // The other half of the same behaviour: with nothing to cut, "what was stored"
-    // and "what was asked for" are the same number, and the common path is
-    // unchanged.
     let case = Case::new("log-plain-message");
 
     let run = case.run_bare(&["log", "-d", "no holes here", "-t", "45m"]);
@@ -74,8 +62,7 @@ fn a_plain_log_still_reports_the_span_it_was_asked_for() {
 
 #[test]
 fn idle_covering_the_whole_span_leaves_the_entry_and_reports_it_whole() {
-    // `trim_spans` declines rather than deleting what the owner logged, so there is
-    // nothing to subtract and the reported figure must not drift to zero.
+    // `trim_spans` declines rather than deleting the entry, so nothing is subtracted.
     let case = Case::new("log-trim-declines");
     let now = common::now();
 
