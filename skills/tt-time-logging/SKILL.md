@@ -12,6 +12,10 @@ Everything here is `tt` itself. Run
 `cargo install --git https://github.com/linus-skold/timetracker-rs` and the whole
 workflow is on your `PATH`.
 
+This file mirrors `AGENTS.md` in the
+[timetracker-rs](https://github.com/linus-skold/timetracker-rs) source repo; the two
+are kept in sync when either changes.
+
 ## Rules
 
 1. **Only one writer.** If you orchestrate subagents, only the orchestrator logs.
