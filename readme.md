@@ -205,7 +205,30 @@ default_limit = 20     # default for `tt list` when -n isn't passed
 [agent]
 max_gap_minutes = 45        # silence between heartbeats that `tt agent end` refuses on
 max_unvouched_minutes = 120 # how long a phase with no heartbeat at all may run
+
+[layout]
+show_projects = true   # whether the Projects, Agent, Summary, and Tags panels
+show_agents = false    # start open. Their toggle keys (P/A/S/T) always work
+show_summary = false   # regardless of these defaults.
+show_tags = true
+
+[general]
+onboarding = true         # set to false to permanently silence the first-run popup
+onboarding_version = 1    # bumped by the app once the popup has been answered
 ```
+
+`[layout]` and `[general].onboarding_version` are written automatically the
+first time the TUI runs and its onboarding popup is answered (`s` to move on,
+`Esc` to skip); neither needs to be hand-edited, though both can be.
+Onboarding's second screen offers to run
+`npx skills add linus-skold/timetracker-rs`, installing the `AGENTS.md`
+time-logging contract as a skill for whatever coding agent you use.
+
+Onboarding runs again whenever `onboarding_version` in the config file is
+behind the version the binary expects — a release that adds a worthwhile new
+step bumps it, and everyone who has not set `onboarding = false` sees the
+popup once more. Set `onboarding = false` yourself to opt out of that
+permanently, regardless of future bumps.
 
 `TT_MAX_GAP_MINUTES` and `TT_MAX_UNVOUCHED_MINUTES` override the two `[agent]`
 settings for a single invocation.

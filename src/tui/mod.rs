@@ -17,12 +17,14 @@ mod search;
 mod navigation;
 mod entry_form;
 mod marks_surface;
+mod onboarding;
 mod panes;
 mod summary;
 mod render;
 
 pub use types::{
-    ConfirmAction, Focus, InputField, InputMode, Pane, PendingConfirm, SortOrder, ViewMode,
+    ConfirmAction, Focus, InputField, InputMode, OnboardingStep, Pane, PendingConfirm, SortOrder,
+    ViewMode,
 };
 
 pub(crate) struct App {
@@ -65,12 +67,46 @@ pub(crate) struct App {
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
     pub(crate) tag_cursor: usize,
+    /// Which screen of `InputMode::Onboarding` is showing.
+    pub(crate) onboarding_step: OnboardingStep,
+    /// The onboarding popup's checklist cursor and checked state, in
+    /// `LayoutSurface::ALL` order. Unused once `InputMode::Onboarding` is left.
+    pub(crate) onboarding_cursor: usize,
+    pub(crate) onboarding_checked: [bool; 4],
+    /// One-shot: the run loop is what can suspend the terminal to run a
+    /// child process, so onboarding just requests it here.
+    pub(crate) request_skill_install: bool,
+    /// Set when `y` was pressed but `npx` is not on `PATH`, so the popup can
+    /// say so in place instead of suspending for a command sure to fail.
+    pub(crate) onboarding_skill_error: Option<String>,
 }
 
 impl App {
+    /// Used directly only by tests — never onboards. A real run goes through
+    /// `for_interactive_run` instead.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn new() -> Result<Self> {
+        Self::from_config(&crate::config::load())
+    }
+
+    /// The blessed constructor for a real run: any future production entry
+    /// point should build its `App` through here, so onboarding isn't
+    /// something each call site has to remember to bolt on.
+    fn for_interactive_run() -> Result<Self> {
+        let config = crate::config::load();
+        let mut app = Self::from_config(&config)?;
+        if crate::config::should_onboard(&config.general) {
+            app.input_mode = InputMode::Onboarding;
+        }
+        Ok(app)
+    }
+
+    /// The env-free half of `new`, so callers can load the config once and
+    /// reuse it (e.g. for `should_onboard`) instead of reading it twice.
+    fn from_config(config: &crate::config::Config) -> Result<Self> {
         // Stamp before loading — see `App::reload`.
         let store_stamp = crate::storage::store_stamp();
+        let layout = &config.layout;
         let mut app = Self {
             data: load_data()?,
             store_stamp,
@@ -95,13 +131,25 @@ impl App {
             pending_confirm: None,
             sort_order: SortOrder::NewestFirst,
             cursor_pos: 0,
-            show_projects: false,
-            show_tags: false,
-            show_marks: false,
-            show_summary: false,
+            show_projects: layout.show_projects.unwrap_or(false),
+            show_tags: layout.show_tags.unwrap_or(false),
+            show_marks: layout.show_agents.unwrap_or(false),
+            show_summary: layout.show_summary.unwrap_or(false),
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
+            onboarding_step: OnboardingStep::Layout,
+            onboarding_cursor: 0,
+            // Seeded from what's already saved, so re-onboarding shows real
+            // settings; an unsaved field falls back to a recommended default.
+            onboarding_checked: [
+                layout.show_projects.unwrap_or(true),
+                layout.show_agents.unwrap_or(false),
+                layout.show_summary.unwrap_or(false),
+                layout.show_tags.unwrap_or(true),
+            ],
+            request_skill_install: false,
+            onboarding_skill_error: None,
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
@@ -121,6 +169,29 @@ impl App {
         self.store_stamp = crate::storage::store_stamp();
         Ok(result)
     }
+}
+
+/// `npx` on Windows is a `.cmd` shim, not a directly-executable binary.
+#[cfg(windows)]
+fn npx_command() -> &'static str {
+    "npx.cmd"
+}
+
+#[cfg(not(windows))]
+fn npx_command() -> &'static str {
+    "npx"
+}
+
+/// A cheap existence check, so a missing `npx` is reported in place rather
+/// than by suspending the terminal for a command certain to fail.
+fn npx_available() -> bool {
+    std::process::Command::new(npx_command())
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -143,9 +214,27 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
+/// Hands the real terminal to `run` (an interactive child command), then
+/// restores our screen and forces a redraw over its leftover output.
+fn with_suspended_terminal(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    run: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    restore_terminal(terminal)?;
+    let result = run();
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
+    terminal.clear()?;
+    result
+}
+
 pub fn run_tui() -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let mut app = App::new()?;
+    let mut app = App::for_interactive_run()?;
 
     loop {
         terminal.draw(|f| render::ui(f, &mut app))?;
@@ -205,6 +294,33 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('o') => app.toggle_sort_order(),
                             KeyCode::Char('?') => app.input_mode = InputMode::Help,
                             _ => {}
+                        },
+                        InputMode::Onboarding => match app.onboarding_step {
+                            OnboardingStep::Layout => match key.code {
+                                KeyCode::Char('j') | KeyCode::Down => app.onboarding_move(1),
+                                KeyCode::Char('k') | KeyCode::Up => app.onboarding_move(-1),
+                                KeyCode::Char(' ') | KeyCode::Enter => app.onboarding_toggle(),
+                                KeyCode::Char('s') => app.onboarding_apply_layout(),
+                                KeyCode::Esc => app.onboarding_skip()?,
+                                _ => {}
+                            },
+                            OnboardingStep::Skill => match key.code {
+                                KeyCode::Char('y') => {
+                                    if npx_available() {
+                                        app.onboarding_skill_error = None;
+                                        app.request_skill_install = true;
+                                    } else {
+                                        app.onboarding_skill_error = Some(
+                                            "npx not found on PATH — install Node.js, or run \
+                                             this later yourself; see AGENTS.md."
+                                                .to_string(),
+                                        );
+                                    }
+                                }
+                                KeyCode::Char('n') | KeyCode::Enter => app.onboarding_finish()?,
+                                KeyCode::Esc => app.onboarding_skip()?,
+                                _ => {}
+                            },
                         },
                         InputMode::AddingEntry => match key.code {
                             KeyCode::Esc => app.cancel_adding(),
@@ -303,6 +419,26 @@ pub fn run_tui() -> Result<()> {
                     }
                 }
             }
+        }
+
+        if app.request_skill_install {
+            app.request_skill_install = false;
+            with_suspended_terminal(&mut terminal, || {
+                println!("Running `npx skills add linus-skold/timetracker-rs`...\n");
+                let status = std::process::Command::new(npx_command())
+                    .args(["skills", "add", "linus-skold/timetracker-rs"])
+                    .status();
+                match status {
+                    Ok(status) if status.success() => println!("\nDone."),
+                    Ok(status) => println!("\n`npx` exited with {status}."),
+                    Err(e) => println!("\nCouldn't run npx: {e}"),
+                }
+                println!("Press Enter to return to tt...");
+                let mut discard = String::new();
+                io::stdin().read_line(&mut discard).ok();
+                Ok(())
+            })?;
+            app.onboarding_finish()?;
         }
 
         // The poll above is the loop's clock, key or timeout alike.

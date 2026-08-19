@@ -125,9 +125,8 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Point `HOME`, `TT_DATA_DIR` and `TT_MARK_DIR` at a fresh scratch directory
-/// named after `name`, and return it. **Tests must never touch the real store or
-/// marks** — live agent sessions write both. Callers hold [`env_guard`].
+/// Points `HOME`, `TT_DATA_DIR`, `TT_MARK_DIR` and `TT_CONFIG_FILE` at a fresh
+/// scratch directory named after `name`. Callers hold [`env_guard`].
 #[cfg(test)]
 pub(crate) fn env_sandbox(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tt-sandbox-{name}"));
@@ -136,6 +135,8 @@ pub(crate) fn env_sandbox(name: &str) -> PathBuf {
     unsafe { std::env::set_var("HOME", &dir) };
     unsafe { std::env::set_var("TT_DATA_DIR", dir.join("store")) };
     unsafe { std::env::set_var("TT_MARK_DIR", dir.join("marks")) };
+    // Left unwritten: config::load() then falls back to defaults.
+    unsafe { std::env::set_var("TT_CONFIG_FILE", dir.join("config.toml")) };
     let path = get_data_path().unwrap();
     assert!(
         path.starts_with(&dir),

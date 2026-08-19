@@ -8,7 +8,7 @@
 /// then layered on top of it, so a local file can selectively override a
 /// shared/base config kept elsewhere.
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
@@ -22,6 +22,8 @@ struct RawConfig {
     duration: Option<DurationConfig>,
     list: Option<ListConfig>,
     agent: Option<AgentConfig>,
+    layout: Option<LayoutConfig>,
+    general: Option<GeneralConfig>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -69,6 +71,29 @@ pub struct AgentConfig {
     pub max_unvouched_minutes: Option<i64>,
 }
 
+/// Which collapsible TUI surfaces start open, independent of whether
+/// onboarding has run — see [`GeneralConfig`].
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct LayoutConfig {
+    pub show_projects: Option<bool>,
+    pub show_agents: Option<bool>,
+    pub show_summary: Option<bool>,
+    pub show_tags: Option<bool>,
+}
+
+/// Cross-cutting settings. `onboarding = false` permanently silences the
+/// first-run popup; otherwise it reruns whenever `onboarding_version` is
+/// behind [`ONBOARDING_VERSION`].
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    pub onboarding: Option<bool>,
+    pub onboarding_version: Option<u32>,
+}
+
+/// Bump when onboarding gains something worth re-showing; everyone who
+/// hasn't opted out sees the popup again on their next launch.
+pub const ONBOARDING_VERSION: u32 = 1;
+
 /// Fully-resolved config (after merging any `include` chain).
 #[derive(Debug, Default, Clone)]
 pub struct Config {
@@ -77,6 +102,8 @@ pub struct Config {
     pub duration: DurationConfig,
     pub list: ListConfig,
     pub agent: AgentConfig,
+    pub layout: LayoutConfig,
+    pub general: GeneralConfig,
 }
 
 /// Loads the user's config file, if any. Missing file -> defaults. A
@@ -97,6 +124,8 @@ pub fn load() -> Config {
             duration: raw.duration.unwrap_or_default(),
             list: raw.list.unwrap_or_default(),
             agent: raw.agent.unwrap_or_default(),
+            layout: raw.layout.unwrap_or_default(),
+            general: raw.general.unwrap_or_default(),
         },
         Err(e) => {
             eprintln!("Warning: failed to load config from {}: {e:#}", path.display());
@@ -181,6 +210,8 @@ fn merge_raw(base: RawConfig, overlay: RawConfig) -> RawConfig {
         duration: merge_opt(base.duration, overlay.duration, merge_duration),
         list: merge_opt(base.list, overlay.list, merge_list),
         agent: merge_opt(base.agent, overlay.agent, merge_agent),
+        layout: merge_opt(base.layout, overlay.layout, merge_layout),
+        general: merge_opt(base.general, overlay.general, merge_general),
     }
 }
 
@@ -243,6 +274,111 @@ fn merge_agent(b: AgentConfig, o: AgentConfig) -> AgentConfig {
     }
 }
 
+fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
+    LayoutConfig {
+        show_projects: o.show_projects.or(b.show_projects),
+        show_agents: o.show_agents.or(b.show_agents),
+        show_summary: o.show_summary.or(b.show_summary),
+        show_tags: o.show_tags.or(b.show_tags),
+    }
+}
+
+fn merge_general(b: GeneralConfig, o: GeneralConfig) -> GeneralConfig {
+    GeneralConfig {
+        onboarding: o.onboarding.or(b.onboarding),
+        onboarding_version: o.onboarding_version.or(b.onboarding_version),
+    }
+}
+
+/// `onboarding = false` always wins; otherwise reruns when behind
+/// [`ONBOARDING_VERSION`].
+pub fn should_onboard(general: &GeneralConfig) -> bool {
+    if general.onboarding == Some(false) {
+        return false;
+    }
+    general.onboarding_version.unwrap_or(0) < ONBOARDING_VERSION
+}
+
+/// Persists `[layout]` (replaced wholesale) and stamps `[general]`'s
+/// `onboarding_version` (only that key touched, so a hand-set `onboarding =
+/// false` survives); other sections pass through untouched. A parse failure
+/// warns and starts fresh rather than erroring, since an `Err` here would
+/// skip the TUI's terminal restore on the way out.
+pub fn save_onboarding(layout: &LayoutConfig) -> Result<()> {
+    let Some(path) = config_path() else {
+        anyhow::bail!("no config path available (no home/APPDATA directory found)");
+    };
+
+    let mut doc: toml::Value = if path.exists() {
+        let text = fs::read_to_string(&path).with_context(|| format!("reading config file {}", path.display()))?;
+        match toml::from_str(&text) {
+            Ok(doc) => doc,
+            Err(e) => {
+                eprintln!(
+                    "Warning: config file {} failed to parse while saving onboarding's answer \
+                     ({e:#}); other sections in it will be lost.",
+                    path.display()
+                );
+                toml::Value::Table(Default::default())
+            }
+        }
+    } else {
+        toml::Value::Table(Default::default())
+    };
+
+    let table = match doc.as_table_mut() {
+        Some(table) => table,
+        None => {
+            // Valid TOML but not a table at the top level: same treatment
+            // as a parse failure — warn and start fresh.
+            eprintln!(
+                "Warning: config file {} is not a TOML table; its contents will be replaced.",
+                path.display()
+            );
+            doc = toml::Value::Table(Default::default());
+            doc.as_table_mut().expect("just constructed as a table")
+        }
+    };
+    table.insert(
+        "layout".to_string(),
+        toml::Value::try_from(layout).context("serializing layout config")?,
+    );
+    match table
+        .entry("general".to_string())
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+    {
+        Some(general) => {
+            general.insert(
+                "onboarding_version".to_string(),
+                toml::Value::Integer(ONBOARDING_VERSION as i64),
+            );
+        }
+        None => {
+            // `general` exists but is not itself a table — replace just that
+            // key rather than failing the whole save.
+            table.insert(
+                "general".to_string(),
+                toml::Value::try_from(GeneralConfig {
+                    onboarding: None,
+                    onboarding_version: Some(ONBOARDING_VERSION),
+                })
+                .context("serializing general config")?,
+            );
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating config directory {}", parent.display()))?;
+    }
+    let text = toml::to_string_pretty(&doc).context("serializing config file")?;
+    // Temp file then rename, so a reader never sees a torn config file.
+    let temp_path = path.with_extension("toml.tmp");
+    fs::write(&temp_path, text).with_context(|| format!("writing config file {}", temp_path.display()))?;
+    fs::rename(&temp_path, &path).with_context(|| format!("renaming into place over {}", path.display()))?;
+    Ok(())
+}
+
 /// Parses a "#RRGGBB" hex string into (r, g, b). Returns `None` on anything
 /// else so callers can fall back to a default color rather than erroring.
 pub fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
@@ -279,5 +415,86 @@ mod tests {
             resolve_config_path(Some("elsewhere".into()), None),
             Some(PathBuf::from("elsewhere"))
         );
+    }
+
+    #[test]
+    fn should_onboard_respects_an_explicit_opt_out_over_the_version() {
+        // Never onboarded: no explicit opt-out, version behind (0 < current).
+        assert!(should_onboard(&GeneralConfig::default()));
+        // Caught up: version matches, no opt-out.
+        assert!(!should_onboard(&GeneralConfig {
+            onboarding: None,
+            onboarding_version: Some(ONBOARDING_VERSION),
+        }));
+        // A version bump behind current re-triggers it...
+        assert!(should_onboard(&GeneralConfig {
+            onboarding: None,
+            onboarding_version: Some(ONBOARDING_VERSION - 1),
+        }));
+        // ...unless the user opted out, which wins regardless of version.
+        assert!(!should_onboard(&GeneralConfig {
+            onboarding: Some(false),
+            onboarding_version: Some(ONBOARDING_VERSION - 1),
+        }));
+    }
+
+    /// `save_onboarding` must survive a config file whose other sections
+    /// are broken, since it runs from inside the TUI's event loop where an
+    /// `Err` bubbling out skips the terminal restore.
+    #[test]
+    fn save_onboarding_tolerates_a_config_file_that_fails_to_parse() {
+        let _guard = crate::storage::env_guard();
+        let dir = crate::storage::env_sandbox("save-onboarding-bad-toml");
+        let path = config_path().expect("a config path");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "not valid = = toml").unwrap();
+
+        let result = save_onboarding(&LayoutConfig {
+            show_projects: Some(true),
+            show_agents: Some(false),
+            show_summary: Some(false),
+            show_tags: Some(true),
+        });
+        assert!(result.is_ok(), "a broken file must not fail the save: {result:?}");
+
+        let saved = load();
+        assert_eq!(saved.layout.show_projects, Some(true));
+        assert_eq!(saved.general.onboarding_version, Some(ONBOARDING_VERSION));
+        drop(dir);
+    }
+
+    /// A hand-set `onboarding = false` must survive `save_onboarding` writing
+    /// the current version into the same `[general]` table.
+    #[test]
+    fn save_onboarding_preserves_an_existing_opt_out() {
+        let _guard = crate::storage::env_guard();
+        let dir = crate::storage::env_sandbox("save-onboarding-preserve-opt-out");
+        let path = config_path().expect("a config path");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[general]\nonboarding = false\n").unwrap();
+
+        save_onboarding(&LayoutConfig::default()).unwrap();
+
+        let saved = load();
+        assert_eq!(saved.general.onboarding, Some(false));
+        assert_eq!(saved.general.onboarding_version, Some(ONBOARDING_VERSION));
+        drop(dir);
+    }
+
+    /// Unrelated sections (e.g. `[theme]`) must survive a round trip through
+    /// `save_onboarding`, which only ever touches `[layout]` and `[general]`.
+    #[test]
+    fn save_onboarding_preserves_unrelated_sections() {
+        let _guard = crate::storage::env_guard();
+        let dir = crate::storage::env_sandbox("save-onboarding-preserve-theme");
+        let path = config_path().expect("a config path");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[theme]\naccent = \"#abcdef\"\n").unwrap();
+
+        save_onboarding(&LayoutConfig::default()).unwrap();
+
+        let saved = load();
+        assert_eq!(saved.theme.accent.as_deref(), Some("#abcdef"));
+        drop(dir);
     }
 }

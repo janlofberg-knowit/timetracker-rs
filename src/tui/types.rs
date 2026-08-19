@@ -36,6 +36,8 @@ pub enum InputMode {
     Detail,
     /// A destructive action waiting for a yes; `App.pending_confirm` says which.
     Confirm,
+    /// First-run popup asking which collapsible surfaces should start open.
+    Onboarding,
 }
 
 /// Which destructive action a prompt is standing in front of. Each knows the key
@@ -107,6 +109,52 @@ impl Pane {
         match self {
             Pane::Projects => " Projects (P) ",
             Pane::Tags => " Tags (T) ",
+        }
+    }
+}
+
+/// Which screen `InputMode::Onboarding` is showing. Onboarding is linear:
+/// `Layout` picks panel defaults, then falls through to `Skill`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OnboardingStep {
+    Layout,
+    Skill,
+}
+
+/// One row of the onboarding popup's checklist: a collapsible surface plus the
+/// key that toggles it in normal use, so the popup can teach that key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LayoutSurface {
+    Projects,
+    Agents,
+    Summary,
+    Tags,
+}
+
+impl LayoutSurface {
+    pub const ALL: [LayoutSurface; 4] = [
+        LayoutSurface::Projects,
+        LayoutSurface::Agents,
+        LayoutSurface::Summary,
+        LayoutSurface::Tags,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LayoutSurface::Projects => "Projects",
+            LayoutSurface::Agents => "Agent",
+            LayoutSurface::Summary => "Summary",
+            LayoutSurface::Tags => "Tags",
+        }
+    }
+
+    /// The key that toggles this surface in `InputMode::Normal`.
+    pub fn key(self) -> char {
+        match self {
+            LayoutSurface::Projects => 'P',
+            LayoutSurface::Agents => 'A',
+            LayoutSurface::Summary => 'S',
+            LayoutSurface::Tags => 'T',
         }
     }
 }
