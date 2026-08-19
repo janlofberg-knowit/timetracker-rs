@@ -2,7 +2,7 @@
 //!
 //! Presentation only; [`crate::marks`] owns every fact about the mark files.
 //!
-//! **`begin`, `touch`, `cancel` and `list` must touch no store** — `main`
+//! **`begin`, `touch`, `cancel` and `list` must touch no store** — `main.rs`
 //! dispatches them ahead of its migrate preamble. `item` and `end` log an entry
 //! through [`crate::cli::log`] and dispatch after it.
 //!

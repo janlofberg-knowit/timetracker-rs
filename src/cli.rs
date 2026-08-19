@@ -162,7 +162,7 @@ pub enum AgentCommands {
 
 impl AgentCommands {
     /// Whether this subcommand creates or reads a `tt` entry, which decides
-    /// which side of `main`'s migrate preamble it dispatches on.
+    /// which side of the migrate preamble in `main.rs` it dispatches on.
     ///
     /// Exhaustive on purpose: a new subcommand must decide.
     pub fn touches_store(&self) -> bool {
@@ -442,7 +442,7 @@ pub fn active() -> Result<()> {
     Ok(())
 }
 /// `tt report` — the rollup surface; see `src/report.rs` for the maths. Dispatched
-/// ahead of `main`'s preamble, so it migrates its own in-memory copy, unwritten.
+/// ahead of the preamble in `main.rs`, so it migrates its own in-memory copy.
 #[allow(clippy::too_many_arguments)]
 pub fn report(
     all: bool,

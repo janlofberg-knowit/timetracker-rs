@@ -346,6 +346,7 @@ impl App {
 
     /// Parse a date-only string. Supported formats: `DD/MM`, `MM-DD`, `YYYY-MM-DD`.
     fn parse_date_part(s: &str, current_year: i32) -> Option<NaiveDate> {
+        // DD/MM
         if s.contains('/') {
             let mut parts = s.splitn(2, '/');
             if let (Some(d), Some(m)) = (parts.next(), parts.next()) {
@@ -354,14 +355,13 @@ impl App {
                 }
             }
         }
+        // YYYY-MM-DD
         if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
             return Some(nd);
         }
-        if s.len() == 5 && s.contains('-') {
-            let with_year = format!("{}-{}", current_year, s);
-            if let Ok(nd) = NaiveDate::parse_from_str(&with_year, "%Y-%m-%d") {
-                return Some(nd);
-            }
+        // MM-DD - assumes current year
+        if let Ok(nd) = NaiveDate::parse_from_str(&format!("{}-{}", current_year, s), "%Y-%m-%d") {
+            return Some(nd);
         }
         None
     }
