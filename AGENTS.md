@@ -33,11 +33,24 @@ workflow is on your `PATH`.
   environment manager such as `mise` or `direnv`, `$TT_PROJECT` is a natural thing
   for them to declare there, so the value travels with the repo.)
 - **issue** — the tracked issue number, or `-` if untracked
-- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `ops`
+- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `ops`; see
+  [Which phase](#which-phase)
 
 **project is a real field** on the entry, not a tag: the agent commands pass it as
 `tt log --project <project>`, so it is stored explicitly rather than guessed. This
 matters when reading rollups back — `tt report` groups on the field.
+
+### Which phase
+
+| Work | Phase |
+|---|---|
+| planning, breaking work down, writing a spec | `plan` |
+| writing or changing code | `impl` |
+| verifying behaviour, running or fixing tests | `qa` |
+| reading code to judge it, whether or not it changes | `review` |
+| documentation | `docs` |
+| investigation that produces no artifact | `spike` |
+| tooling, config, environment, release | `ops` |
 
 ## Summary and tags
 
@@ -81,28 +94,39 @@ tt report [--week|--all|--since DATE [--until DATE]] [--project NAME] [--json]
 
 Durations are rounded to 15 minutes, floor 15.
 
-Marks are files keyed per project/issue/phase, so **any number of phases can be
-timed at once across different repos** — and the start time survives the agent's
-context being truncated or compacted. Do not hold start times in context. They live
-in the application's own cache directory; `TT_MARK_DIR` overrides it.
+A mark's start time survives the agent's context being truncated or compacted, so do
+not hold start times in context. Marks live in the application's own cache directory;
+`TT_MARK_DIR` overrides it.
 
 `touch` matters twice over: `end` measures start → last touch, not start → now, so
 idle time after the work finished is not counted — and the heartbeats it appends are
 what let a long phase log without a question. `end` refuses on a *silent gap*, never
-on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES` (default 45) is
-what gets flagged.
+on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES`
+or `agent.max_gap_minutes` (default 45) is what gets flagged.
 
 A phase that produced **no heartbeat at all** is judged on its own threshold instead,
-`TT_MAX_UNVOUCHED_MINUTES` (default 120). No beats is the absence of instrumentation —
+`TT_MAX_UNVOUCHED_MINUTES` or `agent.max_unvouched_minutes` (default 120). No beats is the absence of instrumentation —
 a session that compacted, or `begin`/`end` without any `touch` — where a hole between
 beats is positive evidence that work stopped, so the unmeasured phase gets the longer
 allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
 a human.
 
-Because phases across repos are timed concurrently, `tt agent list` routinely shows
-marks that belong to *other* sessions. **Only act on marks for the project you are
-working in.** An open mark for another project means work is in flight elsewhere, not
-that something broke — never end it, cancel it, or ask the operator about it.
+## Working in parallel
+
+Marks are keyed `project/issue/phase`, so any number can be open at once — several
+issues in one repo, several repos, or both. They are independent: ending one never
+touches another.
+
+If you run no subagents, rule 1 costs you nothing, since you are the only writer. Log
+as each phase finishes rather than at the end of the session.
+
+**Never end or cancel a mark you did not open.** `tt agent list` shows every open mark,
+including other sessions'. One you did not open means work is in flight elsewhere, not
+that something broke.
+
+At session start you cannot tell a crashed session's leftover from a live sibling's
+work — not even for your own project and issue. Say what you found and let the operator
+decide.
 
 The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
 
