@@ -46,6 +46,9 @@ new `~/.claude/settings.json`.
    concurrent writes are serialized under an exclusive lock and no entry is lost —
    it is about the **unit**: if every worker logged its own turn, one issue would
    produce twenty rows instead of one and the rollup would stop meaning anything.
+   When several subagents work the same project/issue/phase **concurrently**,
+   their time still lands as one entry — see [Parallel subagents on one
+   phase](#parallel-subagents-on-one-phase).
 2. **The unit is a completed piece of work, not a commit.** Planning is work. So is
    a review that concludes "don't ship" and an investigation that produces no code.
    One entry per phase — several passes and a QA loop on one issue is one entry,
@@ -161,6 +164,41 @@ work — not even for your own project and issue. Say what you found and let the
 decide.
 
 The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
+
+### Parallel subagents on one phase
+
+Fanning several subagents out at once onto the same `project`/`issue`/`phase` —
+a judge panel, a set of parallel reviewers, several independent finders — needs
+a different close than the default begin → touch → end: a wall-clock span
+across a parallel batch measures *elapsed* time, not the effort actually spent,
+and would undercount it. Three subagents at 20 minutes each is 60 minutes of
+work, not the 20 minutes the clock shows.
+
+1. **Open the mark once, before the first dispatch.** `tt agent begin <project>
+   <issue> <phase>` — if `tt agent list` already shows this exact key open,
+   it's either your own earlier work on it (reuse it) or another session's
+   (leave it; say what you found). This mark exists for visibility while the
+   batch runs (`tt agent list`, the TUI's **Agents** panel), not for its own
+   duration.
+2. **Do not end it as each subagent returns.** Wait for every subagent
+   dispatched in that batch to report back, however many rounds that takes.
+3. **Sum each contributor's time.** Use each subagent's own elapsed wall-clock
+   time for its dispatch — most agent tooling reports this on completion — not
+   anything it says about itself in its own report. Add your own time too, if
+   you did real work on the same phase yourself rather than only dispatching
+   and reading results.
+4. **Close it once, after the last one reports.** `tt agent cancel <project>
+   <issue> <phase>` to drop the now-unwanted wall-clock mark, then
+   `tt agent item <project> <issue> <phase> "<summary>" <summed minutes>` to
+   log the real total as one entry.
+
+A different phase — even on the same issue, even dispatched in the same
+breath — is never folded into this. Give it its own `begin`/`item` pair; marks
+are keyed `project/issue/phase` for exactly this reason.
+
+Subagents dispatched one after another rather than concurrently don't need any
+of this: a wall-clock span already accumulates sequential work correctly, so
+the plain begin → touch → end flow is enough.
 
 ## When `end` refuses
 
