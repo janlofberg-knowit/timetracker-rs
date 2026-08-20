@@ -25,11 +25,19 @@ real enforcement (a `SessionStart` hook that injects this contract into every
 session, and a `Stop` hook that warns about marks left open):
 
 ```sh
-node .claude/skills/tt-time-logging/scripts/install-hooks.mjs
+node <wherever the skill landed>/scripts/install-hooks.mjs
 ```
 
+This writes to your **global** `~/.claude/settings.json`, not a project-local
+one — the hooks are meant to fire in every session, in every project, not just
+the one you happened to run the installer from. It also copies this file and
+the stop-check script into `~/.claude/hooks/tt-time-logging/`, so the hooks
+keep working regardless of where the skill itself is installed. It requires
+Claude Code to have already been run at least once (so `~/.claude` exists) —
+if it hasn't, the script says so and exits without writing anything.
+
 Safe to re-run. Then open `/hooks` once (or restart) so Claude Code picks up the
-new `.claude/settings.json`.
+new `~/.claude/settings.json`.
 
 ## Rules
 

@@ -4,48 +4,74 @@
 // `npx skills add` only copies SKILL.md (and this directory) into place — it
 // is tool-agnostic and knows nothing about Claude Code's hooks. Prose in a
 // skill is model-invoked and gets skipped under context pressure, so this
-// script wires two hooks into the *consumer's own* .claude/settings.json:
+// script wires two hooks into the user's *global* ~/.claude/settings.json —
+// not a project-local one, since the whole point is that they fire in every
+// session, in every project, not just the one the skill happened to be
+// installed into:
 //
 //   SessionStart - injects this skill's contract into every session's
 //                  context directly, unconditionally (no model judgment).
 //   Stop         - runs `tt agent list` and warns (non-blocking) if this
 //                  project has marks still open when the agent stops.
 //
+// Both hook commands reference absolute paths under ~/.claude/hooks/, not
+// paths relative to whatever cwd Claude Code happens to invoke hooks with —
+// a relative path silently fails to resolve on at least Windows.
+//
 // Safe to re-run: both entries are added only if not already present.
 //
-// Usage (from the consumer repo root, after `npx skills add ...`):
-//   node .claude/skills/tt-time-logging/scripts/install-hooks.mjs
+// Usage (from anywhere, after `npx skills add ...`):
+//   node <wherever the skill landed>/scripts/install-hooks.mjs
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const skillDir = dirname(scriptDir); // .../.claude/skills/tt-time-logging
-const cwd = process.cwd();
+const skillDir = dirname(scriptDir); // .../tt-time-logging
 
-const settingsPath = join(cwd, ".claude", "settings.json");
-const hooksDir = join(cwd, ".claude", "hooks");
-const stopCheckDest = join(hooksDir, "tt-stop-check.mjs");
-const stopCheckSrc = join(scriptDir, "tt-stop-check.mjs");
-const skillMdRelFromCwd = relative(cwd, join(skillDir, "SKILL.md")).replace(/\\/g, "/");
+const claudeHome = join(homedir(), ".claude");
+if (!existsSync(claudeHome)) {
+  console.log(
+    "Claude Code doesn't appear to be installed for this user (no " +
+      `${claudeHome} found) — skipping hook installation. Run Claude Code ` +
+      "at least once, then re-run this script.",
+  );
+  process.exit(0);
+}
 
-mkdirSync(hooksDir, { recursive: true });
-copyFileSync(stopCheckSrc, stopCheckDest);
+const settingsPath = join(claudeHome, "settings.json");
+// Namespaced by skill name so it can't collide with another skill's hooks,
+// and so the files the hooks reference live at a stable path independent of
+// wherever `npx skills add` put this skill (project-local or global).
+const destDir = join(claudeHome, "hooks", "tt-time-logging");
+const skillMdDest = join(destDir, "SKILL.md");
+const stopCheckDest = join(destDir, "tt-stop-check.mjs");
+
+mkdirSync(destDir, { recursive: true });
+copyFileSync(join(skillDir, "SKILL.md"), skillMdDest);
+copyFileSync(join(scriptDir, "tt-stop-check.mjs"), stopCheckDest);
+
+// Forward slashes only: Node's fs calls accept them on every OS, and it
+// sidesteps having to escape backslashes inside the nested JS string literal
+// below.
+const toFwd = (p) => p.replace(/\\/g, "/");
+const skillMdAbs = toFwd(skillMdDest);
+const stopCheckAbs = toFwd(stopCheckDest);
 
 let settings = {};
 if (existsSync(settingsPath)) {
   settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-} else {
-  mkdirSync(dirname(settingsPath), { recursive: true });
 }
 
 settings.hooks ??= {};
 settings.hooks.SessionStart ??= [];
 settings.hooks.Stop ??= [];
 
-const sessionStartCmd = `node -e "const fs=require('fs');process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:fs.readFileSync('${skillMdRelFromCwd}','utf8')}}))"`;
-const stopCmd = "node .claude/hooks/tt-stop-check.mjs";
+const sessionStartCmd = `node -e "const fs=require('fs');process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:fs.readFileSync('${skillMdAbs}','utf8')}}))"`;
+// Quoted: an absolute home path can contain spaces (e.g. "C:/Users/John Doe/...").
+const stopCmd = `node "${stopCheckAbs}"`;
 
 const hasCommand = (event, command) =>
   settings.hooks[event].some((entry) => entry.hooks?.some((h) => h.command === command));
@@ -64,5 +90,6 @@ if (!hasCommand("Stop", stopCmd)) {
 
 writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
 
-console.log(`tt-time-logging hooks installed into ${relative(cwd, settingsPath)}.`);
+console.log(`tt-time-logging hooks installed into ${settingsPath}.`);
+console.log(`Contract and stop-check script copied into ${destDir}.`);
 console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");
