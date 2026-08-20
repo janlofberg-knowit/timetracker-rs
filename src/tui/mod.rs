@@ -194,6 +194,51 @@ fn npx_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// `npx skills add` may have landed the skill in the current project's
+/// `.claude/skills/` or in the user's global `~/.claude/skills/` — it
+/// prompts for that interactively, so we check both rather than assume.
+fn find_tt_skill_install_hooks() -> Option<std::path::PathBuf> {
+    let rel = std::path::Path::new(".claude/skills/tt-time-logging/scripts/install-hooks.mjs");
+    if rel.is_file() {
+        return Some(rel.to_path_buf());
+    }
+    let home = dirs_home()?;
+    let global = home.join(".claude/skills/tt-time-logging/scripts/install-hooks.mjs");
+    global.is_file().then_some(global)
+}
+
+#[cfg(windows)]
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Runs the skill's own hook installer against wherever `npx skills add`
+/// put it, so onboarding wires `SessionStart`/`Stop` enforcement without a
+/// separate manual step. Best-effort: prints what happened and never fails
+/// onboarding over it.
+fn run_tt_skill_install_hooks() {
+    match find_tt_skill_install_hooks() {
+        Some(script) => {
+            println!("\nRunning `node {}`...\n", script.display());
+            match std::process::Command::new("node").arg(&script).status() {
+                Ok(status) if status.success() => println!("\nHooks installed."),
+                Ok(status) => println!("\ninstall-hooks.mjs exited with {status}."),
+                Err(e) => println!("\nCouldn't run node: {e}."),
+            }
+        }
+        None => println!(
+            "\ntt-time-logging skill installed, but install-hooks.mjs wasn't found under \
+             .claude/skills/ or ~/.claude/skills/ — enforcement hooks were not set up. \
+             See the skill's SKILL.md to run it manually."
+        ),
+    }
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -429,7 +474,10 @@ pub fn run_tui() -> Result<()> {
                     .args(["skills", "add", "linus-skold/timetracker-rs"])
                     .status();
                 match status {
-                    Ok(status) if status.success() => println!("\nDone."),
+                    Ok(status) if status.success() => {
+                        println!("\nDone.");
+                        run_tt_skill_install_hooks();
+                    }
                     Ok(status) => println!("\n`npx` exited with {status}."),
                     Err(e) => println!("\nCouldn't run npx: {e}"),
                 }

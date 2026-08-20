@@ -16,6 +16,21 @@ This file mirrors `AGENTS.md` in the
 [timetracker-rs](https://github.com/linus-skold/timetracker-rs) source repo; the two
 are kept in sync when either changes.
 
+## Enforcing this in Claude Code
+
+`npx skills add` is tool-agnostic — it only copies this directory into place; it
+knows nothing about Claude Code hooks, and prose alone gets skipped under context
+pressure. If you're using Claude Code, run this once after installing to wire in
+real enforcement (a `SessionStart` hook that injects this contract into every
+session, and a `Stop` hook that warns about marks left open):
+
+```sh
+node .claude/skills/tt-time-logging/scripts/install-hooks.mjs
+```
+
+Safe to re-run. Then open `/hooks` once (or restart) so Claude Code picks up the
+new `.claude/settings.json`.
+
 ## Rules
 
 1. **Only one writer.** If you orchestrate subagents, only the orchestrator logs.

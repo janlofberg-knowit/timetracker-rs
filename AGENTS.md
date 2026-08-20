@@ -11,6 +11,10 @@ Also published as an installable skill — `npx skills add linus-skold/timetrack
 pulls in `skills/tt-time-logging/SKILL.md`, which mirrors this file. Keep the two
 in sync when either changes.
 
+For Claude Code specifically, `skills/tt-time-logging/SKILL.md` documents a
+one-time `install-hooks.mjs` step that wires this contract into
+`SessionStart`/`Stop` hooks instead of relying on prose alone.
+
 ## Rules
 
 1. **Only one writer.** If you orchestrate subagents, only the orchestrator logs.
