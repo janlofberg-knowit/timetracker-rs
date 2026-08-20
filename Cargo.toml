@@ -2,6 +2,7 @@
 name = "timetracker"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/linus-skold/timetracker-rs"
 
 [[bin]]
 name = "tt"
@@ -17,3 +18,5 @@ anyhow = "1"
 toml = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
+self_update = { version = "0.44", default-features = false, features = ["reqwest", "rustls"] }
+semver = "1"

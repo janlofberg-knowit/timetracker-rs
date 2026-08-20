@@ -11,6 +11,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # On a push to main (not a tag, not a PR), checks whether Cargo.toml's
+  # version already has a matching tag. If not, this *is* the release: it
+  # tags it here, in this same run, rather than pushing the tag and hoping a
+  # fresh workflow run picks it up — a tag pushed with the default
+  # `GITHUB_TOKEN` deliberately does not trigger other workflow runs (GitHub's
+  # anti-loop protection), so `flatpak`/`release` below key off this job's
+  # `is_new_release` output instead of waiting on that second trigger.
+  tag:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      is_new_release: ${{ steps.check.outputs.is_new_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Cargo.toml version against existing tags
+        id: check
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin | grep -q "refs/tags/$tag\$"; then
+            echo "$tag already exists, not a new release."
+            echo "is_new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$tag is new."
+            echo "is_new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push the tag
+        if: steps.check.outputs.is_new_release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.check.outputs.tag }}" -m "Release ${{ steps.check.outputs.tag }}"
+          git push origin "${{ steps.check.outputs.tag }}"
+
   build:
     strategy:
       matrix:
@@ -41,9 +81,88 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
+      # Renamed to embed the target triple, which `self_update` (see
+      # `src/update.rs`) matches release assets against by substring — the
+      # bare `tt`/`tt.exe` the build produces would collide across platforms
+      # once uploaded to the same GitHub Release.
+      - name: Rename binary for release
+        shell: bash
+        run: |
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          dest="dist/tt-${{ matrix.target }}"
+          if [[ "${{ matrix.artifact }}" == *.exe ]]; then dest="$dest.exe"; fi
+          cp "$src" "$dest"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tt-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          path: dist/*
           if-no-files-found: error
+
+  # Wraps the already-built Linux binary from `build` in a redistributable
+  # `.flatpak` bundle — it does not build Rust inside the sandbox, so no Rust
+  # SDK extension or cargo dependency vendoring is needed. Not submitted to
+  # Flathub; this is just a downloadable bundle attached to the Release.
+  #
+  # Runs for a real `v*` tag push (manual tagging still works) or when `tag`
+  # just cut a new one in this same run — `always()` because a skipped `tag`
+  # job (the manual-tag path) would otherwise skip this too by default.
+  flatpak:
+    needs: [build, tag]
+    runs-on: ubuntu-latest
+    if: always() && needs.build.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.is_new_release == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: tt-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.freedesktop.Platform//23.08 org.freedesktop.Sdk//23.08
+
+      - name: Build Flatpak bundle
+        run: |
+          chmod +x dist/tt-x86_64-unknown-linux-gnu
+          cp dist/tt-x86_64-unknown-linux-gnu flatpak/tt-x86_64-unknown-linux-gnu
+          flatpak-builder --user --force-clean --repo=repo build-dir \
+            flatpak/io.github.linus_skold.tt.yml
+          flatpak build-bundle repo tt-x86_64-unknown-linux-gnu.flatpak \
+            io.github.linus_skold.tt
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tt-x86_64-unknown-linux-gnu-flatpak
+          path: tt-x86_64-unknown-linux-gnu.flatpak
+          if-no-files-found: error
+
+  # Publishes everything `build`/`flatpak` produced as a real GitHub Release —
+  # what `tt update` (src/update.rs) and the startup check look for. Same
+  # trigger logic as `flatpak`: a real tag push, or `tag` cutting a new one
+  # just now.
+  release:
+    needs: [build, flatpak, tag]
+    runs-on: ubuntu-latest
+    if: always() && needs.build.result == 'success' && needs.flatpak.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.is_new_release == 'true')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag || github.ref_name }}
+          files: dist/**/*

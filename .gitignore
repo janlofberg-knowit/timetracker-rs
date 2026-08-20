@@ -1,1 +1,6 @@
 /target
+
+# The CI flatpak job copies the downloaded Linux binary here before invoking
+# flatpak-builder — never committed.
+/flatpak/tt-x86_64-unknown-linux-gnu
+~

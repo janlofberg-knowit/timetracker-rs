@@ -1,0 +1,26 @@
+# Packages the already-built Linux binary (see .github/workflows/build.yml's
+# `flatpak` job) as a redistributable `.flatpak` bundle. Not submitted to
+# Flathub — this manifest exists to produce a downloadable release asset, so
+# it deliberately skips building Rust from source inside the sandbox.
+app-id: io.github.linus_skold.tt
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: tt
+finish-args:
+  # tt update / the startup check (src/update.rs) need to reach GitHub.
+  - --share=network
+  # config, the data store, and the project directories tt tracks all live
+  # under the user's home directory.
+  - --filesystem=home
+modules:
+  - name: tt
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 tt /app/bin/tt
+    sources:
+      - type: file
+        # Placed here by the CI job before invoking flatpak-builder; not
+        # committed to the repo.
+        path: tt-x86_64-unknown-linux-gnu
+        dest-filename: tt
