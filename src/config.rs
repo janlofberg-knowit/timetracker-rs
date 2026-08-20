@@ -81,18 +81,13 @@ pub struct LayoutConfig {
     pub show_tags: Option<bool>,
 }
 
-/// Cross-cutting settings. `onboarding = false` permanently silences the
-/// first-run popup; otherwise it reruns whenever `onboarding_version` is
-/// behind [`ONBOARDING_VERSION`].
+/// Cross-cutting settings. The first-run popup shows until it has run once,
+/// at which point [`save_onboarding`] sets `onboarding = false` so it stays
+/// quiet; set it back to `true` (or delete the key) to see it again.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
     pub onboarding: Option<bool>,
-    pub onboarding_version: Option<u32>,
 }
-
-/// Bump when onboarding gains something worth re-showing; everyone who
-/// hasn't opted out sees the popup again on their next launch.
-pub const ONBOARDING_VERSION: u32 = 1;
 
 /// Fully-resolved config (after merging any `include` chain).
 #[derive(Debug, Default, Clone)]
@@ -286,24 +281,19 @@ fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
 fn merge_general(b: GeneralConfig, o: GeneralConfig) -> GeneralConfig {
     GeneralConfig {
         onboarding: o.onboarding.or(b.onboarding),
-        onboarding_version: o.onboarding_version.or(b.onboarding_version),
     }
 }
 
-/// `onboarding = false` always wins; otherwise reruns when behind
-/// [`ONBOARDING_VERSION`].
+/// Shows unless explicitly opted out.
 pub fn should_onboard(general: &GeneralConfig) -> bool {
-    if general.onboarding == Some(false) {
-        return false;
-    }
-    general.onboarding_version.unwrap_or(0) < ONBOARDING_VERSION
+    general.onboarding != Some(false)
 }
 
-/// Persists `[layout]` (replaced wholesale) and stamps `[general]`'s
-/// `onboarding_version` (only that key touched, so a hand-set `onboarding =
-/// false` survives); other sections pass through untouched. A parse failure
-/// warns and starts fresh rather than erroring, since an `Err` here would
-/// skip the TUI's terminal restore on the way out.
+/// Persists `[layout]` (replaced wholesale) and sets `[general].onboarding =
+/// false` so the popup stays quiet after running once; other sections pass
+/// through untouched. A parse failure warns and starts fresh rather than
+/// erroring, since an `Err` here would skip the TUI's terminal restore on
+/// the way out.
 pub fn save_onboarding(layout: &LayoutConfig) -> Result<()> {
     let Some(path) = config_path() else {
         anyhow::bail!("no config path available (no home/APPDATA directory found)");
@@ -349,21 +339,15 @@ pub fn save_onboarding(layout: &LayoutConfig) -> Result<()> {
         .as_table_mut()
     {
         Some(general) => {
-            general.insert(
-                "onboarding_version".to_string(),
-                toml::Value::Integer(ONBOARDING_VERSION as i64),
-            );
+            general.insert("onboarding".to_string(), toml::Value::Boolean(false));
         }
         None => {
             // `general` exists but is not itself a table — replace just that
             // key rather than failing the whole save.
             table.insert(
                 "general".to_string(),
-                toml::Value::try_from(GeneralConfig {
-                    onboarding: None,
-                    onboarding_version: Some(ONBOARDING_VERSION),
-                })
-                .context("serializing general config")?,
+                toml::Value::try_from(GeneralConfig { onboarding: Some(false) })
+                    .context("serializing general config")?,
             );
         }
     }
@@ -418,24 +402,13 @@ mod tests {
     }
 
     #[test]
-    fn should_onboard_respects_an_explicit_opt_out_over_the_version() {
-        // Never onboarded: no explicit opt-out, version behind (0 < current).
+    fn should_onboard_shows_unless_explicitly_opted_out() {
+        // Never onboarded: no explicit setting either way.
         assert!(should_onboard(&GeneralConfig::default()));
-        // Caught up: version matches, no opt-out.
-        assert!(!should_onboard(&GeneralConfig {
-            onboarding: None,
-            onboarding_version: Some(ONBOARDING_VERSION),
-        }));
-        // A version bump behind current re-triggers it...
-        assert!(should_onboard(&GeneralConfig {
-            onboarding: None,
-            onboarding_version: Some(ONBOARDING_VERSION - 1),
-        }));
-        // ...unless the user opted out, which wins regardless of version.
-        assert!(!should_onboard(&GeneralConfig {
-            onboarding: Some(false),
-            onboarding_version: Some(ONBOARDING_VERSION - 1),
-        }));
+        // Opted back in by hand.
+        assert!(should_onboard(&GeneralConfig { onboarding: Some(true) }));
+        // Opted out, whether by hand or by a prior onboarding run.
+        assert!(!should_onboard(&GeneralConfig { onboarding: Some(false) }));
     }
 
     /// `save_onboarding` must survive a config file whose other sections
@@ -459,12 +432,13 @@ mod tests {
 
         let saved = load();
         assert_eq!(saved.layout.show_projects, Some(true));
-        assert_eq!(saved.general.onboarding_version, Some(ONBOARDING_VERSION));
+        assert_eq!(saved.general.onboarding, Some(false));
         drop(dir);
     }
 
     /// A hand-set `onboarding = false` must survive `save_onboarding` writing
-    /// the current version into the same `[general]` table.
+    /// into the same `[general]` table (it writes the same value, but the
+    /// point is the key isn't dropped or clobbered by something else).
     #[test]
     fn save_onboarding_preserves_an_existing_opt_out() {
         let _guard = crate::storage::env_guard();
@@ -477,7 +451,6 @@ mod tests {
 
         let saved = load();
         assert_eq!(saved.general.onboarding, Some(false));
-        assert_eq!(saved.general.onboarding_version, Some(ONBOARDING_VERSION));
         drop(dir);
     }
 
