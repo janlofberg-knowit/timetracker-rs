@@ -31,6 +31,7 @@ pub(crate) fn surface_count(
 impl App {
     /// The current view scope, before any filter. `filtered_entries` starts here.
     pub(crate) fn scope_entries(&self) -> Vec<&TimeEntry> {
+        use chrono::Datelike;
         use super::types::ViewMode;
         use crate::tracker::TimeData;
         match self.view_mode {
@@ -39,6 +40,14 @@ impl App {
             ViewMode::Week => {
                 let week_start = TimeData::week_start(self.selected_date);
                 self.data.entries_for_week(week_start)
+            }
+            ViewMode::Overview => {
+                let year = self.selected_date.year();
+                self.data
+                    .entries
+                    .iter()
+                    .filter(|e| e.start_time.year() == year)
+                    .collect()
             }
         }
     }

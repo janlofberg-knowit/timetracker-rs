@@ -333,6 +333,7 @@ pub fn run_tui() -> Result<()> {
                             KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
                             KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
                             KeyCode::Char('3') => app.set_view_mode(ViewMode::All),
+                            KeyCode::Char('4') => app.set_view_mode(ViewMode::Overview),
                             KeyCode::Char('h') | KeyCode::Left => app.previous_period(),
                             KeyCode::Char('l') | KeyCode::Right => app.next_period(),
                             KeyCode::Char('t') => app.go_to_today(),
@@ -505,6 +506,7 @@ pub fn run_tui() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
     use crate::storage;
     /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`; env is
     /// process-wide, and `marks`' own env test shares this lock.
@@ -1635,6 +1637,41 @@ mod tests {
     }
 
     #[test]
+    fn overview_h_l_page_by_year_instead_of_by_day() {
+        let _guard = env_guard();
+        sandbox("overview-year-paging");
+        seed(vec![], 0);
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Overview;
+        let start = app.selected_date;
+
+        app.next_period();
+        assert_eq!(app.selected_date.year(), start.year() + 1);
+        assert_eq!(app.selected_date.month(), start.month());
+        assert_eq!(app.selected_date.day(), start.day());
+
+        app.previous_period();
+        app.previous_period();
+        assert_eq!(app.selected_date.year(), start.year() - 1);
+    }
+
+    #[test]
+    fn overview_leap_day_falls_back_to_feb_28_in_a_non_leap_year() {
+        let _guard = env_guard();
+        sandbox("overview-year-paging-leap");
+        seed(vec![], 0);
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Overview;
+        app.selected_date = NaiveDate::from_ymd_opt(2024, 2, 29).unwrap();
+
+        app.next_period();
+
+        assert_eq!(app.selected_date, NaiveDate::from_ymd_opt(2025, 2, 28).unwrap());
+    }
+
+    #[test]
     fn requesting_a_confirmation_records_the_selected_id_and_writes_nothing() {
         let _guard = env_guard();
         sandbox("confirm-request");
@@ -1849,6 +1886,45 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn overview_renders_a_year_grid_with_labels_and_legend() {
+        let _guard = env_guard();
+        sandbox("overview-render");
+        seed(
+            vec![
+                logged(1, "a", "tt", &["impl"], NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(), 30),
+                logged(2, "b", "tt", &["impl"], NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(), 300),
+                logged(3, "c", "tt", &["impl"], NaiveDate::from_ymd_opt(2026, 12, 20).unwrap(), 120),
+            ],
+            4,
+        );
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Overview;
+        app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+
+        let screen = frame_lines(&mut app, 140, 24).join("\n");
+
+        assert!(screen.contains("Overview"), "tab title shows the new view");
+        assert!(screen.contains("Year 2026"), "date_info names the shown year");
+        assert!(
+            screen.contains("Mon") && screen.contains("Sun"),
+            "all seven weekday labels render:\n{screen}"
+        );
+        assert!(
+            screen.contains("Jan") && screen.contains("Dec"),
+            "month labels span the whole year:\n{screen}"
+        );
+        assert!(
+            screen.contains("Less") && screen.contains("More"),
+            "the heat legend renders:\n{screen}"
+        );
+        assert!(
+            screen.contains("active day"),
+            "the block title reports the active-day count:\n{screen}"
+        );
     }
 
     #[test]

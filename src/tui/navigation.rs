@@ -1,6 +1,6 @@
 use crossterm::event::KeyCode;
 use anyhow::Result;
-use chrono::{Duration, Local};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use crate::storage::PathStamp;
 use super::App;
 use super::types::{ConfirmAction, InputMode, PendingConfirm, ViewMode};
@@ -248,6 +248,7 @@ impl App {
             ViewMode::All => {}
             ViewMode::Day => self.selected_date += Duration::days(1),
             ViewMode::Week => self.selected_date += Duration::days(7),
+            ViewMode::Overview => self.selected_date = shift_year(self.selected_date, 1),
         }
         self.table_state.select(Some(0));
     }
@@ -257,6 +258,7 @@ impl App {
             ViewMode::All => {}
             ViewMode::Day => self.selected_date -= Duration::days(1),
             ViewMode::Week => self.selected_date -= Duration::days(7),
+            ViewMode::Overview => self.selected_date = shift_year(self.selected_date, -1),
         }
         self.table_state.select(Some(0));
     }
@@ -275,4 +277,12 @@ impl App {
         self.sort_order = self.sort_order.toggle();
         self.table_state.select(Some(0));
     }
+}
+
+/// `date` moved `delta` years, falling back to Feb 28 when `date` is a Feb 29
+/// that the target year does not have.
+fn shift_year(date: NaiveDate, delta: i32) -> NaiveDate {
+    let year = date.year() + delta;
+    date.with_year(year)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(year, 2, 28).unwrap())
 }
