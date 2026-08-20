@@ -4,6 +4,22 @@ A personal time tracking CLI built in Rust. Track your working hours directly fr
 
 ## Installation
 
+**Linux/macOS** — downloads the latest release binary and installs it as
+`tt` under `~/.local/bin` (override with `TT_INSTALL_DIR`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.sh | sh
+```
+
+**Windows (PowerShell)** — installs `tt.exe` under `%LOCALAPPDATA%\tt\bin`
+(override with `$env:TT_INSTALL_DIR`) and adds it to your user `PATH`:
+
+```powershell
+irm https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.ps1 | iex
+```
+
+**From source:**
+
 ```sh
 cargo install --git https://github.com/linus-skold/timetracker-rs
 ```
