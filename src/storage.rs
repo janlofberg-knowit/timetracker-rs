@@ -8,13 +8,20 @@ use std::{
 
 use crate::tracker;
 
-pub fn get_data_path() -> Result<PathBuf> {
+/// The per-OS directory `data.json` (and anything that wants to live beside
+/// it, e.g. the update-check cache) lives in.
+pub fn get_data_dir() -> Result<PathBuf> {
+    // com.timetracker.tt
     let default = directories::ProjectDirs::from("com", "timetracker", "tt")
         .map(|dirs| dirs.data_dir().to_path_buf());
     let data_dir = resolve_data_dir(std::env::var_os("TT_DATA_DIR"), default)
         .context("Could not determine config directory")?;
     fs::create_dir_all(&data_dir)?;
-    Ok(data_dir.join("data.json"))
+    Ok(data_dir)
+}
+
+pub fn get_data_path() -> Result<PathBuf> {
+    Ok(get_data_dir()?.join("data.json"))
 }
 
 /// The env-free half of [`get_data_path`], taking the default store directory.

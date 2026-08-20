@@ -98,6 +98,29 @@ pub enum Commands {
         #[command(subcommand)]
         command: AgentCommands,
     },
+    /// Check for and install a newer release
+    Update {
+        /// Only check for a newer version; don't install it
+        #[arg(long)]
+        check: bool,
+        /// Skip the confirmation prompt before replacing the binary
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+impl Commands {
+    /// Whether this command should trigger the passive startup update check.
+    /// `Active` (shell-prompt integration) and `Agent` (the tt-time-logging
+    /// hook contract, invoked on every phase begin/touch/end) must stay fast
+    /// and silent; `Update` would be a redundant check right before a real
+    /// one.
+    pub fn wants_update_check(&self) -> bool {
+        !matches!(
+            self,
+            Commands::Update { .. } | Commands::Active | Commands::Agent { .. }
+        )
+    }
 }
 
 /// The agent layer's commands. Most touch mark files only; the ones that log an
@@ -441,6 +464,14 @@ pub fn active() -> Result<()> {
 
     Ok(())
 }
+
+/// `tt update` — see `src/update.rs` for the actual GitHub Releases lookup,
+/// download and self-replacement. Dispatched ahead of the preamble in
+/// `main.rs`, same as `report`: it never touches the data store.
+pub fn update(check: bool, yes: bool) -> Result<()> {
+    crate::update::perform_update(check, yes)
+}
+
 /// `tt report` — the rollup surface; see `src/report.rs` for the maths. Dispatched
 /// ahead of the preamble in `main.rs`, so it migrates its own in-memory copy.
 #[allow(clippy::too_many_arguments)]

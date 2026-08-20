@@ -79,6 +79,9 @@ pub(crate) struct App {
     /// Set when `y` was pressed but `npx` is not on `PATH`, so the popup can
     /// say so in place instead of suspending for a command sure to fail.
     pub(crate) onboarding_skill_error: Option<String>,
+    /// A newer version than this build, if `main` found one before the TUI
+    /// took the terminal over. Shown as a banner, never blocking.
+    pub(crate) update_notice: Option<String>,
 }
 
 impl App {
@@ -92,12 +95,13 @@ impl App {
     /// The blessed constructor for a real run: any future production entry
     /// point should build its `App` through here, so onboarding isn't
     /// something each call site has to remember to bolt on.
-    fn for_interactive_run() -> Result<Self> {
+    fn for_interactive_run(update_notice: Option<String>) -> Result<Self> {
         let config = crate::config::load();
         let mut app = Self::from_config(&config)?;
         if crate::config::should_onboard(&config.general) {
             app.input_mode = InputMode::Onboarding;
         }
+        app.update_notice = update_notice;
         Ok(app)
     }
 
@@ -150,6 +154,7 @@ impl App {
             ],
             request_skill_install: false,
             onboarding_skill_error: None,
+            update_notice: None,
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
@@ -277,9 +282,9 @@ fn with_suspended_terminal(
     result
 }
 
-pub fn run_tui() -> Result<()> {
+pub fn run_tui(update_notice: Option<String>) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let mut app = App::for_interactive_run()?;
+    let mut app = App::for_interactive_run(update_notice)?;
 
     loop {
         terminal.draw(|f| render::ui(f, &mut app))?;
@@ -1886,6 +1891,35 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_status_bar_shows_an_update_notice_when_one_is_set() {
+        let _guard = env_guard();
+        sandbox("update-notice-render");
+        seed(vec![], 0);
+
+        let mut app = App::new().unwrap();
+        app.update_notice = Some("9.9.9".to_string());
+
+        let screen = frame_lines(&mut app, 100, 24).join("\n");
+        assert!(
+            screen.contains("9.9.9") && screen.contains("tt update"),
+            "the status bar should name the available version and the CTA:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn no_update_notice_leaves_the_status_bar_unchanged() {
+        let _guard = env_guard();
+        sandbox("update-notice-absent");
+        seed(vec![], 0);
+
+        let mut app = App::new().unwrap();
+        assert_eq!(app.update_notice, None);
+
+        let screen = frame_lines(&mut app, 100, 24).join("\n");
+        assert!(!screen.contains("tt update"));
     }
 
     #[test]

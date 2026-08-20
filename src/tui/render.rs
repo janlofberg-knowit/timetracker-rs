@@ -118,14 +118,19 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             Style::default().fg(theme::inactive()).italic(),
         ),
     };
-    let header = Paragraph::new(status_text)
-        .style(status_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::border()))
-                .title(Span::styled(" Status ", Style::default().fg(theme::title()))),
-        );
+    let mut status_spans = vec![Span::styled(status_text, status_style)];
+    if let Some(version) = &app.update_notice {
+        status_spans.push(Span::styled(
+            format!(" | tt {version} available — run `{}`", crate::update::update_hint()),
+            Style::default().fg(theme::highlight()),
+        ));
+    }
+    let header = Paragraph::new(Line::from(status_spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme::border()))
+            .title(Span::styled(" Status ", Style::default().fg(theme::title()))),
+    );
     f.render_widget(header, rows.area(LayoutRow::Status));
 
     if let Some(area) = rows.get(LayoutRow::Marks) {

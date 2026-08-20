@@ -87,6 +87,9 @@ pub struct LayoutConfig {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
     pub onboarding: Option<bool>,
+    /// Whether `tt` checks GitHub for a newer release on startup. Shows
+    /// unless explicitly opted out — see [`updates_enabled`].
+    pub auto_check_updates: Option<bool>,
 }
 
 /// Fully-resolved config (after merging any `include` chain).
@@ -281,12 +284,18 @@ fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
 fn merge_general(b: GeneralConfig, o: GeneralConfig) -> GeneralConfig {
     GeneralConfig {
         onboarding: o.onboarding.or(b.onboarding),
+        auto_check_updates: o.auto_check_updates.or(b.auto_check_updates),
     }
 }
 
 /// Shows unless explicitly opted out.
 pub fn should_onboard(general: &GeneralConfig) -> bool {
     general.onboarding != Some(false)
+}
+
+/// Runs unless explicitly opted out (`auto_check_updates = false`).
+pub fn updates_enabled(general: &GeneralConfig) -> bool {
+    general.auto_check_updates != Some(false)
 }
 
 /// Persists `[layout]` (replaced wholesale) and sets `[general].onboarding =
@@ -346,8 +355,11 @@ pub fn save_onboarding(layout: &LayoutConfig) -> Result<()> {
             // key rather than failing the whole save.
             table.insert(
                 "general".to_string(),
-                toml::Value::try_from(GeneralConfig { onboarding: Some(false) })
-                    .context("serializing general config")?,
+                toml::Value::try_from(GeneralConfig {
+                    onboarding: Some(false),
+                    ..Default::default()
+                })
+                .context("serializing general config")?,
             );
         }
     }
@@ -406,9 +418,28 @@ mod tests {
         // Never onboarded: no explicit setting either way.
         assert!(should_onboard(&GeneralConfig::default()));
         // Opted back in by hand.
-        assert!(should_onboard(&GeneralConfig { onboarding: Some(true) }));
+        assert!(should_onboard(&GeneralConfig {
+            onboarding: Some(true),
+            ..Default::default()
+        }));
         // Opted out, whether by hand or by a prior onboarding run.
-        assert!(!should_onboard(&GeneralConfig { onboarding: Some(false) }));
+        assert!(!should_onboard(&GeneralConfig {
+            onboarding: Some(false),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn updates_enabled_runs_unless_explicitly_opted_out() {
+        assert!(updates_enabled(&GeneralConfig::default()));
+        assert!(updates_enabled(&GeneralConfig {
+            auto_check_updates: Some(true),
+            ..Default::default()
+        }));
+        assert!(!updates_enabled(&GeneralConfig {
+            auto_check_updates: Some(false),
+            ..Default::default()
+        }));
     }
 
     /// `save_onboarding` must survive a config file whose other sections

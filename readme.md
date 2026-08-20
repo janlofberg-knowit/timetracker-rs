@@ -129,6 +129,32 @@ tt tui
 
 ---
 
+### `tt update [--check] [-y|--yes]`
+
+Check GitHub for a newer release and, unless `--check` is passed, download
+and install it in place.
+
+```sh
+tt update           # install the latest release, with a confirmation prompt
+tt update --check   # only report whether a newer version exists
+tt update -y        # skip the confirmation prompt
+```
+
+`tt` also checks for a newer release on startup, at most once a day, with a
+short network timeout so a slow or offline connection never makes a command
+feel slow. When one is found, the CLI prints a one-line note to stderr and
+the TUI shows it in the status bar.
+
+Turn the automatic check off with `auto_check_updates = false` under
+`[general]` in the config file (see [Configuration](#configuration)), or by
+setting `TT_SKIP_UPDATE_CHECK=1`. It's also skipped automatically whenever a
+`CI` environment variable is set.
+
+If you installed the Flatpak build, update with `flatpak update` instead —
+`tt update` won't try to replace a binary it can't write to.
+
+---
+
 ## Duration Format
 
 Durations are used with `tt log -t`. Supported formats:
@@ -213,7 +239,8 @@ show_summary = false   # regardless of these defaults.
 show_tags = true
 
 [general]
-onboarding = true    # shown until answered; the app then sets this to false
+onboarding = true          # shown until answered; the app then sets this to false
+auto_check_updates = true  # startup check for a newer release; see `tt update`
 ```
 
 `[layout]` and `[general].onboarding` are written automatically the first time

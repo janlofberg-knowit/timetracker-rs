@@ -93,6 +93,10 @@ impl Case {
         command.env("HOME", &self.home);
         command.env("TT_DATA_DIR", &self.data);
         command.env("TT_CONFIG_FILE", &self.config);
+        // `env_clear()` strips this too, so it has to be set explicitly on every
+        // run — otherwise every one of these subprocess invocations would attempt
+        // a real network call to GitHub's release API during `cargo test`.
+        command.env("TT_SKIP_UPDATE_CHECK", "1");
         if mark_dir {
             command.env("TT_MARK_DIR", &self.marks);
         }

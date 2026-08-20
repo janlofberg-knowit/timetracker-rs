@@ -10,12 +10,23 @@ mod report;
 mod storage;
 mod tracker;
 mod tui;
+mod update;
 
 use cli::{Cli, Commands};
 use clap::Parser;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // At most once per day, bounded to a couple of seconds — see
+    // `update::maybe_check_and_notify`. Skipped entirely for commands that
+    // must stay fast and script-friendly (`Active`, `Agent`) or that are
+    // themselves an update check (`Update`).
+    let update_notice = cli
+        .command
+        .wants_update_check()
+        .then(|| update::maybe_check_and_notify(env!("CARGO_PKG_VERSION")))
+        .flatten();
 
     // Dispatched ahead of the preamble below because they must not take the store
     // lock; the preamble runs before the dispatch table, not inside it. `tt report`
@@ -34,7 +45,20 @@ fn main() -> Result<()> {
         } => {
             return cli::report(*all, *week, *since, *until, project.clone(), *json);
         }
+        Commands::Update { check, yes } => {
+            return cli::update(*check, *yes);
+        }
         _ => {}
+    }
+
+    if let Some(version) = &update_notice
+        && !matches!(cli.command, Commands::Tui)
+    {
+        eprintln!(
+            "Note: tt {version} is available (you have {}). Run `{}` to upgrade.",
+            env!("CARGO_PKG_VERSION"),
+            update::update_hint()
+        );
     }
 
     // Migrate once under the store lock, never in `load_data`: a write from a
@@ -68,9 +92,12 @@ fn main() -> Result<()> {
             json,
         } => cli::report(all, week, since, until, project, json),
         Commands::List { limit } => cli::list(limit),
-        Commands::Tui => tui::run_tui(),
+        Commands::Tui => tui::run_tui(update_notice),
         Commands::Status => cli::status(),
         Commands::Active => cli::active(),
         Commands::Agent { command } => agent::run(&command),
+        // Dispatched ahead of the preamble above; unreachable in practice,
+        // kept for exhaustiveness (same shape as `Report` just above it).
+        Commands::Update { check, yes } => cli::update(check, yes),
     }
 }
