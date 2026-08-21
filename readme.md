@@ -3,6 +3,8 @@
 
 A personal time tracking CLI built in Rust. Track your working hours directly from the terminal.
 
+![tt example](docs/images/example.png)
+
 ## Installation
 
 **Linux/macOS** — downloads the latest release binary and installs it as
