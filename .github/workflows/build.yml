@@ -16,8 +16,8 @@ jobs:
   # tags it here, in this same run, rather than pushing the tag and hoping a
   # fresh workflow run picks it up — a tag pushed with the default
   # `GITHUB_TOKEN` deliberately does not trigger other workflow runs (GitHub's
-  # anti-loop protection), so `flatpak`/`release` below key off this job's
-  # `is_new_release` output instead of waiting on that second trigger.
+  # anti-loop protection), so `build`/`flatpak`/`release` below key off this
+  # job's `is_new_release` output instead of waiting on that second trigger.
   tag:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -51,7 +51,19 @@ jobs:
           git tag -a "${{ steps.check.outputs.tag }}" -m "Release ${{ steps.check.outputs.tag }}"
           git push origin "${{ steps.check.outputs.tag }}"
 
+  # Runs for a real `v*` tag push (manual tagging), a pull request (build
+  # validation only — `flatpak`/`release` below still won't run for it), or
+  # when `tag` just cut a new version in this same run. A plain push to main
+  # with no version bump does none of these and skips the build entirely —
+  # that's the redundant case being removed.
   build:
+    needs: tag
+    if: |
+      always() && needs.tag.result != 'failure' && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'pull_request' ||
+        needs.tag.outputs.is_new_release == 'true'
+      )
     strategy:
       matrix:
         include:
@@ -108,7 +120,9 @@ jobs:
   #
   # Runs for a real `v*` tag push (manual tagging still works) or when `tag`
   # just cut a new one in this same run — `always()` because a skipped `tag`
-  # job (the manual-tag path) would otherwise skip this too by default.
+  # job (the manual-tag path) would otherwise skip this too by default. Never
+  # runs for a pull request: `build` may have run there, but neither trigger
+  # condition below is true for a PR.
   flatpak:
     needs: [build, tag]
     runs-on: ubuntu-latest
