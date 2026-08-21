@@ -4,12 +4,12 @@
 #   irm https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.ps1 | iex
 #
 # Override the install directory with $env:TT_INSTALL_DIR (defaults to
-# %LOCALAPPDATA%\tt\bin, created if missing).
+# %LOCALAPPDATA%\Programs\tt\bin, created if missing).
 
 $ErrorActionPreference = "Stop"
 
 $Repo = "linus-skold/timetracker-rs"
-$InstallDir = if ($env:TT_INSTALL_DIR) { $env:TT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "tt\bin" }
+$InstallDir = if ($env:TT_INSTALL_DIR) { $env:TT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\tt\bin" }
 
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($arch -ne "AMD64") {

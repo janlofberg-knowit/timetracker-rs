@@ -11,12 +11,13 @@ A personal time tracking CLI built in Rust. Track your working hours directly fr
 curl -fsSL https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.sh | sh
 ```
 
-**Windows (PowerShell)** — installs `tt.exe` under `%LOCALAPPDATA%\tt\bin`
+**Windows (PowerShell)** — installs `tt.exe` under `%LOCALAPPDATA%\Programs\tt\bin`
 (override with `$env:TT_INSTALL_DIR`) and adds it to your user `PATH`:
 
 ```powershell
 irm https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.ps1 | iex
 ```
+
 
 **From source:**
 
