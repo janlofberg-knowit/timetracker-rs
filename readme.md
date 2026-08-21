@@ -1,3 +1,4 @@
+[![Build and Release](https://github.com/linus-skold/timetracker-rs/actions/workflows/build.yml/badge.svg)](https://github.com/linus-skold/timetracker-rs/actions/workflows/build.yml)
 # timetracker-rs
 
 A personal time tracking CLI built in Rust. Track your working hours directly from the terminal.
