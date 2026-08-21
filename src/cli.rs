@@ -10,7 +10,7 @@ use crate::storage::{load_data, with_data};
 use crate::tracker::{IdleInterval, format_tags, parse_tags};
 
 #[derive(Parser)]
-#[command(name = "tt", about = "Simple time tracking CLI")]
+#[command(name = "tt", about = "Simple time tracking CLI", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
