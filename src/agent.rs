@@ -13,7 +13,8 @@ use chrono::{DateTime, Local};
 
 use crate::tracker::IdleInterval;
 
-use crate::cli::{self, AgentCommands};
+use crate::activity;
+use crate::cli::{self, ActivityCommands, AgentCommands};
 use crate::config;
 use crate::icons;
 use crate::marks::{self, Begin, Touch};
@@ -67,7 +68,25 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             *full,
             *trim,
         ),
+        AgentCommands::Activity(command) => activity_command(command),
     }
+}
+
+/// Silently does nothing if the activity dir can't be resolved — a hook must
+/// never fail the harness event it's attached to.
+fn activity_command(command: &ActivityCommands) -> Result<()> {
+    let Some(dir) = activity::activity_dir() else {
+        return Ok(());
+    };
+    match command {
+        ActivityCommands::Begin {
+            session_id,
+            project,
+        } => activity::begin_in(&dir, session_id, project.as_deref())?,
+        ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
+        ActivityCommands::Subagent { session_id } => activity::subagent_in(&dir, session_id)?,
+    }
+    Ok(())
 }
 
 /// The mark directory, or an error — a `begin` must never silently record

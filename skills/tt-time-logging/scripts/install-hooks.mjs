@@ -2,23 +2,23 @@
 // Claude-Code-specific enforcement for the tt-time-logging skill.
 //
 // `npx skills add` only copies SKILL.md (and this directory) into place — it
-// is tool-agnostic and knows nothing about Claude Code's hooks. Prose in a
-// skill is model-invoked and gets skipped under context pressure, so this
-// script wires two hooks into the user's *global* ~/.claude/settings.json —
-// not a project-local one, since the whole point is that they fire in every
-// session, in every project, not just the one the skill happened to be
-// installed into:
+// knows nothing about Claude Code's hooks, and prose alone gets skipped under
+// context pressure. This script wires hooks into the user's *global*
+// ~/.claude/settings.json (not project-local, since they must fire in every
+// session):
 //
-//   SessionStart - injects this skill's contract into every session's
-//                  context directly, unconditionally (no model judgment).
-//   Stop         - runs `tt agent list` and warns (non-blocking) if this
-//                  project has marks still open when the agent stops.
+//   SessionStart - injects this skill's contract; opens the activity window.
+//   Stop         - warns about open marks; closes the activity window.
+//   SubagentStop - records a subagent dispatch on the activity window.
 //
-// Both hook commands reference absolute paths under ~/.claude/hooks/, not
-// paths relative to whatever cwd Claude Code happens to invoke hooks with —
-// a relative path silently fails to resolve on at least Windows.
+// The activity ledger is a second, model-independent signal that a session
+// was active — see docs/decisions/0001-agent-activity-tracking.md. Keyed by
+// Claude Code's own `session_id`, read off the hook's stdin JSON.
 //
-// Safe to re-run: both entries are added only if not already present.
+// All hook commands use absolute paths under ~/.claude/hooks/ — relative
+// paths silently fail to resolve on at least Windows.
+//
+// Safe to re-run: entries are added only if not already present.
 //
 // Usage (from anywhere, after `npx skills add ...`):
 //   node <wherever the skill landed>/scripts/install-hooks.mjs
@@ -48,10 +48,12 @@ const settingsPath = join(claudeHome, "settings.json");
 const destDir = join(claudeHome, "hooks", "tt-time-logging");
 const skillMdDest = join(destDir, "SKILL.md");
 const stopCheckDest = join(destDir, "tt-stop-check.mjs");
+const activityHookDest = join(destDir, "tt-activity-hook.mjs");
 
 mkdirSync(destDir, { recursive: true });
 copyFileSync(join(skillDir, "SKILL.md"), skillMdDest);
 copyFileSync(join(scriptDir, "tt-stop-check.mjs"), stopCheckDest);
+copyFileSync(join(scriptDir, "tt-activity-hook.mjs"), activityHookDest);
 
 // Forward slashes only: Node's fs calls accept them on every OS, and it
 // sidesteps having to escape backslashes inside the nested JS string literal
@@ -59,6 +61,7 @@ copyFileSync(join(scriptDir, "tt-stop-check.mjs"), stopCheckDest);
 const toFwd = (p) => p.replace(/\\/g, "/");
 const skillMdAbs = toFwd(skillMdDest);
 const stopCheckAbs = toFwd(stopCheckDest);
+const activityHookAbs = toFwd(activityHookDest);
 
 let settings = {};
 if (existsSync(settingsPath)) {
@@ -68,10 +71,14 @@ if (existsSync(settingsPath)) {
 settings.hooks ??= {};
 settings.hooks.SessionStart ??= [];
 settings.hooks.Stop ??= [];
+settings.hooks.SubagentStop ??= [];
 
 const sessionStartCmd = `node -e "const fs=require('fs');process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:fs.readFileSync('${skillMdAbs}','utf8')}}))"`;
 // Quoted: an absolute home path can contain spaces (e.g. "C:/Users/John Doe/...").
 const stopCmd = `node "${stopCheckAbs}"`;
+const activityBeginCmd = `node "${activityHookAbs}" begin`;
+const activityEndCmd = `node "${activityHookAbs}" end`;
+const activitySubagentCmd = `node "${activityHookAbs}" subagent`;
 
 const hasCommand = (event, command) =>
   settings.hooks[event].some((entry) => entry.hooks?.some((h) => h.command === command));
@@ -82,14 +89,32 @@ if (!hasCommand("SessionStart", sessionStartCmd)) {
   });
 }
 
+if (!hasCommand("SessionStart", activityBeginCmd)) {
+  settings.hooks.SessionStart.push({
+    hooks: [{ type: "command", command: activityBeginCmd, statusMessage: "Opening tt activity window" }],
+  });
+}
+
 if (!hasCommand("Stop", stopCmd)) {
   settings.hooks.Stop.push({
     hooks: [{ type: "command", command: stopCmd, statusMessage: "Checking for unclosed tt marks" }],
   });
 }
 
+if (!hasCommand("Stop", activityEndCmd)) {
+  settings.hooks.Stop.push({
+    hooks: [{ type: "command", command: activityEndCmd, statusMessage: "Closing tt activity window" }],
+  });
+}
+
+if (!hasCommand("SubagentStop", activitySubagentCmd)) {
+  settings.hooks.SubagentStop.push({
+    hooks: [{ type: "command", command: activitySubagentCmd, statusMessage: "Recording tt subagent activity" }],
+  });
+}
+
 writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
 
 console.log(`tt-time-logging hooks installed into ${settingsPath}.`);
-console.log(`Contract and stop-check script copied into ${destDir}.`);
+console.log(`Contract, stop-check and activity-hook scripts copied into ${destDir}.`);
 console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");
