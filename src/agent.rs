@@ -14,10 +14,13 @@ use chrono::{DateTime, Local};
 use crate::tracker::IdleInterval;
 
 use crate::activity;
+use crate::audit;
 use crate::cli::{self, ActivityCommands, AgentCommands};
 use crate::config;
 use crate::icons;
 use crate::marks::{self, Begin, Touch};
+use crate::storage;
+use crate::tracker;
 
 /// Run one `tt agent` subcommand.
 pub fn run(command: &AgentCommands) -> Result<()> {
@@ -69,6 +72,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             *trim,
         ),
         AgentCommands::Activity(command) => activity_command(command),
+        AgentCommands::Audit => run_audit(),
     }
 }
 
@@ -85,6 +89,32 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
         } => activity::begin_in(&dir, session_id, project.as_deref())?,
         ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
         ActivityCommands::Subagent { session_id } => activity::subagent_in(&dir, session_id)?,
+        ActivityCommands::Check { session_id } => return check_session(&dir, session_id),
+    }
+    Ok(())
+}
+
+/// `tt agent activity check <session_id>`: the same reconciliation as
+/// `tt agent audit`, narrowed to one session, so the `Stop` hook can warn
+/// immediately rather than waiting for the next `audit` run. Silent when the
+/// session is accounted for, unknown, or has no resolved project.
+fn check_session(dir: &std::path::Path, session_id: &str) -> Result<()> {
+    let Some(session) = activity::read_session_in(dir, session_id) else {
+        return Ok(());
+    };
+    let marks = marks::open_marks();
+    let mut data = storage::load_data()?;
+    tracker::migrate(&mut data);
+
+    let flagged = audit::unaccounted(
+        &[session],
+        &marks,
+        &data.entries,
+        chrono::Local::now(),
+        audit::max_unvouched_minutes(),
+    );
+    for item in &flagged {
+        println!("{}", item.describe());
     }
     Ok(())
 }
@@ -177,6 +207,38 @@ fn list() -> Result<()> {
     println!("{} Open marks:\n", icons::agent());
     for row in marks::rows(&marks) {
         println!("  {}", row);
+    }
+    Ok(())
+}
+
+/// `tt agent audit`: reconcile the activity ledger against marks and logged
+/// entries, reporting activity with no evidence it was ever tracked. Missing
+/// or unreadable activity/mark directories read as empty rather than erroring
+/// — an audit must never fail over there being nothing to audit yet.
+fn run_audit() -> Result<()> {
+    let sessions = activity::activity_dir()
+        .map(|dir| activity::read_sessions_in(&dir))
+        .unwrap_or_default();
+    let marks = marks::open_marks();
+    let mut data = storage::load_data()?;
+    tracker::migrate(&mut data);
+
+    let flagged = audit::unaccounted(
+        &sessions,
+        &marks,
+        &data.entries,
+        chrono::Local::now(),
+        audit::max_unvouched_minutes(),
+    );
+
+    if flagged.is_empty() {
+        println!("No unaccounted agent activity.");
+        return Ok(());
+    }
+
+    println!("{} Unaccounted agent activity:\n", icons::warning());
+    for item in &flagged {
+        println!("  {}", item.describe());
     }
     Ok(())
 }
@@ -303,7 +365,7 @@ fn end(
             // A mark with heartbeats is judged against the interior-silence
             // threshold, a mark with none against the longer unvouched one.
             let threshold = if marked.beats.is_empty() {
-                max_unvouched_minutes()
+                audit::max_unvouched_minutes()
             } else {
                 max_gap_minutes()
             };
@@ -409,33 +471,11 @@ fn article(minutes: i64) -> &'static str {
 /// How long a silence *between heartbeats* has to be to count, in minutes.
 /// `TT_MAX_GAP_MINUTES`, else `agent.max_gap_minutes`, else 45.
 fn max_gap_minutes() -> i64 {
-    minutes(
+    config::resolve_minutes(
         "TT_MAX_GAP_MINUTES",
         config::load().agent.max_gap_minutes,
         45,
     )
-}
-
-/// How long an **unvouched** phase — a mark with no heartbeat at all — may run
-/// before the close is refused. `TT_MAX_UNVOUCHED_MINUTES`, else
-/// `agent.max_unvouched_minutes`, else 120, longer than the interior-silence
-/// threshold.
-fn max_unvouched_minutes() -> i64 {
-    minutes(
-        "TT_MAX_UNVOUCHED_MINUTES",
-        config::load().agent.max_unvouched_minutes,
-        120,
-    )
-}
-
-/// A minutes-valued setting: the environment wins over the config file, which
-/// wins over the built-in default. Set-but-empty and unparseable read as unset.
-fn minutes(name: &str, configured: Option<i64>, default: i64) -> i64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .or(configured)
-        .unwrap_or(default)
 }
 
 fn instant(epoch: i64) -> Result<DateTime<Local>> {

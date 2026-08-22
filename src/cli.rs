@@ -185,6 +185,9 @@ pub enum AgentCommands {
     /// model. See docs/decisions/0001-agent-activity-tracking.md.
     #[command(hide = true, subcommand)]
     Activity(ActivityCommands),
+    /// Reconcile the activity ledger against marks and logged entries,
+    /// reporting activity with no evidence it was ever tracked.
+    Audit,
 }
 
 /// See [`AgentCommands::Activity`]. Keyed by Claude Code's own session id.
@@ -199,6 +202,10 @@ pub enum ActivityCommands {
     End { session_id: String },
     /// SubagentStop: record that one subagent dispatch finished.
     Subagent { session_id: String },
+    /// Stop: report this one session's window if it is unaccounted for,
+    /// silent otherwise. Same reconciliation as `tt agent audit`, narrowed
+    /// to a single session so the Stop hook can warn immediately.
+    Check { session_id: String },
 }
 
 impl AgentCommands {
@@ -212,7 +219,8 @@ impl AgentCommands {
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
             | AgentCommands::List
-            | AgentCommands::Activity(_) => false,
+            | AgentCommands::Activity(_)
+            | AgentCommands::Audit => false,
             AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
         }
     }
