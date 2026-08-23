@@ -17,7 +17,6 @@ use crate::tracker::IdleInterval;
 use crate::activity;
 use crate::audit;
 use crate::cli::{self, ActivityCommands, AgentCommands};
-use crate::config;
 use crate::icons;
 use crate::marks::{self, Begin, Touch};
 use crate::storage;
@@ -90,32 +89,52 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
         } => activity::begin_in(&dir, session_id, project.as_deref())?,
         ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
         ActivityCommands::Subagent { session_id } => activity::subagent_in(&dir, session_id)?,
-        ActivityCommands::Check { session_id } => return check_session(&dir, session_id),
+        ActivityCommands::Check {
+            session_id,
+            auto_log,
+        } => return check_session(&dir, session_id, *auto_log),
     }
     Ok(())
 }
 
-/// `tt agent activity check <session_id>`: the same reconciliation as
-/// `tt agent audit`, narrowed to one session, so the `Stop` hook can warn
-/// immediately rather than waiting for the next `audit` run. Silent when the
-/// session is accounted for, unknown, or has no resolved project.
-fn check_session(dir: &std::path::Path, session_id: &str) -> Result<()> {
+/// `tt agent activity check <session_id> [--auto-log]`: the same
+/// reconciliation as `tt agent audit`, narrowed to one session, so the `Stop`
+/// hook can warn immediately rather than waiting for the next `audit` run.
+/// Silent when the session is accounted for, unknown, or has no resolved
+/// project.
+///
+/// `--auto-log` is passed unconditionally by the hook; `tt` itself decides
+/// whether to act on it via `agent.auto_log_on_stop` (see
+/// docs/decisions/0003-auto-log-on-stop.md) — a flag with the setting off is
+/// the same as a plain check. A window that gets written is marked
+/// `(auto-logged)` in its line, so the hook can tell the two cases apart.
+fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Result<()> {
     let Some(session) = activity::read_session_in(dir, session_id) else {
         return Ok(());
     };
     let marks = marks::open_marks();
-    let mut data = storage::load_data()?;
-    tracker::migrate(&mut data);
+    let now = chrono::Local::now();
+    let floor = audit::max_unvouched_minutes();
 
-    let flagged = audit::unaccounted(
-        &[session],
-        &marks,
-        &data.entries,
-        chrono::Local::now(),
-        audit::max_unvouched_minutes(),
-    );
+    let flagged = {
+        let mut data = storage::load_data()?;
+        tracker::migrate(&mut data);
+        audit::unaccounted(&[session], &marks, &data.entries, now, floor)
+    };
+
+    let threshold = auto_log
+        .then(audit::auto_log_on_stop_enabled)
+        .and_then(|enabled| enabled.then(audit::auto_log_after_minutes))
+        .flatten();
+
     for item in &flagged {
-        println!("{}", item.describe());
+        let minutes = item.end.signed_duration_since(item.start).num_minutes();
+        if threshold.is_some_and(|threshold| minutes > threshold) {
+            write_auto_log(item)?;
+            println!("{} (auto-logged)", item.describe());
+        } else {
+            println!("{}", item.describe());
+        }
     }
     Ok(())
 }
@@ -274,17 +293,20 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
     let minutes = item.end.signed_duration_since(item.start).num_minutes();
     cli::log(
         "unattended activity #auto".to_string(),
-        format!("{}m", round_quarter(minutes)),
+        format!("{}m", round_five(minutes)),
         Vec::new(),
         Some(item.project.clone()),
-        Vec::new(),
-        false,
+        item.idle.clone(),
+        true,
         Some(item.end),
     )
 }
 
 /// `tt agent item <project> <issue|-> <phase> <summary> <minutes>`: log one
-/// finished piece of work in one call. No mark file is read, written or cleared.
+/// finished piece of work in one call, for a duration already known some
+/// other way. No mark file is read, written or cleared — this is the
+/// fallback for when there was nothing to `begin`/`end` around; prefer that
+/// pair whenever the work can be marked as it happens instead.
 fn item(
     project: &str,
     issue: &str,
@@ -339,7 +361,7 @@ fn log_entry(
 ) -> Result<()> {
     cli::log(
         description(project, issue, phase, summary),
-        format!("{}m", round_quarter(minutes)),
+        format!("{}m", round_five(minutes)),
         Vec::new(),
         Some(project.to_string()),
         idle,
@@ -407,7 +429,7 @@ fn end(
             let threshold = if marked.beats.is_empty() {
                 audit::max_unvouched_minutes()
             } else {
-                max_gap_minutes()
+                audit::max_gap_minutes()
             };
             let gaps = marks::gaps_over(marked.started, ended, &marked.beats, threshold);
             if gaps.is_empty() {
@@ -508,16 +530,6 @@ fn article(minutes: i64) -> &'static str {
     }
 }
 
-/// How long a silence *between heartbeats* has to be to count, in minutes.
-/// `TT_MAX_GAP_MINUTES`, else `agent.max_gap_minutes`, else 45.
-fn max_gap_minutes() -> i64 {
-    config::resolve_minutes(
-        "TT_MAX_GAP_MINUTES",
-        config::load().agent.max_gap_minutes,
-        45,
-    )
-}
-
 fn instant(epoch: i64) -> Result<DateTime<Local>> {
     DateTime::from_timestamp(epoch, 0)
         .map(|instant| instant.with_timezone(&Local))
@@ -537,9 +549,11 @@ fn clock(epoch: i64) -> String {
 // `item` and `end` must log an entry the same way, so the rounding, the stray-`#`
 // stripping and the three tags live here once.
 
-/// Round minutes to the nearest quarter hour, halfway up, never below 15.
-fn round_quarter(minutes: i64) -> i64 {
-    (((minutes + 7) / 15) * 15).max(15)
+/// Round minutes **up** to the next 5 minutes, never below 5. Always a
+/// ceiling, never nearest — a logged span never reads shorter than what was
+/// actually spent.
+fn round_five(minutes: i64) -> i64 {
+    (((minutes + 4) / 5) * 5).max(5)
 }
 
 /// Strip a `#` run that begins a word, so a summary mentioning "#12" does not
@@ -598,20 +612,21 @@ mod tests {
     }
 
     #[test]
-    fn rounding_goes_up_to_the_nearest_quarter() {
-        assert_eq!(round_quarter(37), 30);
-        assert_eq!(round_quarter(38), 45);
-        assert_eq!(round_quarter(43), 45);
-        assert_eq!(round_quarter(45), 45);
+    fn rounding_always_rounds_up_to_the_next_five_minutes() {
+        assert_eq!(round_five(36), 40);
+        assert_eq!(round_five(37), 40);
+        assert_eq!(round_five(40), 40, "already on a five-minute mark");
+        assert_eq!(round_five(41), 45);
+        assert_eq!(round_five(45), 45);
     }
 
     #[test]
-    fn rounding_never_goes_below_a_quarter_hour() {
-        // A two-minute errand costs a quarter, and so does zero.
-        assert_eq!(round_quarter(0), 15);
-        assert_eq!(round_quarter(2), 15);
-        assert_eq!(round_quarter(7), 15);
-        assert_eq!(round_quarter(8), 15);
+    fn rounding_never_goes_below_five_minutes() {
+        // A two-minute errand costs five, and so does zero.
+        assert_eq!(round_five(0), 5);
+        assert_eq!(round_five(1), 5);
+        assert_eq!(round_five(2), 5);
+        assert_eq!(round_five(4), 5);
     }
 
     #[test]

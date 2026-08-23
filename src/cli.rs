@@ -150,7 +150,11 @@ pub enum AgentCommands {
     },
     /// List every open mark
     List,
-    /// Log one finished piece of work, with no mark involved
+    /// Log one finished piece of work for a **known** duration, with no mark
+    /// involved. A fallback for when there was nothing to `begin`/`end`
+    /// around (the duration is already known some other way) — prefer
+    /// `begin`/`touch`/`end` whenever the work can be marked as it happens,
+    /// so the logged span is measured, not guessed.
     Item {
         project: String,
         /// Issue number, or `-` for a phase with no issue
@@ -158,7 +162,7 @@ pub enum AgentCommands {
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
-        /// Whole minutes, rounded up to the nearest quarter hour
+        /// Whole minutes, rounded up to the nearest 5 minutes
         minutes: Option<String>,
     },
     /// Close a marked phase, measuring it to its last heartbeat
@@ -212,7 +216,25 @@ pub enum ActivityCommands {
     /// Stop: report this one session's window if it is unaccounted for,
     /// silent otherwise. Same reconciliation as `tt agent audit`, narrowed
     /// to a single session so the Stop hook can warn immediately.
-    Check { session_id: String },
+    Check {
+        session_id: String,
+        /// Also auto-log this session's own unaccounted window, per
+        /// `agent.auto_log_on_stop` — a no-op unless that setting is
+        /// configured. See docs/decisions/0003-auto-log-on-stop.md.
+        #[arg(long)]
+        auto_log: bool,
+    },
+}
+
+impl ActivityCommands {
+    /// Whether this subcommand may write a `tt` entry. Only `Check
+    /// --auto-log` can, and only when `agent.auto_log_on_stop` is also
+    /// configured — but that config read happens too late for dispatch
+    /// ordering, so this stays conservative: `--auto-log` alone routes
+    /// through the store-locking preamble, whether or not it ends up writing.
+    pub fn touches_store(&self) -> bool {
+        matches!(self, ActivityCommands::Check { auto_log: true, .. })
+    }
 }
 
 impl AgentCommands {
@@ -225,8 +247,8 @@ impl AgentCommands {
             AgentCommands::Begin { .. }
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
-            | AgentCommands::List
-            | AgentCommands::Activity(_) => false,
+            | AgentCommands::List => false,
+            AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.
             AgentCommands::Audit { auto_log } => *auto_log,
