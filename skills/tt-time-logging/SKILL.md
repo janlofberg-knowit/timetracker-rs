@@ -24,7 +24,8 @@ issue number, or `-`. `<phase>` is one of:
 | verifying behaviour, running or fixing tests | `qa` |
 | reading code to judge it, whether or not it changes | `review` |
 | documentation | `docs` |
-| investigation that produces no artifact | `spike` |
+| investigation that produces no artifact, answering a specific question | `spike` |
+| open-ended exploration with no specific question | `explore` |
 | tooling, config, environment, release | `ops` |
 
 <!-- card:end — everything above is the per-prompt card; see scripts/tt-contract-hook.mjs -->
