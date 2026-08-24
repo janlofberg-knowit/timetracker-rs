@@ -10,6 +10,75 @@ use crate::tracker::TimeEntry;
 /// Most value rows a pane shows before it starts scrolling.
 const MAX_VISIBLE_VALUES: usize = 6;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Polarity {
+    Include,
+    Exclude,
+}
+
+/// A pane's filter. One vec, so a value is include or exclude, never both.
+#[derive(Debug, Default)]
+pub(crate) struct PaneFilter(Vec<(String, Polarity)>);
+
+impl PaneFilter {
+    /// Walk a value one step: forward is off → include → exclude → off,
+    /// backward the reverse.
+    pub(crate) fn cycle(&mut self, value: &str, forward: bool) {
+        let next = match (self.state(value), forward) {
+            (None, true) | (Some(Polarity::Exclude), false) => Some(Polarity::Include),
+            (None, false) | (Some(Polarity::Include), true) => Some(Polarity::Exclude),
+            (Some(Polarity::Exclude), true) | (Some(Polarity::Include), false) => None,
+        };
+        self.0.retain(|(v, _)| v != value);
+        if let Some(polarity) = next {
+            self.0.push((value.to_string(), polarity));
+        }
+    }
+
+    pub(crate) fn state(&self, value: &str) -> Option<Polarity> {
+        self.0
+            .iter()
+            .find(|(v, _)| v == value)
+            .map(|(_, polarity)| *polarity)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// The precedence rule, stated once: admitted when the entry matches no
+    /// excluded value and (there are no included values or it matches one).
+    /// Pure negation follows — an entry with no value matches nothing, so an
+    /// exclusion-only filter allows it.
+    pub(crate) fn allows(&self, matches: impl Fn(&str) -> bool) -> bool {
+        let mut any_include = false;
+        let mut include_hit = false;
+        for (value, polarity) in &self.0 {
+            match polarity {
+                Polarity::Exclude => {
+                    if matches(value) {
+                        return false;
+                    }
+                }
+                Polarity::Include => {
+                    any_include = true;
+                    include_hit = include_hit || matches(value);
+                }
+            }
+        }
+        !any_include || include_hit
+    }
+
+    /// The values in cycle order, for the Entries title.
+    pub(crate) fn values(&self) -> impl Iterator<Item = (&str, Polarity)> {
+        self.0.iter().map(|(v, p)| (v.as_str(), *p))
+    }
+}
+
 /// The number a collapsible surface puts on its top border, or `None` when it has
 /// nothing to say. With a cursor (`position` is `Some`) it is about *place*: hidden
 /// while every row fits, `position/total` once the list scrolls. Without one it is
@@ -31,9 +100,9 @@ pub(crate) fn surface_count(
 impl App {
     /// The current view scope, before any filter. `filtered_entries` starts here.
     pub(crate) fn scope_entries(&self) -> Vec<&TimeEntry> {
-        use chrono::Datelike;
         use super::types::ViewMode;
         use crate::tracker::TimeData;
+        use chrono::Datelike;
         match self.view_mode {
             ViewMode::All => self.data.entries.iter().collect(),
             ViewMode::Day => self.data.entries_for_date(self.selected_date),
@@ -178,22 +247,18 @@ impl App {
         self.focus = order[(current + delta).rem_euclid(len) as usize];
     }
 
-    pub(crate) fn pane_selection(&self, pane: Pane) -> &[String] {
+    /// Exact match: both sides come from [`pane_values`](Self::pane_values), though
+    /// the filter predicates themselves stay case-insensitive.
+    pub(crate) fn pane_value_state(&self, pane: Pane, value: &str) -> Option<Polarity> {
         match pane {
-            Pane::Projects => &self.selected_projects,
-            Pane::Tags => &self.selected_tags,
+            Pane::Projects => self.project_filter.state(value),
+            Pane::Tags => self.tag_filter.state(value),
         }
     }
 
-    /// Exact match: both sides come from [`pane_values`](Self::pane_values), though
-    /// the filter predicates themselves stay case-insensitive.
-    pub(crate) fn pane_value_is_selected(&self, pane: Pane, value: &str) -> bool {
-        self.pane_selection(pane).iter().any(|v| v == value)
-    }
-
-    /// `Enter` in the focused pane: toggle the value under its cursor. Returns false
-    /// when no pane has focus, so `Enter` falls through to the detail popover.
-    pub(crate) fn toggle_pane_value(&mut self) -> bool {
+    /// Cycle the value under the focused pane's cursor. Returns false when no
+    /// pane has focus, so `Enter` falls through to the detail popover.
+    pub(crate) fn cycle_pane_value(&mut self, forward: bool) -> bool {
         let Some(pane) = self.focused_pane() else {
             return false;
         };
@@ -201,15 +266,9 @@ impl App {
         let Some((value, _)) = self.pane_values(pane).into_iter().nth(cursor) else {
             return true;
         };
-        let selection = match pane {
-            Pane::Projects => &mut self.selected_projects,
-            Pane::Tags => &mut self.selected_tags,
-        };
-        match selection.iter().position(|v| v == &value) {
-            Some(pos) => {
-                selection.remove(pos);
-            }
-            None => selection.push(value),
+        match pane {
+            Pane::Projects => self.project_filter.cycle(&value, forward),
+            Pane::Tags => self.tag_filter.cycle(&value, forward),
         }
         // The row that was selected is very unlikely to still be the same row.
         self.table_state.select(Some(0));

@@ -51,7 +51,7 @@ impl IdleInterval {
 pub fn parse_tags(text: &str) -> (String, Vec<String>) {
     let mut tags = Vec::new();
     let mut clean_parts = Vec::new();
-    
+
     for word in text.split_whitespace() {
         if word.starts_with('#') && word.len() > 1 {
             // Remove the # prefix and add to tags
@@ -60,7 +60,7 @@ pub fn parse_tags(text: &str) -> (String, Vec<String>) {
             clean_parts.push(word);
         }
     }
-    
+
     (clean_parts.join(" "), tags)
 }
 
@@ -95,7 +95,10 @@ pub fn migrate(data: &mut TimeData) {
 
 /// Format tags for display (with # prefix), e.g. "#backend #bug"
 pub fn format_tags(tags: &[String]) -> String {
-    tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ")
+    tags.iter()
+        .map(|t| format!("#{}", t))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl TimeEntry {
@@ -148,24 +151,14 @@ impl TimeEntry {
         self.tags.iter().any(|t| t.to_lowercase() == tag_lower)
     }
 
-    /// Check if entry matches any of the given tags (case-insensitive)
-    pub fn has_any_tag(&self, tags: &[String]) -> bool {
-        tags.iter().any(|t| self.has_tag(t))
-    }
-
-    /// Whether the entry's project is one of `projects` (case-insensitive). An
-    /// entry with no project matches nothing.
-    pub fn has_any_project(&self, projects: &[String]) -> bool {
-        let Some(project) = self
-            .project
+    /// Whether the entry's project is `name` (trim, case-insensitive). An entry
+    /// with no project matches nothing.
+    pub fn is_project(&self, name: &str) -> bool {
+        self.project
             .as_deref()
             .map(str::trim)
             .filter(|p| !p.is_empty())
-        else {
-            return false;
-        };
-        let project = project.to_lowercase();
-        projects.iter().any(|p| p.trim().to_lowercase() == project)
+            .is_some_and(|p| p.to_lowercase() == name.trim().to_lowercase())
     }
 
     /// The haystack `/` searches: everything a row or the popover can show, built

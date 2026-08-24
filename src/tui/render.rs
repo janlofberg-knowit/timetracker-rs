@@ -1,3 +1,4 @@
+use super::panes::Polarity;
 use super::types::{
     ConfirmAction, InputField, InputMode, LayoutSurface, OnboardingStep, Pane, ViewMode,
 };
@@ -423,7 +424,11 @@ pub fn render_help_popup(f: &mut Frame) {
         Line::from(vec![key("  Shift-T"), sep("    Tags pane on / off")]),
         Line::from(vec![key("  Tab"), sep("        focus table / panes")]),
         Line::from(vec![key("  Shift-Tab"), sep("  focus panes in reverse")]),
-        Line::from(vec![key("  Enter"), sep("      filter on the pane value")]),
+        Line::from(vec![
+            key("  Enter"),
+            sep("      pane value: include / exclude / off"),
+        ]),
+        Line::from(vec![key("  -"), sep("          cycle the pane value back")]),
         Line::from(Span::raw("")),
         heading("  Other"),
         Line::from(vec![key("  Shift-A"), sep("  agent phases on / off")]),
@@ -1043,17 +1048,17 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         values
             .iter()
             .map(|(value, count)| {
-                // The lead column carries the selection mark, so it costs no width.
-                let selected = app.pane_value_is_selected(pane, value);
-                let mark = if selected { "•" } else { " " };
+                // The lead column carries the filter mark, so it costs no width.
+                // Both marks are one ASCII column: `used` below counts on it.
+                let state = app.pane_value_state(pane, value);
+                let (mark, value_style) = match state {
+                    Some(Polarity::Include) => ("•", Style::default().fg(theme::accent()).bold()),
+                    Some(Polarity::Exclude) => ("-", Style::default().fg(theme::inactive()).bold()),
+                    None => (" ", Style::default().fg(Color::White)),
+                };
                 let count = count.to_string();
                 let used = 1 + value.chars().count() + count.chars().count() + 1;
                 let gap = width.saturating_sub(used).max(1);
-                let value_style = if selected {
-                    Style::default().fg(theme::accent()).bold()
-                } else {
-                    Style::default().fg(Color::White)
-                };
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{}{}", mark, value), value_style),
                     Span::raw(" ".repeat(gap)),
@@ -1585,13 +1590,19 @@ fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         (rows, app.table_state.selected())
     };
 
-    // `(tt)` and `#impl`, the CLI's own sigils, so the title needs no legend.
+    // `(tt)` and `#impl`, the CLI's own sigils, so the title needs no legend;
+    // an excluded value carries a `-` prefix.
     let title = if app.is_filtering() {
+        let negate = |p: Polarity| if p == Polarity::Exclude { "-" } else { "" };
         let values: Vec<String> = app
-            .selected_projects
-            .iter()
-            .map(|p| format!("({})", p))
-            .chain(app.selected_tags.iter().map(|t| format!("#{}", t)))
+            .project_filter
+            .values()
+            .map(|(v, p)| format!("{}({})", negate(p), v))
+            .chain(
+                app.tag_filter
+                    .values()
+                    .map(|(v, p)| format!("{}#{}", negate(p), v)),
+            )
             .collect();
         format!(" Entries [filtered: {}] ", values.join(" "))
     } else {
