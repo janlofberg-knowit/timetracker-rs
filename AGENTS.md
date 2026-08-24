@@ -19,7 +19,8 @@ issue number, or `-`. `<phase>` is one of:
 | verifying behaviour, running or fixing tests | `qa` |
 | reading code to judge it, whether or not it changes | `review` |
 | documentation | `docs` |
-| investigation that produces no artifact | `spike` |
+| investigation that produces no artifact, answering a specific question | `spike` |
+| open-ended exploration with no specific question | `explore` |
 | tooling, config, environment, release | `ops` |
 
 Everything below is detail on those three commands.
@@ -63,7 +64,7 @@ Everything below is detail on those three commands.
   environment manager such as `mise` or `direnv`, `$TT_PROJECT` is a natural thing
   for them to declare there, so the value travels with the repo.)
 - **issue** — the tracked issue number, or `-` if untracked
-- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `ops`; see the
+- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `explore` `ops`; see the
   phase table at the top of this file
 
 **project is a real field** on the entry, not a tag: the agent commands pass it as
