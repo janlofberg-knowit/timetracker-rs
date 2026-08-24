@@ -1,6 +1,6 @@
-use chrono::Duration;
 use super::App;
 use super::types::{InputMode, SortOrder};
+use chrono::Duration;
 
 impl App {
     pub(crate) fn filtered_entries(&self) -> Vec<&crate::tracker::TimeEntry> {
@@ -11,13 +11,11 @@ impl App {
             SortOrder::OldestFirst => entries.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
         }
 
-        // OR within a pane, AND across the two; an empty set is not a filter.
+        // OR within a pane's includes, AND across the two; exclusions veto first.
         let entries: Vec<_> = entries
             .into_iter()
-            .filter(|e| {
-                self.selected_projects.is_empty() || e.has_any_project(&self.selected_projects)
-            })
-            .filter(|e| self.selected_tags.is_empty() || e.has_any_tag(&self.selected_tags))
+            .filter(|e| self.project_filter.admits(|v| e.is_project(v)))
+            .filter(|e| self.tag_filter.admits(|v| e.has_tag(v)))
             .collect();
 
         if self.search_term.is_empty() {
@@ -43,7 +41,7 @@ impl App {
 
     /// Whether a pane selection is narrowing the view.
     pub(crate) fn is_filtering(&self) -> bool {
-        !self.selected_projects.is_empty() || !self.selected_tags.is_empty()
+        !self.project_filter.is_empty() || !self.tag_filter.is_empty()
     }
 
     /// Whether the footer's figure is narrowed — pane selection or search term.
@@ -53,8 +51,8 @@ impl App {
     }
 
     pub(crate) fn clear_filters(&mut self) {
-        self.selected_projects.clear();
-        self.selected_tags.clear();
+        self.project_filter.clear();
+        self.tag_filter.clear();
         self.table_state.select(Some(0));
     }
 
@@ -72,7 +70,12 @@ impl App {
 
     pub(crate) fn handle_search_char(&mut self, c: char) {
         let pos = self.cursor_pos;
-        let byte_idx = self.search_term.char_indices().nth(pos).map(|(i, _)| i).unwrap_or(self.search_term.len());
+        let byte_idx = self
+            .search_term
+            .char_indices()
+            .nth(pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.search_term.len());
         self.search_term.insert(byte_idx, c);
         self.cursor_pos += 1;
         self.table_state.select(Some(0));
@@ -81,9 +84,21 @@ impl App {
     pub(crate) fn handle_search_backspace(&mut self) {
         let pos = self.cursor_pos;
         let actual_pos = pos.min(self.search_term.chars().count());
-        if actual_pos == 0 { return; }
-        let byte_start = self.search_term.char_indices().nth(actual_pos - 1).map(|(i, _)| i).unwrap_or(self.search_term.len());
-        let byte_end = self.search_term.char_indices().nth(actual_pos).map(|(i, _)| i).unwrap_or(self.search_term.len());
+        if actual_pos == 0 {
+            return;
+        }
+        let byte_start = self
+            .search_term
+            .char_indices()
+            .nth(actual_pos - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(self.search_term.len());
+        let byte_end = self
+            .search_term
+            .char_indices()
+            .nth(actual_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.search_term.len());
         self.search_term.drain(byte_start..byte_end);
         self.cursor_pos = actual_pos - 1;
         self.table_state.select(Some(0));

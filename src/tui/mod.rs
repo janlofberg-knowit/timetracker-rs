@@ -46,9 +46,9 @@ pub(crate) struct App {
     pub(crate) input_end_time: String,
     pub(crate) input_duration: String,
     pub(crate) search_term: String,
-    /// The values picked in each pane. OR within a set, AND across the two.
-    pub(crate) selected_projects: Vec<String>,
-    pub(crate) selected_tags: Vec<String>,
+    /// Each pane's tri-state filter. OR within a pane's includes, AND across the two.
+    pub(crate) project_filter: panes::PaneFilter,
+    pub(crate) tag_filter: panes::PaneFilter,
     pub(crate) editing_entry_id: Option<u64>,
     /// What `InputMode::Confirm` is asking about: the action, entry and origin mode.
     pub(crate) pending_confirm: Option<PendingConfirm>,
@@ -144,8 +144,8 @@ impl App {
             input_end_time: String::new(),
             input_duration: String::new(),
             search_term: String::new(),
-            selected_projects: Vec::new(),
-            selected_tags: Vec::new(),
+            project_filter: panes::PaneFilter::default(),
+            tag_filter: panes::PaneFilter::default(),
             editing_entry_id: None,
             pending_confirm: None,
             sort_order: SortOrder::NewestFirst,
@@ -330,12 +330,16 @@ pub fn run_tui(update_notice: Option<String>) -> Result<()> {
                                     app.previous();
                                 }
                             }
-                            // One key, disambiguated by focus: `toggle_pane_value`
+                            // One key, disambiguated by focus: `cycle_pane_value`
                             // reporting false *is* the focus check.
                             KeyCode::Enter => {
-                                if !app.toggle_pane_value() {
+                                if !app.cycle_pane_value(true) {
                                     app.open_detail();
                                 }
+                            }
+                            // Reverse cycle; without pane focus it does nothing.
+                            KeyCode::Char('-') => {
+                                app.cycle_pane_value(false);
                             }
                             KeyCode::Char('P') => app.toggle_pane(Pane::Projects),
                             KeyCode::Char('T') => app.toggle_pane(Pane::Tags),
@@ -527,6 +531,7 @@ pub fn run_tui(update_notice: Option<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::panes::Polarity;
     use super::*;
     use crate::storage;
     /// Serialises the tests that repoint `HOME` and `TT_MARK_DIR`; env is
@@ -1051,7 +1056,7 @@ mod tests {
         app.view_mode = ViewMode::Day;
         let before = app.pane_values(Pane::Tags);
 
-        app.selected_tags = vec!["plan".to_string()];
+        app.tag_filter.cycle("plan", true);
         app.search_term = "nothing matches this".to_string();
         assert!(app.filtered_entries().is_empty(), "filter did not bite");
         assert_eq!(app.pane_values(Pane::Tags), before);
@@ -1559,7 +1564,7 @@ mod tests {
         }
     }
 
-    /// `Enter` in a pane filters on the value under its cursor; on the table it does not.
+    /// `Enter` in a pane cycles the value under its cursor; on the table it does not.
     #[test]
     fn enter_toggles_the_value_under_the_pane_cursor() {
         let _guard = env_guard();
@@ -1568,22 +1573,121 @@ mod tests {
         app.view_mode = ViewMode::Day;
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
 
+        // Three Enters walk off → include → exclude → off.
         point_at(&mut app, Pane::Projects, "tt");
-        assert!(app.toggle_pane_value(), "Enter was not handled by the pane");
-        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert!(
+            app.cycle_pane_value(true),
+            "Enter was not handled by the pane"
+        );
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Include)
+        );
         assert_eq!(in_view(&app), vec!["a", "b"]);
         assert!(app.is_filtering());
-        assert!(app.pane_value_is_selected(Pane::Projects, "tt"));
 
-        assert!(app.toggle_pane_value());
-        assert!(app.selected_projects.is_empty());
+        assert!(app.cycle_pane_value(true));
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Exclude)
+        );
+        // Pure negation: `f`, with no project, survives the exclusion.
+        assert_eq!(in_view(&app), vec!["c", "f"]);
+        assert!(app.is_filtering());
+
+        assert!(app.cycle_pane_value(true));
+        assert_eq!(app.pane_value_state(Pane::Projects, "tt"), None);
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
         assert!(!app.is_filtering());
 
         app.focus = Focus::Table;
-        assert!(!app.toggle_pane_value());
-        assert!(app.selected_projects.is_empty() && app.selected_tags.is_empty());
+        assert!(!app.cycle_pane_value(true));
+        assert!(!app.is_filtering());
         assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// `-` walks the cycle the other way: off → exclude → include → off.
+    #[test]
+    fn minus_cycles_the_pane_value_backwards() {
+        let _guard = env_guard();
+        sandbox("pane-cycle-back");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+
+        point_at(&mut app, Pane::Projects, "tt");
+        assert!(app.cycle_pane_value(false), "- was not handled by the pane");
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Exclude)
+        );
+        assert_eq!(in_view(&app), vec!["c", "f"]);
+
+        assert!(app.cycle_pane_value(false));
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Include)
+        );
+        assert_eq!(in_view(&app), vec!["a", "b"]);
+
+        assert!(app.cycle_pane_value(false));
+        assert_eq!(app.pane_value_state(Pane::Projects, "tt"), None);
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+
+        app.focus = Focus::Table;
+        assert!(!app.cycle_pane_value(false));
+        assert!(!app.is_filtering());
+        assert_eq!(in_view(&app), vec!["a", "b", "c", "f"]);
+    }
+
+    /// Excluding a tag hides its entries and keeps the untagged ones.
+    #[test]
+    fn excluding_a_tag_admits_untagged_entries() {
+        let _guard = env_guard();
+        sandbox("pane-exclude-tag");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+
+        app.tag_filter.cycle("impl", false);
+        assert_eq!(in_view(&app), vec!["b", "f"]);
+
+        // An include plus an exclude in the same pane narrows correctly.
+        app.tag_filter.cycle("ops", true);
+        assert_eq!(in_view(&app), Vec::<String>::new());
+        app.tag_filter.cycle("plan", true);
+        assert_eq!(in_view(&app), vec!["b"]);
+    }
+
+    /// An excluded value renders as `-value` in its pane and `-` in the title.
+    #[test]
+    fn the_excluded_state_is_rendered_in_the_pane_and_the_title() {
+        let _guard = env_guard();
+        sandbox("pane-exclude-render");
+        let mut app = seed_panes();
+        app.view_mode = ViewMode::Day;
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        app.project_filter.cycle("tt", false);
+        app.tag_filter.cycle("impl", true);
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("-tt"), "no `-tt` pane row:\n{screen}");
+        assert!(screen.contains("•impl"), "no `•impl` pane row:\n{screen}");
+        assert!(
+            screen.contains("Entries [filtered: -(tt) #impl]"),
+            "the title does not show the exclusion:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn the_help_popup_teaches_both_cycle_keys() {
+        let _guard = env_guard();
+        sandbox("help-cycle-keys");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::Help;
+
+        let screen = frame_lines(&mut app, 100, 45).join("\n");
+        assert!(screen.contains("pane value: include / exclude / off"));
+        assert!(screen.contains("cycle the pane value back"));
     }
 
     #[test]
@@ -1596,7 +1700,7 @@ mod tests {
 
         // This is exactly what the Normal-mode Enter arm does.
         let enter = |app: &mut App| {
-            if !app.toggle_pane_value() {
+            if !app.cycle_pane_value(true) {
                 app.open_detail();
             }
         };
@@ -1607,7 +1711,10 @@ mod tests {
             app.input_mode == InputMode::Normal,
             "Enter in a pane opened the popover instead of filtering"
         );
-        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Include)
+        );
 
         app.focus = Focus::Table;
         enter(&mut app);
@@ -1616,7 +1723,10 @@ mod tests {
             "Enter on the table did not open the popover"
         );
         assert_eq!(app.table_state.selected(), Some(0));
-        assert_eq!(app.selected_projects, vec!["tt".to_string()]);
+        assert_eq!(
+            app.pane_value_state(Pane::Projects, "tt"),
+            Some(Polarity::Include)
+        );
         assert_eq!(app.selected_entry().map(|e| e.id), Some(0));
     }
 
@@ -2419,21 +2529,21 @@ mod tests {
         app.view_mode = ViewMode::Day;
 
         point_at(&mut app, Pane::Projects, "tt");
-        app.toggle_pane_value();
+        app.cycle_pane_value(true);
         assert_eq!(in_view(&app), vec!["a", "b"]);
 
         // A second project widens the set — the two are OR'd.
         point_at(&mut app, Pane::Projects, "loremind");
-        app.toggle_pane_value();
+        app.cycle_pane_value(true);
         assert_eq!(in_view(&app), vec!["a", "b", "c"]);
 
         // A tag narrows within them — the panes are AND'd.
         point_at(&mut app, Pane::Tags, "impl");
-        app.toggle_pane_value();
+        app.cycle_pane_value(true);
         assert_eq!(in_view(&app), vec!["a", "c"]);
 
         point_at(&mut app, Pane::Tags, "plan");
-        app.toggle_pane_value();
+        app.cycle_pane_value(true);
         assert_eq!(in_view(&app), vec!["a", "b", "c"]);
 
         app.clear_filters();
@@ -2452,7 +2562,7 @@ mod tests {
         assert_eq!(app.filtered_total().num_hours(), 4);
 
         point_at(&mut app, Pane::Projects, "tt");
-        app.toggle_pane_value();
+        app.cycle_pane_value(true);
         assert_eq!(app.filtered_total().num_hours(), 2);
         assert!(app.is_filtering());
     }
@@ -2584,15 +2694,15 @@ mod tests {
         let before = app.project_summary();
         let in_scope = app.scope_entries().len();
 
-        app.selected_projects = vec!["tt".to_string()];
+        app.project_filter.cycle("tt", true);
         assert!(
             app.filtered_entries().len() < in_scope,
             "filter did not bite"
         );
         assert_eq!(app.project_summary(), before);
 
-        app.selected_projects.clear();
-        app.selected_tags = vec!["ops".to_string()];
+        app.project_filter.clear();
+        app.tag_filter.cycle("ops", true);
         assert!(
             app.filtered_entries().len() < in_scope,
             "filter did not bite"
@@ -2702,7 +2812,7 @@ mod tests {
         app.set_view_mode(ViewMode::Day);
         assert!(!app.total_is_filtered());
         let unfiltered = app.summary_marker(6);
-        app.selected_projects = vec!["tt".to_string()];
+        app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the footer total is now narrowed");
         assert_eq!(app.summary_marker(6), unfiltered);
     }
@@ -2752,7 +2862,7 @@ mod tests {
         assert!(!app.total_is_filtered());
         assert_eq!(summed, app.data.total_for_week(week_start));
 
-        app.selected_projects = vec!["tt".to_string()];
+        app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the marker is now emphasised");
         assert!(
             app.filtered_total() < summed,
