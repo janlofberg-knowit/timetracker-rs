@@ -53,8 +53,8 @@ impl PaneFilter {
     /// The precedence rule, stated once: admitted when the entry matches no
     /// excluded value and (there are no included values or it matches one).
     /// Pure negation follows — an entry with no value matches nothing, so an
-    /// exclusion-only filter admits it.
-    pub(crate) fn admits(&self, matches: impl Fn(&str) -> bool) -> bool {
+    /// exclusion-only filter allows it.
+    pub(crate) fn allows(&self, matches: impl Fn(&str) -> bool) -> bool {
         let mut any_include = false;
         let mut include_hit = false;
         for (value, polarity) in &self.0 {

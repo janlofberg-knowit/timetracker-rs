@@ -14,8 +14,8 @@ impl App {
         // OR within a pane's includes, AND across the two; exclusions veto first.
         let entries: Vec<_> = entries
             .into_iter()
-            .filter(|e| self.project_filter.admits(|v| e.is_project(v)))
-            .filter(|e| self.tag_filter.admits(|v| e.has_tag(v)))
+            .filter(|e| self.project_filter.allows(|v| e.is_project(v)))
+            .filter(|e| self.tag_filter.allows(|v| e.has_tag(v)))
             .collect();
 
         if self.search_term.is_empty() {

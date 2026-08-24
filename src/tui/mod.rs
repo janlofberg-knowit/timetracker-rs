@@ -1641,7 +1641,7 @@ mod tests {
 
     /// Excluding a tag hides its entries and keeps the untagged ones.
     #[test]
-    fn excluding_a_tag_admits_untagged_entries() {
+    fn excluding_a_tag_allows_untagged_entries() {
         let _guard = env_guard();
         sandbox("pane-exclude-tag");
         let mut app = seed_panes();
