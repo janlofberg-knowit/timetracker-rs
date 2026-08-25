@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::aot::{self, Shell};
 
 use crate::config;
 use crate::duration;
@@ -107,6 +108,11 @@ pub enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Shell to generate for; detected from the environment when omitted
+        shell: Option<Shell>,
+    },
 }
 
 impl Commands {
@@ -118,9 +124,18 @@ impl Commands {
     pub fn wants_update_check(&self) -> bool {
         !matches!(
             self,
-            Commands::Update { .. } | Commands::Active | Commands::Agent { .. }
+            Commands::Update { .. }
+                | Commands::Active
+                | Commands::Agent { .. }
+                | Commands::Completions { .. }
         )
     }
+}
+
+pub fn completions(shell: Option<Shell>) -> Result<()> {
+    let shell = shell.or_else(Shell::from_env).unwrap_or(Shell::Bash);
+    aot::generate(shell, &mut Cli::command(), "tt", &mut std::io::stdout());
+    Ok(())
 }
 
 /// The agent layer's commands. Most touch mark files only; the ones that log an
