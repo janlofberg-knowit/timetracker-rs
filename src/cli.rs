@@ -1,7 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::ArgValueCandidates;
 use clap_complete::aot::{self, Shell};
+
+use crate::completions;
 
 use crate::config;
 use crate::duration;
@@ -25,7 +28,7 @@ pub enum Commands {
         #[arg(required = true)]
         description: Vec<String>,
         /// Project this entry belongs to
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
     },
     /// Stop the current active task
@@ -42,7 +45,7 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
         /// Project this entry belongs to
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
         /// A silent stretch inside the logged span, as epoch seconds
         /// `<start>-<end>`. Repeatable; records the interval without changing the
@@ -88,7 +91,7 @@ pub enum Commands {
         #[arg(long, requires = "scope")]
         until: Option<NaiveDate>,
         /// Only entries whose project field is this
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
         /// Machine-readable output
         #[arg(long)]
@@ -144,23 +147,32 @@ pub fn completions(shell: Option<Shell>) -> Result<()> {
 pub enum AgentCommands {
     /// Open a mark for a phase, keeping the start of one already open
     Begin {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// Record one heartbeat for an open phase
     Touch {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// Drop a phase's mark and heartbeats without logging anything
     Cancel {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// List every open mark
@@ -171,9 +183,12 @@ pub enum AgentCommands {
     /// `begin`/`touch`/`end` whenever the work can be marked as it happens,
     /// so the logged span is measured, not guessed.
     Item {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
@@ -182,9 +197,12 @@ pub enum AgentCommands {
     },
     /// Close a marked phase, measuring it to its last heartbeat
     End {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
