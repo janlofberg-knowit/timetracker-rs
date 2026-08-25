@@ -110,17 +110,24 @@ fn a_completion_run_leaves_the_store_and_its_lock_untouched() {
 }
 
 #[test]
-fn static_scripts_are_generated_for_every_shell() {
-    let case = Case::new("completions-static");
+fn the_completions_subcommand_prints_the_same_hook_as_the_env_protocol() {
+    let case = Case::new("completions-subcommand-hook");
     for shell in SHELLS {
-        let run = case.run_bare(&["completions", shell]);
-        run.assert_status(0);
-        assert!(
-            run.stdout.contains("tt") && run.stdout.len() > 500,
-            "{shell} script looks wrong: {} bytes",
-            run.stdout.len()
-        );
+        let sub = case.run_bare(&["completions", shell]);
+        sub.assert_status(0);
+        let env = case.run_bare_with_env(&[], &[("COMPLETE", shell)]);
+        env.assert_status(0);
+        assert!(sub.stdout.contains("COMPLETE"), "{shell}: no COMPLETE in hook");
+        assert_eq!(sub.stdout, env.stdout, "{shell}: the two surfaces diverge");
     }
+}
+
+#[test]
+fn an_unknown_shell_is_an_error_naming_the_choices() {
+    let case = Case::new("completions-unknown-shell");
+    let run = case.run_bare_with_env(&["completions"], &[("SHELL", "/bin/nu")]);
+    assert_ne!(run.status, Some(0));
+    assert!(run.stderr.contains("bash, elvish, fish, powershell, zsh"), "{}", run.stderr);
 }
 
 #[test]

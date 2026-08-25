@@ -1,8 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::ArgValueCandidates;
-use clap_complete::aot::{self, Shell};
+use clap_complete::aot::Shell;
+use clap_complete::env::Shells;
 
 use crate::completions;
 
@@ -111,9 +112,9 @@ pub enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    /// Print a shell completion script to stdout
+    /// Print the shell completion hook, for `eval "$(tt completions zsh)"`
     Completions {
-        /// Shell to generate for; detected from the environment when omitted
+        /// One of bash, elvish, fish, powershell, zsh; detected from $SHELL when omitted
         shell: Option<Shell>,
     },
 }
@@ -135,18 +136,29 @@ impl Commands {
     }
 }
 
+/// Print the completion hook for `eval` at shell startup. The hook embeds this
+/// binary's absolute path, so it is regenerated on every startup, never saved.
 pub fn completions(shell: Option<Shell>) -> Result<()> {
+    let shells = Shells::builtins();
     let shell = shell.or_else(Shell::from_env).ok_or_else(|| {
-        let names: Vec<String> = Shell::value_variants()
-            .iter()
-            .filter_map(|s| Some(s.to_possible_value()?.get_name().to_string()))
-            .collect();
         anyhow::anyhow!(
             "could not detect the shell from $SHELL; pass one of: {}",
-            names.join(", ")
+            shells.names().collect::<Vec<_>>().join(", ")
         )
     })?;
-    aot::generate(shell, &mut Cli::command(), "tt", &mut std::io::stdout());
+    let name = shell.to_possible_value().map(|v| v.get_name().to_string());
+    let completer = name
+        .as_deref()
+        .and_then(|n| shells.completer(n))
+        .ok_or_else(|| anyhow::anyhow!("no dynamic completer for {shell}"))?;
+    let exe = std::env::current_exe()?;
+    completer.write_registration(
+        "COMPLETE",
+        "tt",
+        "tt",
+        &exe.to_string_lossy(),
+        &mut std::io::stdout(),
+    )?;
     Ok(())
 }
 
