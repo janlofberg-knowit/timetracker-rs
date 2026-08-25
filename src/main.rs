@@ -4,6 +4,7 @@ mod activity;
 mod agent;
 mod audit;
 mod cli;
+mod completions;
 mod config;
 mod duration;
 mod icons;
