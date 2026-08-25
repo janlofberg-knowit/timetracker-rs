@@ -159,6 +159,18 @@ pub fn completions(shell: Option<Shell>) -> Result<()> {
         &exe.to_string_lossy(),
         &mut std::io::stdout(),
     )?;
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let name = completer.name();
+        let line = match name {
+            "fish" => "tt completions fish | source   # ~/.config/fish/config.fish".to_string(),
+            "powershell" => {
+                "tt completions powershell | Out-String | Invoke-Expression   # $PROFILE".to_string()
+            }
+            "elvish" => "eval (tt completions elvish | slurp)   # ~/.config/elvish/rc.elv".to_string(),
+            _ => format!("eval \"$(tt completions {name})\"   # ~/.{name}rc"),
+        };
+        eprintln!("\nTo enable completion, add this line to your shell startup file:\n  {line}");
+    }
     Ok(())
 }
 
