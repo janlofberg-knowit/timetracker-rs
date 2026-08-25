@@ -168,6 +168,14 @@ Evaluate the hook at startup rather than saving its output: the generated
 script embeds the absolute path of the `tt` binary that produced it, so a
 saved copy breaks the moment the binary moves or is upgraded in place.
 
+Set `COMPLETE` only on that one line, never `export` it: any `tt` invocation
+that sees `COMPLETE` in its environment prints the registration script and
+exits instead of running the command.
+
+Both surfaces are verified to load and register in bash 3.2 and zsh 5.9. For
+fish, powershell and elvish only the generator's output is checked: no shell
+has parsed those scripts here, so treat them as untested.
+
 ---
 
 ## Duration Format
