@@ -30,8 +30,7 @@ cargo install --git https://github.com/linus-skold/timetracker-rs
 
 ## Quick start
 
-Shell completion: `eval "$(COMPLETE=zsh tt)"` (or `bash`, `fish`) in your
-shell's rc file — see [docs/usage.md](docs/usage.md#tt-completions-shell).
+Shell completion: `eval "$(tt completions)"` in your shell's rc file — see [docs/usage.md](docs/usage.md#tt-completions-shell).
 
 
 ```sh
