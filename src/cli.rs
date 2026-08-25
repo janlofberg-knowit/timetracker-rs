@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::ArgValueCandidates;
 use clap_complete::aot::{self, Shell};
 
@@ -136,7 +136,16 @@ impl Commands {
 }
 
 pub fn completions(shell: Option<Shell>) -> Result<()> {
-    let shell = shell.or_else(Shell::from_env).unwrap_or(Shell::Bash);
+    let shell = shell.or_else(Shell::from_env).ok_or_else(|| {
+        let names: Vec<String> = Shell::value_variants()
+            .iter()
+            .filter_map(|s| Some(s.to_possible_value()?.get_name().to_string()))
+            .collect();
+        anyhow::anyhow!(
+            "could not detect the shell from $SHELL; pass one of: {}",
+            names.join(", ")
+        )
+    })?;
     aot::generate(shell, &mut Cli::command(), "tt", &mut std::io::stdout());
     Ok(())
 }

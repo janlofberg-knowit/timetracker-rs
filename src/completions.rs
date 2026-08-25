@@ -4,26 +4,34 @@
 
 use std::collections::BTreeSet;
 
+use clap::CommandFactory;
 use clap_complete::CompletionCandidate;
 
 use crate::agent::PHASES;
+use crate::cli::Cli;
 use crate::marks::{Mark, open_marks};
 use crate::report::classify;
 use crate::storage::load_data;
-use crate::tracker::TimeData;
+use crate::tracker::{self, TimeData};
 
 /// Every project named by a store entry or an open mark.
 pub fn projects() -> Vec<CompletionCandidate> {
-    let data = load_data().unwrap_or_default();
-    to_candidates(project_names(&data, &open_marks()))
+    to_candidates(project_names(&store(), &open_marks()))
 }
 
 /// Issues known for the project typed earlier on the line, or every issue when
 /// no project can be read off it. Always includes the no-issue sentinel `-`.
 pub fn issues() -> Vec<CompletionCandidate> {
-    let data = load_data().unwrap_or_default();
-    let project = typed_project(std::env::args());
-    to_candidates(issue_names(&data, &open_marks(), project.as_deref()))
+    let args = std::env::args_os().map(|a| a.to_string_lossy().into_owned());
+    let project = typed_project(args);
+    to_candidates(issue_names(&store(), &open_marks(), project.as_deref()))
+}
+
+/// The store as `tt report` sees it: migrated in memory, never written back.
+fn store() -> TimeData {
+    let mut data = load_data().unwrap_or_default();
+    tracker::migrate(&mut data);
+    data
 }
 
 pub fn phases() -> Vec<CompletionCandidate> {
@@ -61,12 +69,16 @@ fn issue_names(data: &TimeData, marks: &[Mark], project: Option<&str>) -> BTreeS
 }
 
 /// The project positional already typed on an `agent` command line, read from
-/// the completer's own argv: `<bin> -- tt agent <sub> <project> ...`. `None`
-/// whenever that shape is not found, so the caller falls back to every issue.
+/// the completer's own argv: `<bin> -- tt agent <sub> [flags] <project> ...`.
+/// `None` whenever that shape is not found, so the caller falls back to every issue.
 fn typed_project<I: Iterator<Item = String>>(args: I) -> Option<String> {
     let words: Vec<String> = args.skip_while(|a| a != "--").skip(1).collect();
-    let agent = words.iter().position(|w| w == "agent")?;
-    let project = words.get(agent + 2)?;
+    let matches = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(words)
+        .ok()?;
+    let (_, sub) = matches.subcommand()?.1.subcommand()?;
+    let project = sub.get_one::<String>("project")?;
     (!project.is_empty()).then(|| project.clone())
 }
 
@@ -153,6 +165,12 @@ mod tests {
     #[test]
     fn typed_project_reads_the_agent_positional() {
         let a = argv(&["/bin/tt", "--", "tt", "agent", "begin", "proj", ""]);
+        assert_eq!(typed_project(a), Some("proj".to_string()));
+    }
+
+    #[test]
+    fn typed_project_skips_flags_before_the_positionals() {
+        let a = argv(&["/bin/tt", "--", "tt", "agent", "end", "--full", "proj", ""]);
         assert_eq!(typed_project(a), Some("proj".to_string()));
     }
 
