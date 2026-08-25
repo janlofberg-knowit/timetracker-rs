@@ -145,6 +145,29 @@ setting `TT_SKIP_UPDATE_CHECK=1`. It's also skipped automatically whenever a
 If you installed the Flatpak build, update with `flatpak update` instead —
 `tt update` won't try to replace a binary it can't write to.
 
+### `tt completions [shell]`
+
+Print a completion script for `bash`, `zsh`, `fish`, `powershell` or `elvish`
+to stdout. With no argument the shell is detected from the environment.
+
+```sh
+tt completions zsh > ~/.zfunc/_tt
+```
+
+A second, richer surface completes live values — projects, issues and phases
+from your own store — and is enabled by evaluating a one-line hook at shell
+startup, naming your shell in `COMPLETE`:
+
+```sh
+eval "$(COMPLETE=bash tt)"        # ~/.bashrc
+eval "$(COMPLETE=zsh tt)"         # ~/.zshrc
+COMPLETE=fish tt | source         # ~/.config/fish/config.fish
+```
+
+Evaluate the hook at startup rather than saving its output: the generated
+script embeds the absolute path of the `tt` binary that produced it, so a
+saved copy breaks the moment the binary moves or is upgraded in place.
+
 ---
 
 ## Duration Format
