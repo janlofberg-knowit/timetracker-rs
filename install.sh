@@ -81,6 +81,7 @@ if "$INSTALL_DIR/tt" completions --help >/dev/null 2>&1; then
     bash)   echo "  echo 'eval \"\$(tt completions bash)\"' >> ~/.bashrc" ;;
     fish)   echo "  echo 'tt completions fish | source' >> ~/.config/fish/config.fish" ;;
     elvish) echo "  echo 'eval (tt completions elvish | slurp)' >> ~/.config/elvish/rc.elv" ;;
+    nu)     echo "  tt completions nu | save -f (\$nu.user-autoload-dirs.0 | path join tt-completer.nu)" ;;
     *)      echo "  tt completions --help   (see docs/usage.md#tt-completions-shell)" ;;
   esac
 fi

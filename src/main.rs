@@ -21,7 +21,9 @@ use clap::{CommandFactory, Parser};
 fn main() -> Result<()> {
     // Exits the process on a completion request, so nothing below — including
     // the store-lock migration — runs on a Tab press.
-    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+    clap_complete::CompleteEnv::with_factory(Cli::command)
+        .shells(completions::SHELLS)
+        .complete();
     let cli = Cli::parse();
 
     // At most once per day, bounded to a couple of seconds — see
@@ -55,7 +57,7 @@ fn main() -> Result<()> {
             return cli::update(*check, *yes);
         }
         Commands::Completions { shell } => {
-            return cli::completions(*shell);
+            return cli::completions(shell.as_deref());
         }
         _ => {}
     }
@@ -108,6 +110,6 @@ fn main() -> Result<()> {
         // Dispatched ahead of the preamble above; unreachable in practice,
         // kept for exhaustiveness (same shape as `Report` just above it).
         Commands::Update { check, yes } => cli::update(check, yes),
-        Commands::Completions { shell } => cli::completions(shell),
+        Commands::Completions { shell } => cli::completions(shell.as_deref()),
     }
 }

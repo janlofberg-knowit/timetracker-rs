@@ -147,8 +147,8 @@ If you installed the Flatpak build, update with `flatpak update` instead —
 
 ### `tt completions [shell]`
 
-Print the shell completion hook for `bash`, `zsh`, `fish`, `powershell` or
-`elvish`. With no argument the shell is detected from `$SHELL`; pass one to
+Print the shell completion hook for `bash`, `zsh`, `fish`, `powershell`,
+`elvish` or `nu`. With no argument the shell is detected from `$SHELL`; pass one to
 override. The installers print this suggestion for your shell after
 installing. Evaluate it at shell startup:
 
@@ -166,8 +166,18 @@ Evaluate the hook at startup rather than saving its output: it embeds the
 absolute path of the `tt` binary that produced it, so a saved copy breaks the
 moment the binary moves or is upgraded in place.
 
-The hook is verified to load and register in bash 3.2 and zsh 5.9. For fish,
-powershell and elvish only the generator's output is checked: no shell has
+Nushell is the exception: it has no `eval`, so save the script once into the
+autoload directory. It calls `tt` by PATH name, so the saved copy stays valid
+across upgrades. Requires nushell 0.108 or newer (the `@complete` attribute).
+
+```nu
+mkdir $nu.user-autoload-dirs.0
+tt completions nu | save -f ($nu.user-autoload-dirs.0 | path join tt-completer.nu)
+```
+
+The hook is verified to load and register in bash 3.2 and zsh 5.9, and in
+nushell 0.115.1 (the `@complete` wrapper form, which passes `tt tui` and
+`tt report` through unchanged). For fish, powershell and elvish only the generator's output is checked: no shell has
 parsed those scripts here, so treat them as untested.
 
 ---
