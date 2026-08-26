@@ -1,9 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use clap_complete::ArgValueCandidates;
-use clap_complete::aot::Shell;
-use clap_complete::env::Shells;
+use clap::builder::PossibleValuesParser;
 
 use crate::completions;
 
@@ -114,8 +113,9 @@ pub enum Commands {
     },
     /// Print the shell completion hook, for `eval "$(tt completions zsh)"`
     Completions {
-        /// One of bash, elvish, fish, powershell, zsh; detected from $SHELL when omitted
-        shell: Option<Shell>,
+        /// Detected from $SHELL when omitted
+        #[arg(value_parser = PossibleValuesParser::new(completions::SHELLS.names()))]
+        shell: Option<String>,
     },
 }
 
@@ -137,20 +137,25 @@ impl Commands {
 }
 
 /// Print the completion hook for `eval` at shell startup. The hook embeds this
-/// binary's absolute path, so it is regenerated on every startup, never saved.
-pub fn completions(shell: Option<Shell>) -> Result<()> {
-    let shells = Shells::builtins();
-    let shell = shell.or_else(Shell::from_env).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not detect the shell from $SHELL; pass one of: {}",
-            shells.names().collect::<Vec<_>>().join(", ")
-        )
-    })?;
-    let name = shell.to_possible_value().map(|v| v.get_name().to_string());
-    let completer = name
-        .as_deref()
-        .and_then(|n| shells.completer(n))
-        .ok_or_else(|| anyhow::anyhow!("no dynamic completer for {shell}"))?;
+/// binary's absolute path, so it is regenerated on every startup, never saved;
+/// nu is the exception (see `completions::Nu`).
+pub fn completions(shell: Option<&str>) -> Result<()> {
+    let from_env = std::env::var_os("SHELL").and_then(|s| {
+        std::path::Path::new(&s)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+    });
+    let completer = shell
+        .map(str::to_string)
+        .or(from_env)
+        .or_else(|| cfg!(windows).then(|| "powershell".to_string()))
+        .and_then(|n| completions::SHELLS.completer(&n))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not detect the shell from $SHELL; pass one of: {}",
+                completions::SHELLS.names().collect::<Vec<_>>().join(", ")
+            )
+        })?;
     let exe = std::env::current_exe()?;
     completer.write_registration(
         "COMPLETE",
@@ -168,9 +173,10 @@ pub fn completions(shell: Option<Shell>) -> Result<()> {
                 "tt completions powershell | Out-String | Invoke-Expression   # $PROFILE".to_string()
             }
             "elvish" => "eval (tt completions elvish | slurp)   # ~/.config/elvish/rc.elv".to_string(),
+            "nu" => "tt completions nu | save -f ($nu.user-autoload-dirs.0 | path join tt-completer.nu)   # run once".to_string(),
             _ => format!("eval \"$(tt completions {name})\"   # ~/.{name}rc"),
         };
-        eprintln!("\nTo enable completion, add this line to your shell startup file:\n  {line}");
+        eprintln!("\nTo enable completion, run this once or add it to your shell startup file:\n  {line}");
     }
     Ok(())
 }
