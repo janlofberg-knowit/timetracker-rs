@@ -13,6 +13,9 @@ source:
 cargo install --git https://github.com/linus-skold/timetracker-rs
 ```
 
+Shell completion for `tt` is one line in your shell startup file,
+`eval "$(tt completions <shell>)"` — see the readme's Quick start.
+
 ## Enforcing this in Claude Code
 
 `npx skills add` is tool-agnostic — it only copies this directory into place; it

@@ -149,7 +149,8 @@ If you installed the Flatpak build, update with `flatpak update` instead —
 
 Print the shell completion hook for `bash`, `zsh`, `fish`, `powershell` or
 `elvish`. With no argument the shell is detected from `$SHELL`; pass one to
-override. Evaluate it at shell startup:
+override. The installers print this suggestion for your shell after
+installing. Evaluate it at shell startup:
 
 ```sh
 eval "$(tt completions zsh)"      # ~/.zshrc
