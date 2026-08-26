@@ -148,6 +148,7 @@ pub fn completions(shell: Option<&str>) -> Result<()> {
     let completer = shell
         .map(str::to_string)
         .or(from_env)
+        .or_else(|| cfg!(windows).then(|| "powershell".to_string()))
         .and_then(|n| completions::SHELLS.completer(&n))
         .ok_or_else(|| {
             anyhow::anyhow!(
