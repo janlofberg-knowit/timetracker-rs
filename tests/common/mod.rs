@@ -168,6 +168,11 @@ impl Case {
         self.run_with(args, true)
     }
 
+    /// [`Case::run_bare`] with extra `KEY=value` pairs that `env_clear` would strip.
+    pub fn run_bare_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
+        self.run_full(args, true, env)
+    }
+
     /// Lay a `data.json` into the sandbox from fabricated rows, at `schema_version:
     /// 1` so the migrate preamble early-returns and the `project` fields survive.
     pub fn write_store(&self, rows: &[StoreRow]) {

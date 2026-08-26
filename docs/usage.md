@@ -145,6 +145,31 @@ setting `TT_SKIP_UPDATE_CHECK=1`. It's also skipped automatically whenever a
 If you installed the Flatpak build, update with `flatpak update` instead —
 `tt update` won't try to replace a binary it can't write to.
 
+### `tt completions [shell]`
+
+Print the shell completion hook for `bash`, `zsh`, `fish`, `powershell` or
+`elvish`. With no argument the shell is detected from `$SHELL`; pass one to
+override. The installers print this suggestion for your shell after
+installing. Evaluate it at shell startup:
+
+```sh
+eval "$(tt completions zsh)"      # ~/.zshrc
+eval "$(tt completions bash)"     # ~/.bashrc
+tt completions fish | source      # ~/.config/fish/config.fish
+```
+
+Completion then covers subcommands and flags, and completes live values from
+your own store: `--project`, and the project, issue and phase positionals of
+`tt agent`. Issues are scoped to the project already typed on the line.
+
+Evaluate the hook at startup rather than saving its output: it embeds the
+absolute path of the `tt` binary that produced it, so a saved copy breaks the
+moment the binary moves or is upgraded in place.
+
+The hook is verified to load and register in bash 3.2 and zsh 5.9. For fish,
+powershell and elvish only the generator's output is checked: no shell has
+parsed those scripts here, so treat them as untested.
+
 ---
 
 ## Duration Format
