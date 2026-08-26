@@ -5,7 +5,7 @@ mod common;
 use common::{Case, StoreRow, now};
 use std::fs;
 
-const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
+const SHELLS: [&str; 6] = ["bash", "elvish", "fish", "nu", "powershell", "zsh"];
 
 fn row(project: &'static str, tags: &'static [&'static str]) -> StoreRow {
     let start = now() - 3600;
@@ -50,6 +50,40 @@ fn complete(case: &Case, index: usize, words: &[&str]) -> Vec<String> {
         .filter(|l| !l.is_empty() && !l.starts_with("--"))
         .map(str::to_string)
         .collect()
+}
+
+/// Drive the completer as the generated nu `tt-completer` does: `COMPLETE=nu
+/// tt -- tt <spans…>`, the cursor implied by the last span, JSON records back.
+fn complete_nu(case: &Case, words: &[&str]) -> Vec<String> {
+    let mut args = vec!["--", "tt"];
+    args.extend_from_slice(words);
+    let run = case.run_bare_with_env(&args, &[("COMPLETE", "nu")]);
+    run.assert_status(0);
+    let records: Vec<serde_json::Value> = serde_json::from_str(&run.stdout).unwrap();
+    records
+        .iter()
+        .map(|r| r["value"].as_str().unwrap().to_string())
+        .filter(|v| !v.starts_with("--"))
+        .collect()
+}
+
+#[test]
+fn nu_returns_the_same_candidates_as_bash() {
+    let case = seeded("completions-nu-parity");
+    let sub = complete_nu(&case, &[""]);
+    for name in ["start", "stop", "log", "report", "agent", "completions"] {
+        assert!(sub.contains(&name.to_string()), "missing {name} in {sub:?}");
+    }
+    assert_eq!(complete_nu(&case, &["start", "--project", ""]), complete(&case, 3, &["start", "--project", ""]));
+    assert_eq!(complete_nu(&case, &["agent", "begin", "alpha", ""]), complete(&case, 4, &["agent", "begin", "alpha", ""]));
+    assert_eq!(complete_nu(&case, &["agent", "begin", ""]), complete(&case, 3, &["agent", "begin", ""]));
+    assert_eq!(complete_nu(&case, &["agent", "begin", "alpha", "-", ""]), complete(&case, 5, &["agent", "begin", "alpha", "-", ""]));
+}
+
+#[test]
+fn nu_whitespace_span_completes_like_an_empty_span() {
+    let case = seeded("completions-nu-space");
+    assert_eq!(complete_nu(&case, &["start", "--project", " "]), ["alpha", "beta", "gamma"]);
 }
 
 #[test]
@@ -103,6 +137,7 @@ fn a_completion_run_leaves_the_store_and_its_lock_untouched() {
 
     complete(&case, 3, &["start", "--project", ""]);
     complete(&case, 4, &["agent", "begin", "alpha", ""]);
+    complete_nu(&case, &["agent", "begin", "alpha", ""]);
 
     assert_eq!(fs::metadata(&store).unwrap().modified().unwrap(), before);
     assert_eq!(fs::read_to_string(&store).unwrap(), body_before);
@@ -125,9 +160,9 @@ fn the_completions_subcommand_prints_the_same_hook_as_the_env_protocol() {
 #[test]
 fn an_unknown_shell_is_an_error_naming_the_choices() {
     let case = Case::new("completions-unknown-shell");
-    let run = case.run_bare_with_env(&["completions"], &[("SHELL", "/bin/nu")]);
+    let run = case.run_bare_with_env(&["completions"], &[("SHELL", "/bin/tcsh")]);
     assert_ne!(run.status, Some(0));
-    assert!(run.stderr.contains("bash, elvish, fish, powershell, zsh"), "{}", run.stderr);
+    assert!(run.stderr.contains("bash, elvish, fish, nu, powershell, zsh"), "{}", run.stderr);
 }
 
 #[test]
