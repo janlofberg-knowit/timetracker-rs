@@ -310,6 +310,15 @@ pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
     Ok(Touch::Recorded)
 }
 
+/// Append one heartbeat to **every** open mark in `dir`. A mark whose beats
+/// cannot be written is skipped; the rest are still beaten.
+pub fn touch_all_in(dir: &Path) {
+    for mark in open_marks_in(dir) {
+        let issue = mark.issue.as_deref().unwrap_or("-");
+        let _ = touch_in(dir, &mark.project, issue, &mark.phase);
+    }
+}
+
 /// Record that a close for one phase is under way, holding the mark's start
 /// timestamp so the file names its own phase's span. An existing sentinel is
 /// overwritten; [`is_closing_in`] is what refuses.
@@ -471,6 +480,19 @@ mod tests {
 
     fn write(dir: &Path, name: &str, contents: &str) {
         fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn touch_all_beats_every_open_mark_and_nothing_else() {
+        let dir = sandbox("touch-all");
+        write(&dir, "proj.7.impl", "1000100\n");
+        write(&dir, "proj.-.plan", "1000200\n");
+        touch_all_in(&dir);
+        for key in ["proj.7.impl", "proj.-.plan"] {
+            let body = fs::read_to_string(beats_path(&dir, key)).unwrap();
+            assert_eq!(body.lines().count(), 1, "{key}");
+        }
+        assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 2);
     }
 
     fn at(seconds: i64) -> DateTime<Local> {

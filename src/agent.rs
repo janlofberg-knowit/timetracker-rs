@@ -88,7 +88,14 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
             project,
         } => activity::begin_in(&dir, session_id, project.as_deref())?,
         ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
-        ActivityCommands::Subagent { session_id } => activity::subagent_in(&dir, session_id)?,
+        ActivityCommands::Subagent { session_id } => {
+            activity::subagent_in(&dir, session_id)?;
+            // The hook is the one witness to when a subagent's work stopped;
+            // without this beat `end` sees the wait for the report as silence.
+            if let Some(marks) = marks::mark_dir() {
+                marks::touch_all_in(&marks);
+            }
+        }
         ActivityCommands::Check {
             session_id,
             auto_log,
