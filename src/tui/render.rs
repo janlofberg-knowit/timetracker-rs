@@ -447,7 +447,8 @@ pub fn render_help_popup(f: &mut Frame, app: &mut App) {
         .unwrap_or(0);
     let desc_width = rows.map(|(_, d)| Span::raw(*d).width()).max().unwrap_or(0);
 
-    let mut lines: Vec<Line> = Vec::new();
+    // A blank row above and below the table keeps it off the title and hints.
+    let mut lines: Vec<Line> = vec![Line::from("")];
     for (i, (title, rows)) in HELP_SECTIONS.iter().enumerate() {
         if i > 0 {
             lines.push(Line::from(""));
@@ -463,6 +464,7 @@ pub fn render_help_popup(f: &mut Frame, app: &mut App) {
             ]));
         }
     }
+    lines.push(Line::from(""));
 
     let width = (INSET.len() + key_width + GAP + desc_width + 2).max(32) as u16;
     let wanted = lines.len() as u16 + 3;
