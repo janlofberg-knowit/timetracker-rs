@@ -72,4 +72,17 @@ case ":$PATH:" in
     ;;
 esac
 
+# Mirrors the per-shell hint table in src/cli.rs (`completions`).
+if "$INSTALL_DIR/tt" completions --help >/dev/null 2>&1; then
+  echo
+  echo "Shell completion is available. To enable it, run:"
+  case "$(basename "${SHELL:-}")" in
+    zsh)    echo "  echo 'eval \"\$(tt completions zsh)\"' >> ~/.zshrc" ;;
+    bash)   echo "  echo 'eval \"\$(tt completions bash)\"' >> ~/.bashrc" ;;
+    fish)   echo "  echo 'tt completions fish | source' >> ~/.config/fish/config.fish" ;;
+    elvish) echo "  echo 'eval (tt completions elvish | slurp)' >> ~/.config/elvish/rc.elv" ;;
+    *)      echo "  tt completions --help   (see docs/usage.md#tt-completions-shell)" ;;
+  esac
+fi
+
 "$INSTALL_DIR/tt" --version || true

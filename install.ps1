@@ -38,4 +38,16 @@ if ($pathEntries -notcontains $InstallDir) {
     Write-Host "$InstallDir is already on your PATH."
 }
 
+# Mirrors the per-shell hint table in src/cli.rs (`completions`).
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $dest completions --help *> $null
+$ErrorActionPreference = $previousErrorAction
+if ($LASTEXITCODE -eq 0) {
+    Write-Host ""
+    Write-Host "Shell completion is available. To enable it, run:"
+    Write-Host "  Add-Content -Path `$PROFILE -Value 'tt completions powershell | Out-String | Invoke-Expression'"
+    Write-Host "(`$PROFILE may not exist yet; Add-Content creates it.)"
+}
+
 & $dest --version

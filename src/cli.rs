@@ -161,6 +161,7 @@ pub fn completions(shell: Option<Shell>) -> Result<()> {
     )?;
     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         let name = completer.name();
+        // install.sh and install.ps1 print copies of this table.
         let line = match name {
             "fish" => "tt completions fish | source   # ~/.config/fish/config.fish".to_string(),
             "powershell" => {
