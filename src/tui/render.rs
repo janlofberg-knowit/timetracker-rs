@@ -326,7 +326,7 @@ fn render_overlay(
 ) -> Rect {
     let area = f.area();
     let width = width.min(area.width.saturating_sub(4));
-    let height = height.min(area.height.saturating_sub(2));
+    let height = overlay_height(f, height);
     let popup_area = Rect {
         x: (area.width.saturating_sub(width)) / 2,
         y: (area.height.saturating_sub(height)) / 2,
@@ -352,6 +352,11 @@ fn render_overlay(
         .split(inner);
     f.render_widget(Paragraph::new(hints).style(overlay_style), rows[1]);
     rows[0]
+}
+
+/// The rows an overlay asking for `wanted` actually gets on this frame.
+fn overlay_height(f: &Frame, wanted: u16) -> u16 {
+    wanted.min(f.area().height.saturating_sub(2))
 }
 
 /// ` esc close `-style hints, spelled out rather than glyphed.
@@ -461,7 +466,7 @@ pub fn render_help_popup(f: &mut Frame, app: &mut App) {
 
     let width = (INSET.len() + key_width + GAP + desc_width + 2).max(32) as u16;
     let wanted = lines.len() as u16 + 3;
-    let fits = wanted <= f.area().height.saturating_sub(2);
+    let fits = overlay_height(f, wanted) == wanted;
     let hints: &[(&str, &str)] = if fits {
         &[("esc", "close")]
     } else {
