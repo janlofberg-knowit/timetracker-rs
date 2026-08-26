@@ -3,9 +3,11 @@
 //! and on any failure return nothing rather than an error.
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 
 use clap::CommandFactory;
 use clap_complete::CompletionCandidate;
+use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Powershell, Shells, Zsh};
 
 use crate::agent::PHASES;
 use crate::cli::Cli;
@@ -13,6 +15,72 @@ use crate::marks::{Mark, open_marks};
 use crate::report::classify;
 use crate::storage::load_data;
 use crate::tracker::{self, TimeData};
+
+/// Every supported shell; the single definition behind `CompleteEnv`, the
+/// `completions` argument and its error message.
+pub const SHELLS: Shells<'static> = Shells(&[&Bash, &Elvish, &Fish, &Nu, &Powershell, &Zsh]);
+
+/// Nushell. The registration script is saved to disk, not evaluated, so it
+/// invokes `tt` by PATH name rather than by absolute path.
+pub struct Nu;
+
+impl EnvCompleter for Nu {
+    fn name(&self) -> &'static str {
+        "nu"
+    }
+
+    fn is(&self, name: &str) -> bool {
+        name == "nu" || name == "nushell"
+    }
+
+    fn write_registration(
+        &self,
+        var: &str,
+        name: &str,
+        bin: &str,
+        _completer: &str,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        writeln!(
+            buf,
+            r##"def {name}-completer [spans: list<string>]: nothing -> list {{
+    with-env {{{var}: "nu"}} {{ ^r#'{bin}'# -- ...$spans }} | from json
+}}
+
+@complete {name}-completer
+def --wrapped {bin} [...args] {{ ^r#'{bin}'# ...$args }}"##
+        )
+    }
+
+    fn write_complete(
+        &self,
+        cmd: &mut clap::Command,
+        mut args: Vec<OsString>,
+        current_dir: Option<&std::path::Path>,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        // nu hands over `" "` for an empty word after a space.
+        if let Some(last) = args.last_mut()
+            && last.to_string_lossy().trim().is_empty()
+        {
+            *last = OsString::new();
+        }
+        let index = args.len().saturating_sub(1);
+        let candidates = clap_complete::engine::complete(cmd, args, index, current_dir)?;
+        let json: Vec<serde_json::Value> = candidates.iter().map(candidate_json).collect();
+        writeln!(buf, "{}", serde_json::Value::Array(json))
+    }
+}
+
+fn candidate_json(c: &CompletionCandidate) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("value".into(), c.get_value().to_string_lossy().into());
+    if let Some(help) = c.get_help() {
+        let first = help.to_string().lines().next().unwrap_or_default().to_string();
+        obj.insert("description".into(), first.into());
+    }
+    serde_json::Value::Object(obj)
+}
 
 /// Every project named by a store entry or an open mark.
 pub fn projects() -> Vec<CompletionCandidate> {
@@ -123,6 +191,41 @@ mod tests {
             .map(|w| w.to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    fn nu_complete(words: &[&str]) -> Vec<serde_json::Value> {
+        let args = words.iter().map(OsString::from).collect();
+        let mut buf = Vec::new();
+        Nu.write_complete(&mut Cli::command(), args, None, &mut buf).unwrap();
+        serde_json::from_slice(&buf).unwrap()
+    }
+
+    #[test]
+    fn nu_registration_calls_tt_by_name_and_attaches_the_completer() {
+        let mut buf = Vec::new();
+        Nu.write_registration("COMPLETE", "tt", "tt", "/abs/path/tt", &mut buf).unwrap();
+        let script = String::from_utf8(buf).unwrap();
+        assert!(script.contains("@complete tt-completer"));
+        assert!(script.contains("def tt-completer [spans: list<string>]"));
+        assert!(script.contains("with-env {COMPLETE: \"nu\"}"));
+        assert!(script.contains("def --wrapped tt [...args]"));
+        assert!(!script.contains("/abs/path"), "{script}");
+    }
+
+    #[test]
+    fn nu_candidates_are_json_records_with_optional_descriptions() {
+        let got = nu_complete(&["tt", "agent", "begin", "proj", "-", "im"]);
+        assert_eq!(got, [serde_json::json!({"value": "impl"})]);
+        let subs = nu_complete(&["tt", "compl"]);
+        assert_eq!(subs[0]["value"], "completions");
+        assert!(subs[0]["description"].as_str().unwrap().starts_with("Print the shell completion hook"));
+    }
+
+    #[test]
+    fn nu_whitespace_span_completes_like_an_empty_one() {
+        assert_eq!(nu_complete(&["tt", "agent", "begin", "p", "-", " "]), nu_complete(&["tt", "agent", "begin", "p", "-", ""]));
+        let values: Vec<_> = nu_complete(&["tt", "agent", "begin", "p", "-", ""]).into_iter().filter(|v| !v["value"].as_str().unwrap().starts_with("--")).collect();
+        assert_eq!(values.len(), PHASES.len());
     }
 
     #[test]
