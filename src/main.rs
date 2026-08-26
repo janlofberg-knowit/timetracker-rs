@@ -4,6 +4,7 @@ mod activity;
 mod agent;
 mod audit;
 mod cli;
+mod completions;
 mod config;
 mod duration;
 mod icons;
@@ -15,9 +16,12 @@ mod tui;
 mod update;
 
 use cli::{Cli, Commands};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 fn main() -> Result<()> {
+    // Exits the process on a completion request, so nothing below — including
+    // the store-lock migration — runs on a Tab press.
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
 
     // At most once per day, bounded to a couple of seconds — see
@@ -49,6 +53,9 @@ fn main() -> Result<()> {
         }
         Commands::Update { check, yes } => {
             return cli::update(*check, *yes);
+        }
+        Commands::Completions { shell } => {
+            return cli::completions(*shell);
         }
         _ => {}
     }
@@ -101,5 +108,6 @@ fn main() -> Result<()> {
         // Dispatched ahead of the preamble above; unreachable in practice,
         // kept for exhaustiveness (same shape as `Report` just above it).
         Commands::Update { check, yes } => cli::update(check, yes),
+        Commands::Completions { shell } => cli::completions(shell),
     }
 }

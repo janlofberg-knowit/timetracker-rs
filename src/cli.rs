@@ -1,6 +1,11 @@
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use clap_complete::ArgValueCandidates;
+use clap_complete::aot::Shell;
+use clap_complete::env::Shells;
+
+use crate::completions;
 
 use crate::config;
 use crate::duration;
@@ -24,7 +29,7 @@ pub enum Commands {
         #[arg(required = true)]
         description: Vec<String>,
         /// Project this entry belongs to
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
     },
     /// Stop the current active task
@@ -41,7 +46,7 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
         /// Project this entry belongs to
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
         /// A silent stretch inside the logged span, as epoch seconds
         /// `<start>-<end>`. Repeatable; records the interval without changing the
@@ -87,7 +92,7 @@ pub enum Commands {
         #[arg(long, requires = "scope")]
         until: Option<NaiveDate>,
         /// Only entries whose project field is this
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
         /// Machine-readable output
         #[arg(long)]
@@ -107,6 +112,11 @@ pub enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Print the shell completion hook, for `eval "$(tt completions zsh)"`
+    Completions {
+        /// One of bash, elvish, fish, powershell, zsh; detected from $SHELL when omitted
+        shell: Option<Shell>,
+    },
 }
 
 impl Commands {
@@ -118,9 +128,51 @@ impl Commands {
     pub fn wants_update_check(&self) -> bool {
         !matches!(
             self,
-            Commands::Update { .. } | Commands::Active | Commands::Agent { .. }
+            Commands::Update { .. }
+                | Commands::Active
+                | Commands::Agent { .. }
+                | Commands::Completions { .. }
         )
     }
+}
+
+/// Print the completion hook for `eval` at shell startup. The hook embeds this
+/// binary's absolute path, so it is regenerated on every startup, never saved.
+pub fn completions(shell: Option<Shell>) -> Result<()> {
+    let shells = Shells::builtins();
+    let shell = shell.or_else(Shell::from_env).ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not detect the shell from $SHELL; pass one of: {}",
+            shells.names().collect::<Vec<_>>().join(", ")
+        )
+    })?;
+    let name = shell.to_possible_value().map(|v| v.get_name().to_string());
+    let completer = name
+        .as_deref()
+        .and_then(|n| shells.completer(n))
+        .ok_or_else(|| anyhow::anyhow!("no dynamic completer for {shell}"))?;
+    let exe = std::env::current_exe()?;
+    completer.write_registration(
+        "COMPLETE",
+        "tt",
+        "tt",
+        &exe.to_string_lossy(),
+        &mut std::io::stdout(),
+    )?;
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let name = completer.name();
+        // install.sh and install.ps1 print copies of this table.
+        let line = match name {
+            "fish" => "tt completions fish | source   # ~/.config/fish/config.fish".to_string(),
+            "powershell" => {
+                "tt completions powershell | Out-String | Invoke-Expression   # $PROFILE".to_string()
+            }
+            "elvish" => "eval (tt completions elvish | slurp)   # ~/.config/elvish/rc.elv".to_string(),
+            _ => format!("eval \"$(tt completions {name})\"   # ~/.{name}rc"),
+        };
+        eprintln!("\nTo enable completion, add this line to your shell startup file:\n  {line}");
+    }
+    Ok(())
 }
 
 /// The agent layer's commands. Most touch mark files only; the ones that log an
@@ -129,23 +181,32 @@ impl Commands {
 pub enum AgentCommands {
     /// Open a mark for a phase, keeping the start of one already open
     Begin {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// Record one heartbeat for an open phase
     Touch {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// Drop a phase's mark and heartbeats without logging anything
     Cancel {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
     },
     /// List every open mark
@@ -156,9 +217,12 @@ pub enum AgentCommands {
     /// `begin`/`touch`/`end` whenever the work can be marked as it happens,
     /// so the logged span is measured, not guessed.
     Item {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
@@ -167,9 +231,12 @@ pub enum AgentCommands {
     },
     /// Close a marked phase, measuring it to its last heartbeat
     End {
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
         project: String,
         /// Issue number, or `-` for a phase with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
         issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
