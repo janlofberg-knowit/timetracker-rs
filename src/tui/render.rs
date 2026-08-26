@@ -305,7 +305,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(keys_hint, footer_chunks[1]);
 
     match app.input_mode {
-        InputMode::Help => render_help_popup(f),
+        InputMode::Help => render_help_popup(f, app),
         InputMode::Detail => render_detail_popup(f, app),
         InputMode::Confirm => render_confirm_popup(f, app),
         InputMode::Onboarding => render_onboarding_popup(f, app),
@@ -373,86 +373,124 @@ fn overlay_hints(pairs: &[(&'static str, &'static str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-pub fn render_help_popup(f: &mut Frame) {
-    fn key(k: &'static str) -> Span<'static> {
-        Span::styled(k, Style::default().fg(theme::accent()).bold())
-    }
-    fn sep(s: &'static str) -> Span<'static> {
-        Span::styled(s, Style::default().fg(theme::inactive()))
-    }
-    fn heading(s: &'static str) -> Line<'static> {
-        Line::from(Span::styled(
-            s,
-            Style::default().fg(theme::highlight()).bold(),
-        ))
+/// Section title, then `(keys, description)` rows. The key column is one
+/// width across every section, measured in display cells.
+const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Navigation",
+        &[
+            ("h / ←", "previous period"),
+            ("l / →", "next period"),
+            ("j / ↓", "select next entry"),
+            ("k / ↑", "select previous entry"),
+            ("t", "go to today"),
+            ("1 / 2 / 3 / 4", "day / week / all / overview"),
+        ],
+    ),
+    (
+        "Entries",
+        &[
+            ("a", "add entry (uses browsed date)"),
+            ("e", "edit selected entry"),
+            ("d", "delete selected entry (asks first)"),
+            ("s", "stop active entry"),
+            ("Enter", "entry detail"),
+            // A path, not a key: the trim is live only while the popover is open.
+            ("Enter, t", "trim idle from the entry (asks first)"),
+        ],
+    ),
+    (
+        "Search & Filter",
+        &[
+            ("/", "search any field"),
+            ("Shift-P", "Projects pane on / off"),
+            ("Shift-T", "Tags pane on / off"),
+            ("Tab", "focus table / panes"),
+            ("Shift-Tab", "focus panes in reverse"),
+            ("Enter", "pane value: include / exclude / off"),
+            ("-", "cycle the pane value back"),
+        ],
+    ),
+    (
+        "Other",
+        &[
+            ("Shift-A", "agent phases on / off"),
+            ("Shift-S", "project summary on / off"),
+            ("o", "toggle sort order"),
+            ("r", "reload data from disk"),
+            ("?", "toggle this help"),
+            ("q / Esc", "quit"),
+        ],
+    ),
+];
+
+/// Width and height follow the table, and `app.help_scroll` is clamped here
+/// against the viewport `render_overlay` actually granted — never in the key
+/// handler — so a resize corrects itself on the next frame.
+pub fn render_help_popup(f: &mut Frame, app: &mut App) {
+    const INSET: &str = "  ";
+    const GAP: usize = 2;
+    let key_style = Style::default().fg(theme::accent()).bold();
+    let desc_style = Style::default().fg(theme::inactive());
+    let heading_style = Style::default().fg(theme::highlight()).bold();
+
+    let rows = HELP_SECTIONS.iter().flat_map(|(_, rows)| rows.iter());
+    let key_width = rows
+        .clone()
+        .map(|(k, _)| Span::raw(*k).width())
+        .max()
+        .unwrap_or(0);
+    let desc_width = rows.map(|(_, d)| Span::raw(*d).width()).max().unwrap_or(0);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (title, rows)) in HELP_SECTIONS.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(format!("{INSET}{title}"), heading_style)));
+        for (k, d) in rows.iter() {
+            let pad = key_width - Span::raw(*k).width() + GAP;
+            lines.push(Line::from(vec![
+                Span::raw(INSET),
+                Span::styled(*k, key_style),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(*d, desc_style),
+            ]));
+        }
     }
 
-    let lines: Vec<Line> = vec![
-        heading("  Navigation"),
-        Line::from(vec![key("  h / ←"), sep("  previous period")]),
-        Line::from(vec![key("  l / →"), sep("  next period")]),
-        Line::from(vec![key("  j / ↓"), sep("  select next entry")]),
-        Line::from(vec![key("  k / ↑"), sep("  select previous entry")]),
-        Line::from(vec![key("  t"), sep("        go to today")]),
-        Line::from(vec![
-            key("  1 / 2 / 3 / 4"),
-            sep("  day / week / all / overview"),
-        ]),
-        Line::from(Span::raw("")),
-        heading("  Entries"),
-        Line::from(vec![
-            key("  a"),
-            sep("        add entry (uses browsed date)"),
-        ]),
-        Line::from(vec![key("  e"), sep("        edit selected entry")]),
-        Line::from(vec![
-            key("  d"),
-            sep("        delete selected entry (asks first)"),
-        ]),
-        Line::from(vec![key("  s"), sep("        stop active entry")]),
-        Line::from(vec![key("  Enter"), sep("    entry detail")]),
-        // A path, not a key: the trim is live only while the popover is open.
-        Line::from(vec![
-            key("  Enter, t"),
-            sep(" trim idle from the entry (asks first)"),
-        ]),
-        Line::from(Span::raw("")),
-        heading("  Search & Filter"),
-        // This section's key column is two wider, for `Shift-Tab`.
-        Line::from(vec![key("  /"), sep("          search any field")]),
-        Line::from(vec![key("  Shift-P"), sep("    Projects pane on / off")]),
-        Line::from(vec![key("  Shift-T"), sep("    Tags pane on / off")]),
-        Line::from(vec![key("  Tab"), sep("        focus table / panes")]),
-        Line::from(vec![key("  Shift-Tab"), sep("  focus panes in reverse")]),
-        Line::from(vec![
-            key("  Enter"),
-            sep("      pane value: include / exclude / off"),
-        ]),
-        Line::from(vec![key("  -"), sep("          cycle the pane value back")]),
-        Line::from(Span::raw("")),
-        heading("  Other"),
-        Line::from(vec![key("  Shift-A"), sep("  agent phases on / off")]),
-        Line::from(vec![key("  Shift-S"), sep("  project summary on / off")]),
-        Line::from(vec![key("  o"), sep("        toggle sort order")]),
-        Line::from(vec![key("  r"), sep("        reload data from disk")]),
-        Line::from(vec![key("  ?"), sep("        toggle this help")]),
-        Line::from(vec![key("  q / Esc"), sep("  quit")]),
-    ];
-
-    // Sized from the content, so adding a binding cannot push the last one out.
+    let width = (INSET.len() + key_width + GAP + desc_width + 2).max(32) as u16;
+    let wanted = lines.len() as u16 + 3;
+    let fits = wanted <= f.area().height.saturating_sub(2);
+    let hints: &[(&str, &str)] = if fits {
+        &[("esc", "close")]
+    } else {
+        &[("esc", "close"), ("j/k", "scroll")]
+    };
     let content = render_overlay(
         f,
-        52,
-        lines.len() as u16 + 3,
-        Span::styled(
-            " Keybindings ",
-            Style::default().fg(theme::highlight()).bold(),
-        ),
-        Span::styled(" ? ", Style::default().fg(theme::inactive())),
-        overlay_hints(&[("esc", "close")]),
+        width,
+        wanted,
+        Span::styled(" Keybindings ", heading_style),
+        Span::styled(" ? ", desc_style),
+        overlay_hints(hints),
     );
+
+    let visible = content.height as usize;
+    let max_offset = lines.len().saturating_sub(visible);
+    app.help_scroll = app.help_scroll.min(max_offset);
+    let more_below = app.help_scroll < max_offset;
+    let shown = if more_below { visible.saturating_sub(1) } else { visible };
+    let mut page: Vec<Line> = lines
+        .into_iter()
+        .skip(app.help_scroll)
+        .take(shown)
+        .collect();
+    if more_below {
+        page.push(Line::from(Span::styled("▾ more", desc_style)).right_aligned());
+    }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(page).style(Style::default().bg(theme::OVERLAY_BG)),
         content,
     );
 }

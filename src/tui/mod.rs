@@ -38,6 +38,8 @@ pub(crate) struct App {
     pub(crate) view_mode: ViewMode,
     pub(crate) selected_date: NaiveDate,
     pub(crate) input_mode: InputMode,
+    /// Top row of the help popup; clamped by the renderer, so it may run ahead.
+    pub(crate) help_scroll: usize,
     pub(crate) input_field: InputField,
     pub(crate) input_description: String,
     pub(crate) input_project: String,
@@ -136,6 +138,7 @@ impl App {
             view_mode: ViewMode::Day,
             selected_date: Local::now().date_naive(),
             input_mode: InputMode::Normal,
+            help_scroll: 0,
             input_field: InputField::Description,
             input_description: String::new(),
             input_project: String::new(),
@@ -363,7 +366,10 @@ pub fn run_tui(update_notice: Option<String>) -> Result<()> {
                             KeyCode::Char('l') | KeyCode::Right => app.next_period(),
                             KeyCode::Char('t') => app.go_to_today(),
                             KeyCode::Char('o') => app.toggle_sort_order(),
-                            KeyCode::Char('?') => app.input_mode = InputMode::Help,
+                            KeyCode::Char('?') => {
+                                app.help_scroll = 0;
+                                app.input_mode = InputMode::Help;
+                            }
                             _ => {}
                         },
                         InputMode::Onboarding => match app.onboarding_step {
@@ -462,7 +468,12 @@ pub fn run_tui(update_notice: Option<String>) -> Result<()> {
                         },
                         InputMode::Help => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                app.help_scroll = 0;
                                 app.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => app.help_scroll += 1,
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                app.help_scroll = app.help_scroll.saturating_sub(1)
                             }
                             _ => {}
                         },
@@ -1688,6 +1699,51 @@ mod tests {
         let screen = frame_lines(&mut app, 100, 45).join("\n");
         assert!(screen.contains("pane value: include / exclude / off"));
         assert!(screen.contains("cycle the pane value back"));
+    }
+
+    #[test]
+    fn the_help_popup_aligns_descriptions_across_sections() {
+        let _guard = env_guard();
+        sandbox("help-aligned");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::Help;
+
+        let lines = frame_lines(&mut app, 100, 45);
+        let column = |needle: &str| {
+            lines
+                .iter()
+                .find_map(|l| l.find(needle).map(|byte| l[..byte].chars().count()))
+                .unwrap_or_else(|| panic!("{needle} missing:\n{}", lines.join("\n")))
+        };
+        let first = column("previous period");
+        for needle in ["stop active entry", "focus panes in reverse", "quit"] {
+            assert_eq!(column(needle), first, "{needle}");
+        }
+        let screen = lines.join("\n");
+        assert!(screen.contains("trim idle from the entry (asks first)"), "{screen}");
+    }
+
+    #[test]
+    fn a_short_help_popup_scrolls_and_clamps() {
+        let _guard = env_guard();
+        sandbox("help-scroll");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::Help;
+
+        let top = frame_lines(&mut app, 100, 20).join("\n");
+        assert!(top.contains("▾ more"), "{top}");
+        assert!(top.contains("j/k scroll"), "{top}");
+        assert!(!top.contains("q / Esc"), "{top}");
+
+        app.help_scroll = 1000;
+        let bottom = frame_lines(&mut app, 100, 20).join("\n");
+        assert!(bottom.contains("q / Esc"), "{bottom}");
+        assert!(!bottom.contains("▾ more"), "{bottom}");
+        assert!(app.help_scroll < 1000, "render clamps the offset");
+
+        app.input_mode = InputMode::Help;
+        let tall = frame_lines(&mut app, 100, 45).join("\n");
+        assert!(!tall.contains("▾ more") && !tall.contains("j/k scroll"), "{tall}");
     }
 
     #[test]
