@@ -22,11 +22,14 @@ function readStdin() {
   }
 }
 
-// An unresolved project now means no beat at all, so the payload's own `cwd` is
-// tried when the process cwd yields nothing.
+// An unresolved project means no beat at all, so both the payload's own `cwd`
+// and the process's are tried. The payload comes **first**: the session's own
+// directory is the project being worked in, while the hook process may sit in a
+// worktree or an unrelated repo, and a wrong-but-resolvable answer would beat
+// the wrong project's marks.
 function projectName(cwd) {
   if (process.env.TT_PROJECT) return process.env.TT_PROJECT;
-  const candidates = cwd ? [undefined, cwd] : [undefined];
+  const candidates = cwd ? [cwd, undefined] : [undefined];
   for (const dir of candidates) {
     try {
       const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {

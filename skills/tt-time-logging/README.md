@@ -41,6 +41,12 @@ keep working regardless of where the skill itself is installed. It requires
 Claude Code to have already been run at least once (so `~/.claude` exists) —
 if it hasn't, the script says so and exits without writing anything.
 
+**These hooks need `tt` 0.9.0 or newer.** They pass a project to
+`tt agent activity`, which an older binary rejects — and a hook never fails its
+event, so the failure is silent: no automatic beat, and no session ends or
+subagent dispatches in the activity ledger. The installer checks `tt --version`
+and warns; it still installs, since the contract injection works either way.
+
 Safe to re-run. Then open `/hooks` once (or restart) so Claude Code picks up the
 new `~/.claude/settings.json`.
 

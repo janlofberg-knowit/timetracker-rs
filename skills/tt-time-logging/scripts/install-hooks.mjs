@@ -32,6 +32,7 @@
 // Usage (from anywhere, after `npx skills add ...`):
 //   node <wherever the skill landed>/scripts/install-hooks.mjs
 
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -191,6 +192,51 @@ if (existsSync(claudeMdPath)) {
   }
 } else {
   console.log(`No ${claudeMdPath} found — skipped the CLAUDE.md pointer.`);
+}
+
+// The release that understands `tt agent activity prompt` and the project
+// positional on `end`/`subagent`. An older binary rejects those with clap's
+// exit 2, which the activity hook's own catch swallows — the ledger silently
+// stops recording `end=`/`subagent=` lines. Install anyway: the contract
+// injection works against any version.
+const requiredTt = "0.9.0";
+
+const parseSemver = (text) => {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text ?? "");
+  return match ? match.slice(1, 4).map(Number) : null;
+};
+
+const installedTt = () => {
+  try {
+    return execFileSync("tt", ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+};
+
+const isOlder = (a, b) => {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
+};
+
+const installed = parseSemver(installedTt());
+if (installed && isOlder(installed, parseSemver(requiredTt))) {
+  console.log("");
+  console.log(
+    `WARNING: tt ${installed.join(".")} is installed, but these hooks need tt ` +
+      `${requiredTt} or newer.`,
+  );
+  console.log(
+    "  Until you upgrade, marks will not be renewed automatically and the " +
+      "activity ledger will stop recording session ends and subagent " +
+      "dispatches — silently, since a hook never fails its event.",
+  );
+  console.log("");
 }
 
 console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");
