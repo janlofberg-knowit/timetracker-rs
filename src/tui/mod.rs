@@ -87,6 +87,9 @@ pub(crate) struct App {
     /// When liveness was last read, bounding how often a keypress can trigger
     /// the beats walk. `None` re-reads on the next call.
     pub(crate) liveness_at: Option<std::time::Instant>,
+    /// `(max_gap_minutes, max_unvouched_minutes)` as of that read, so a frame
+    /// can judge a lease stale without loading the config.
+    pub(crate) liveness_thresholds: (i64, i64),
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
     /// from disk itself. See `docs/decisions/0001-agent-activity-tracking.md`.
@@ -157,6 +160,10 @@ impl App {
             activity_stamp: None,
             leases: Vec::new(),
             liveness_at: None,
+            liveness_thresholds: (
+                crate::audit::max_gap_minutes(),
+                crate::audit::max_unvouched_minutes(),
+            ),
             unaccounted: Vec::new(),
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
@@ -1025,7 +1032,14 @@ mod tests {
             ("ops.-.rota", 300),
         ]);
 
-        let shown: Vec<String> = app.visible_marks().iter().map(Mark::label).collect();
+        let mut app = app;
+        app.toggle_marks();
+        app.sync_from_activity();
+        let shown: Vec<String> = app
+            .visible_leases()
+            .iter()
+            .map(|lease| lease.mark.label())
+            .collect();
         assert_eq!(
             shown,
             vec!["tt/14 impl", "loremind/64 plan", "vinge plan"],
@@ -2161,6 +2175,36 @@ mod tests {
         assert_eq!(second.1 - first.1, 3, "cursor did not follow the Tab order");
         // "héllo" is five columns wide, "acme" four — both share the chunk's x.
         assert_eq!(first.0 - second.0, 1, "cursor column ignored display width");
+    }
+
+    #[test]
+    fn the_agents_panel_marks_a_stale_mark_and_leaves_a_fresh_one_alone() {
+        let _guard = env_guard();
+        sandbox("stale-render");
+        seed(vec![entry(0, "first")], 1);
+        let dir = mark_sandbox();
+        // Fresh: beaten just now. Stale: opened well past the unvouched grace.
+        begin_mark(&dir, "fresh.-.impl", 4 * 60);
+        beat_mark(&dir, "fresh.-.impl");
+        begin_mark(&dir, "stale.-.impl", 5 * 60);
+
+        let mut app = App::new().unwrap();
+        app.toggle_marks();
+        app.sync_from_activity();
+
+        let screen = frame_lines(&mut app, 100, 30);
+        let row = |label: &str| {
+            screen
+                .iter()
+                .find(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("no row for {label}:\n{}", screen.join("\n")))
+                .clone()
+        };
+        assert!(row("stale impl").contains("[stale]"));
+        assert!(row("stale impl").contains("last seen never"));
+        let fresh = row("fresh impl");
+        assert!(!fresh.contains("[stale]"), "{fresh}");
+        assert!(fresh.contains("last seen "), "{fresh}");
     }
 
     #[test]

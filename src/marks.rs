@@ -174,8 +174,8 @@ pub fn open_leases_in(dir: &Path) -> Vec<Lease> {
         .collect()
 }
 
-/// Narrowest label column `tt agent list` will use. `src/tui/render.rs` keeps its
-/// own copy for the surface's rows.
+/// Narrowest label column `tt agent list` will use. `src/tui/render/surfaces.rs`
+/// keeps its own copy for the surface's rows.
 const LABEL_WIDTH: usize = 18;
 
 /// The rows `tt agent list` prints, without the CLI's indent: one label column,

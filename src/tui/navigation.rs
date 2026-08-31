@@ -38,6 +38,9 @@ impl App {
         }
         self.marks_stamp = current;
         self.marks = crate::marks::open_marks_in(&dir);
+        // A mark opened or closed is exactly when the leases are worth
+        // re-reading, whatever the liveness interval says.
+        self.liveness_at = None;
     }
 
     /// Pick up activity-ledger writes made outside the TUI (by hooks in other
@@ -64,6 +67,10 @@ impl App {
             return;
         }
         self.liveness_at = Some(Instant::now());
+        self.liveness_thresholds = (
+            crate::audit::max_gap_minutes(),
+            crate::audit::max_unvouched_minutes(),
+        );
 
         if let Some(dir) = crate::activity::activity_dir() {
             let current = PathStamp::read(&dir);
@@ -89,8 +96,8 @@ impl App {
             &self.data.entries,
             Local::now(),
             crate::audit::max_unvouched_minutes(),
-            crate::audit::max_gap_minutes(),
-            crate::audit::max_unvouched_minutes(),
+            self.liveness_thresholds.0,
+            self.liveness_thresholds.1,
         );
     }
 

@@ -1,6 +1,7 @@
 //! The collapsible `Marks` surface: the phase marks left open by `tt agent
-//! begin`, read from `App.marks` on the event loop's tick — a frame never reads
-//! the directory. Display-only: no focus ring, no cursor, no `Enter`, no scroll.
+//! begin` paired with their liveness, read from `App.leases` on the event
+//! loop's tick — a frame never reads the directory. Display-only: no focus
+//! ring, no cursor, no `Enter`, no scroll.
 //!
 //! Below the marks, a second state — unaccounted activity, from `App.unaccounted`
 //! (see `src/audit.rs`) — appears only when there is any, so an operator who never
@@ -10,7 +11,7 @@
 use super::App;
 use super::panes::surface_count;
 use crate::audit::Unaccounted;
-use crate::marks::Mark;
+use crate::marks::Lease;
 
 /// Most marks the surface lists; the border count reports the rest.
 const MAX_VISIBLE_MARKS: usize = 3;
@@ -18,10 +19,10 @@ const MAX_VISIBLE_MARKS: usize = 3;
 const MAX_VISIBLE_UNACCOUNTED: usize = 3;
 
 impl App {
-    /// The newest [`MAX_VISIBLE_MARKS`], in `App.marks`' own newest-first order.
-    pub(crate) fn visible_marks(&self) -> &[Mark] {
-        let shown = self.marks.len().min(MAX_VISIBLE_MARKS);
-        &self.marks[..shown]
+    /// The newest [`MAX_VISIBLE_MARKS`], in `App.leases`' own newest-first order.
+    pub(crate) fn visible_leases(&self) -> &[Lease] {
+        let shown = self.leases.len().min(MAX_VISIBLE_MARKS);
+        &self.leases[..shown]
     }
 
     /// The newest [`MAX_VISIBLE_UNACCOUNTED`], in `App.unaccounted`'s own
