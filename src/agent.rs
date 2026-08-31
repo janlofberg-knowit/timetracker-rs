@@ -120,14 +120,14 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     let Some(session) = activity::read_session_in(dir, session_id) else {
         return Ok(());
     };
-    let marks = marks::open_marks();
+    let leases = open_leases();
     let now = chrono::Local::now();
     let floor = audit::max_unvouched_minutes();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&[session], &marks, &data.entries, now, floor)
+        audit::unaccounted(&[session], &leases, &data.entries, now, floor)
     };
 
     let threshold = auto_log
@@ -145,6 +145,14 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         }
     }
     Ok(())
+}
+
+/// Every open mark paired with its last heartbeat. A mark directory that cannot
+/// be resolved reads as no marks, never as an error.
+fn open_leases() -> Vec<marks::Lease> {
+    marks::mark_dir()
+        .map(|dir| marks::open_leases_in(&dir))
+        .unwrap_or_default()
 }
 
 /// The mark directory, or an error — a `begin` must never silently record
@@ -247,14 +255,14 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let sessions = activity::activity_dir()
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
-    let marks = marks::open_marks();
+    let leases = open_leases();
     let floor = audit::max_unvouched_minutes();
     let now = chrono::Local::now();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &marks, &data.entries, now, floor)
+        audit::unaccounted(&sessions, &leases, &data.entries, now, floor)
     };
 
     // `auto_log_after_minutes` unset: `--auto-log` is accepted but logs
@@ -275,7 +283,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &marks, &data.entries, now, floor)
+        audit::unaccounted(&sessions, &leases, &data.entries, now, floor)
     } else {
         flagged
     };

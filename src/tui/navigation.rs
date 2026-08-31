@@ -53,9 +53,20 @@ impl App {
         } else {
             self.activity_sessions.clear();
         }
+        // Liveness cannot be stamp-gated: a beats append changes no directory
+        // mtime, so the leases are re-read every tick. Skipped entirely when
+        // there are no marks, which is the normal case.
+        let leases: Vec<crate::marks::Lease> = match crate::marks::mark_dir() {
+            Some(dir) if !self.marks.is_empty() => self
+                .marks
+                .iter()
+                .map(|mark| crate::marks::lease_in(&dir, mark))
+                .collect(),
+            _ => Vec::new(),
+        };
         self.unaccounted = crate::audit::unaccounted(
             &self.activity_sessions,
-            &self.marks,
+            &leases,
             &self.data.entries,
             Local::now(),
             crate::audit::max_unvouched_minutes(),

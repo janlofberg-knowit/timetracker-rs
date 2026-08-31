@@ -12,7 +12,7 @@
 use chrono::{DateTime, Local};
 
 use crate::activity::Session;
-use crate::marks::{self, Mark};
+use crate::marks::{self, Lease};
 use crate::time::instant;
 use crate::tracker::{IdleInterval, TimeEntry};
 
@@ -115,13 +115,14 @@ fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
 /// unaccounted.
 pub fn unaccounted(
     sessions: &[Session],
-    marks: &[Mark],
+    leases: &[Lease],
     entries: &[TimeEntry],
     now: DateTime<Local>,
     floor_minutes: i64,
 ) -> Vec<Unaccounted> {
     let now_epoch = now.timestamp();
     let gap = max_gap_minutes();
+    let unvouched = max_unvouched_minutes();
 
     let mut found: Vec<Unaccounted> = sessions
         .iter()
@@ -132,8 +133,16 @@ pub fn unaccounted(
                 return None;
             }
 
-            let covered = covered_by_mark(project, session.start, end_epoch, marks, now_epoch)
-                || covered_by_entry(project, session.start, end_epoch, entries, now_epoch);
+            let covered =
+                covered_by_mark(
+                    project,
+                    session.start,
+                    end_epoch,
+                    leases,
+                    now_epoch,
+                    gap,
+                    unvouched,
+                ) || covered_by_entry(project, session.start, end_epoch, entries, now_epoch);
             if covered {
                 return None;
             }
@@ -165,12 +174,28 @@ pub fn unaccounted(
     found
 }
 
-/// A mark still open covers everything from its own start up to `now`.
-fn covered_by_mark(project: &str, start: i64, end: i64, marks: &[Mark], now: i64) -> bool {
-    marks
+/// An open mark covers its own start up to whichever comes first, `now` or the
+/// instant its lease expires. An un-renewed mark therefore stops vouching for
+/// its project instead of suppressing the warning built to catch it.
+fn covered_by_mark(
+    project: &str,
+    start: i64,
+    end: i64,
+    leases: &[Lease],
+    now: i64,
+    gap_minutes: i64,
+    unvouched_minutes: i64,
+) -> bool {
+    leases
         .iter()
-        .filter(|mark| mark.project.eq_ignore_ascii_case(project))
-        .any(|mark| overlaps(mark.start.timestamp(), now, start, end))
+        .filter(|lease| lease.mark.project.eq_ignore_ascii_case(project))
+        .any(|lease| {
+            let until = lease
+                .expires_at(gap_minutes, unvouched_minutes)
+                .timestamp()
+                .min(now);
+            overlaps(lease.mark.start.timestamp(), until, start, end)
+        })
 }
 
 /// A closed entry covers a window when it's tagged `#agent` (an agent's own
@@ -208,12 +233,24 @@ mod tests {
         }
     }
 
-    fn mark(project: &str, start: i64) -> Mark {
-        Mark {
-            project: project.to_string(),
-            issue: None,
-            phase: "impl".to_string(),
-            start: at(start),
+    /// An open mark that has never beaten, so it leans on the unvouched grace.
+    fn mark(project: &str, start: i64) -> Lease {
+        Lease {
+            mark: crate::marks::Mark {
+                project: project.to_string(),
+                issue: None,
+                phase: "impl".to_string(),
+                start: at(start),
+            },
+            last_seen: None,
+        }
+    }
+
+    /// The same mark, last beaten at `last_seen`.
+    fn beaten(project: &str, start: i64, last_seen: i64) -> Lease {
+        Lease {
+            last_seen: Some(at(last_seen)),
+            ..mark(project, start)
         }
     }
 
@@ -262,6 +299,22 @@ mod tests {
         let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
         let marks = vec![mark("tt", HOUR)];
         assert!(unaccounted(&sessions, &marks, &[], at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    /// The weekend incident: four marks sat open for days with no heartbeat and
+    /// silenced the warning for their own projects.
+    #[test]
+    fn a_mark_open_for_days_with_no_beats_no_longer_covers() {
+        let sessions = vec![session(Some("tt"), 110 * HOUR, Some(113 * HOUR), 0)];
+        let abandoned = vec![mark("tt", 0)];
+        assert_eq!(
+            unaccounted(&sessions, &abandoned, &[], at(114 * HOUR), FLOOR).len(),
+            1
+        );
+
+        // The same mark, beaten ten minutes ago, still vouches.
+        let live = vec![beaten("tt", 0, 114 * HOUR - 600)];
+        assert!(unaccounted(&sessions, &live, &[], at(114 * HOUR), FLOOR).is_empty());
     }
 
     #[test]

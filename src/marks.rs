@@ -71,6 +71,59 @@ impl Mark {
     }
 }
 
+/// One open mark plus the instant [`crate::agent`]'s `end` would measure it to,
+/// so a caller can judge whether the mark still vouches for its project.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lease {
+    pub mark: Mark,
+    /// The beats file's **last** bare-timestamp line, not its largest beat;
+    /// `None` when there is no such line.
+    pub last_seen: Option<DateTime<Local>>,
+}
+
+impl Lease {
+    /// The instant this mark stops vouching: `last_seen + gap_minutes`, or
+    /// `mark.start + unvouched_minutes` when it never beat. A beats file with no
+    /// bare timestamp takes the unvouched grace — no measurable evidence is
+    /// treated as no evidence.
+    pub fn expires_at(&self, gap_minutes: i64, unvouched_minutes: i64) -> DateTime<Local> {
+        match self.last_seen {
+            Some(seen) => seen + TimeDelta::minutes(gap_minutes),
+            None => self.mark.start + TimeDelta::minutes(unvouched_minutes),
+        }
+    }
+}
+
+/// Read one mark's heartbeat file to pair it with its last-seen instant. Unlike
+/// [`open_marks_in`], this *does* read `beats/`: liveness cannot be gated on the
+/// mark directory's mtime, which an append inside `beats/` does not change.
+pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
+    let key = mark_key(
+        &mark.project,
+        mark.issue.as_deref().unwrap_or("-"),
+        &mark.phase,
+    );
+    let body = fs::read_to_string(beats_path(dir, &key)).unwrap_or_default();
+    let last_seen = body
+        .lines()
+        .next_back()
+        .filter(|line| all_digits(line))
+        .and_then(|line| line.parse().ok())
+        .and_then(crate::time::instant);
+    Lease {
+        mark: mark.clone(),
+        last_seen,
+    }
+}
+
+/// Every open mark in `dir` with its last-seen instant, newest first.
+pub fn open_leases_in(dir: &Path) -> Vec<Lease> {
+    open_marks_in(dir)
+        .iter()
+        .map(|mark| lease_in(dir, mark))
+        .collect()
+}
+
 /// Narrowest label column `tt agent list` will use. `src/tui/render.rs` keeps its
 /// own copy for the surface's rows.
 const LABEL_WIDTH: usize = 18;
@@ -480,6 +533,48 @@ mod tests {
 
     fn at(seconds: i64) -> DateTime<Local> {
         crate::time::instant(seconds).unwrap()
+    }
+
+    #[test]
+    fn a_mark_that_never_beat_expires_at_its_start_plus_the_unvouched_grace() {
+        let dir = sandbox("lease-unvouched");
+        write(&dir, "proj.7.impl", "1000000\n");
+        let leases = open_leases_in(&dir);
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].last_seen, None);
+        assert_eq!(leases[0].expires_at(45, 120), at(1_000_000 + 120 * 60));
+    }
+
+    #[test]
+    fn a_beaten_mark_expires_at_its_last_beat_plus_the_gap() {
+        let dir = sandbox("lease-beaten");
+        write(&dir, "proj.-.plan", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.-.plan"), "1000300\n1000600\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, Some(at(1_000_600)));
+        assert_eq!(lease.expires_at(45, 120), at(1_000_600 + 45 * 60));
+    }
+
+    #[test]
+    fn a_beats_file_with_no_bare_timestamp_takes_the_unvouched_grace() {
+        let dir = sandbox("lease-annotated");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000600 note\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, None);
+        assert_eq!(lease.expires_at(45, 120), at(1_000_000 + 120 * 60));
+    }
+
+    #[test]
+    fn the_last_beats_line_wins_over_the_largest_beat() {
+        let dir = sandbox("lease-last-line");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "1009000\n1000600\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, Some(at(1_000_600)));
     }
 
     fn labels(marks: &[Mark]) -> Vec<(String, Option<String>, String)> {
