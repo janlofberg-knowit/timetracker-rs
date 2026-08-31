@@ -88,14 +88,21 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
             session_id,
             project,
         } => activity::begin_in(&dir, session_id, project.as_deref())?,
-        ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
-        ActivityCommands::Subagent { session_id } => {
+        ActivityCommands::End {
+            session_id,
+            project,
+        } => {
+            activity::end_in(&dir, session_id)?;
+            beat_project(project.as_deref());
+        }
+        ActivityCommands::Subagent {
+            session_id,
+            project,
+        } => {
             activity::subagent_in(&dir, session_id)?;
             // The hook is the one witness to when a subagent's work stopped;
             // without this beat `end` sees the wait for the report as silence.
-            if let Some(marks) = marks::mark_dir() {
-                marks::touch_all_in(&marks);
-            }
+            beat_project(project.as_deref());
         }
         ActivityCommands::Check {
             session_id,
@@ -145,6 +152,14 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         }
     }
     Ok(())
+}
+
+/// Beat the open marks of the project a hook resolved. `None` beats nothing: an
+/// unattributable beat would keep another project's abandoned mark alive.
+fn beat_project(project: Option<&str>) {
+    if let (Some(project), Some(dir)) = (project, marks::mark_dir()) {
+        marks::touch_project_in(&dir, project);
+    }
 }
 
 /// Every open mark paired with its last heartbeat. A mark directory that cannot

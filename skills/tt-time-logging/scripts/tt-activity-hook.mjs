@@ -52,11 +52,11 @@ if (!sessionId) {
   process.exit(0);
 }
 
+// Passed on every event: `begin` files it in the ledger, and `end`/`subagent`
+// beat that project's open marks. An unresolved project means no beat at all.
 const args = ["agent", "activity", event, sessionId];
-if (event === "begin") {
-  const project = projectName();
-  if (project) args.push(project);
-}
+const project = projectName();
+if (project) args.push(project);
 
 try {
   execFileSync("tt", args, { stdio: "ignore" });

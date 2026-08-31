@@ -395,10 +395,17 @@ pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
     Ok(Touch::Recorded)
 }
 
-/// Append one heartbeat to **every** open mark in `dir`. A mark whose beats
-/// cannot be written is skipped; the rest are still beaten.
-pub fn touch_all_in(dir: &Path) {
+/// Append one heartbeat to every open mark in `dir` **whose project matches**,
+/// case-insensitively. A mark whose beats cannot be written is skipped; the rest
+/// are still beaten.
+///
+/// Never beat a project other than the beating session's own: an unattributable
+/// beat is what let an unrelated session keep an abandoned mark alive.
+pub fn touch_project_in(dir: &Path, project: &str) {
     for mark in open_marks_in(dir) {
+        if !mark.project.eq_ignore_ascii_case(project) {
+            continue;
+        }
         let issue = mark.issue.as_deref().unwrap_or("-");
         let _ = touch_in(dir, &mark.project, issue, &mark.phase);
     }
@@ -568,15 +575,20 @@ mod tests {
     }
 
     #[test]
-    fn touch_all_beats_every_open_mark_and_nothing_else() {
-        let dir = sandbox("touch-all");
-        write(&dir, "proj.7.impl", "1000100\n");
-        write(&dir, "proj.-.plan", "1000200\n");
-        touch_all_in(&dir);
-        for key in ["proj.7.impl", "proj.-.plan"] {
+    fn touch_beats_every_open_mark_of_that_project_and_nothing_else() {
+        let dir = sandbox("touch-project");
+        write(&dir, "a.7.impl", "1000100\n");
+        // The `-` sentinel has to round-trip through the key to be beaten.
+        write(&dir, "a.-.plan", "1000200\n");
+        write(&dir, "b.9.impl", "1000300\n");
+
+        touch_project_in(&dir, "A");
+
+        for key in ["a.7.impl", "a.-.plan"] {
             let body = fs::read_to_string(beats_path(&dir, key)).unwrap();
             assert_eq!(body.lines().count(), 1, "{key}");
         }
+        assert!(!beats_path(&dir, "b.9.impl").exists());
         assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 2);
     }
 
