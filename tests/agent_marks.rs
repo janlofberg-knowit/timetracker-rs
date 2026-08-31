@@ -169,11 +169,24 @@ fn list_shows_an_open_mark_as_a_house_style_row() {
     assert_eq!(
         run.stdout,
         format!(
-            "\u{1F916} Open marks:\n\n  proj/23 impl       - since {} (0h 10m)\n",
+            "\u{1F916} Open marks:\n\n  proj/23 impl       - since {} (0h 10m) last seen never\n",
             clock(start)
         ),
         "the header, the blank line and one padded row"
     );
+}
+
+/// The incident's shape: a mark days old with no heartbeat is flagged, and the
+/// line under it is the one that logs the work and clears it.
+#[test]
+fn list_flags_a_stale_mark_with_the_command_that_clears_it() {
+    let case = Case::new("list-stale");
+    case.write_mark("proj.23.impl", now() - 114 * 3600);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("last seen never [stale]");
+    run.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" <minutes>");
 }
 
 #[test]

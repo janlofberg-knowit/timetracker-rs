@@ -92,6 +92,43 @@ impl Lease {
             None => self.mark.start + TimeDelta::minutes(unvouched_minutes),
         }
     }
+
+    /// Whether the lease has run out by `now`, strictly past its expiry.
+    pub fn is_expired_at(
+        &self,
+        now: DateTime<Local>,
+        gap_minutes: i64,
+        unvouched_minutes: i64,
+    ) -> bool {
+        now > self.expires_at(gap_minutes, unvouched_minutes)
+    }
+
+    /// The mark's last heartbeat as `HH:MM`, or `never` when it has none.
+    pub fn last_seen_at(&self) -> String {
+        match self.last_seen {
+            Some(seen) => seen.format("%H:%M").to_string(),
+            None => "never".to_string(),
+        }
+    }
+
+    /// The `tt agent end` line that logs this mark's work and clears it.
+    ///
+    /// `--trim` only for a mark with a heartbeat to measure to: on a mark with
+    /// none it reads `start → now` as one giant gap and logs the 5m floor, so
+    /// that case asks for the minutes outright.
+    pub fn close_command(&self) -> String {
+        let tail = match self.last_seen {
+            Some(_) => "--trim",
+            None => "<minutes>",
+        };
+        format!(
+            "tt agent end {} {} {} \"<summary>\" {}",
+            self.mark.project,
+            self.mark.issue.as_deref().unwrap_or("-"),
+            self.mark.phase,
+            tail
+        )
+    }
 }
 
 /// Read one mark's heartbeat file to pair it with its last-seen instant. Unlike
@@ -129,35 +166,47 @@ pub fn open_leases_in(dir: &Path) -> Vec<Lease> {
 const LABEL_WIDTH: usize = 18;
 
 /// The rows `tt agent list` prints, without the CLI's indent: one label column,
-/// ` - since HH:MM`, and the house `{h}h {m}m` duration.
-pub fn rows(marks: &[Mark]) -> Vec<String> {
-    rows_at(marks, Local::now())
+/// ` - since HH:MM`, the house `{h}h {m}m` duration, and the mark's last
+/// heartbeat. A row whose lease has expired is marked `[stale]` and followed by
+/// an indented line holding the command that logs its work and clears it.
+pub fn rows(leases: &[Lease], gap_minutes: i64, unvouched_minutes: i64) -> Vec<String> {
+    rows_at(leases, Local::now(), gap_minutes, unvouched_minutes)
 }
 
 /// The `now`-taking half of [`rows`], for tests.
-pub fn rows_at(marks: &[Mark], now: DateTime<Local>) -> Vec<String> {
+pub fn rows_at(
+    leases: &[Lease],
+    now: DateTime<Local>,
+    gap_minutes: i64,
+    unvouched_minutes: i64,
+) -> Vec<String> {
     // One column for the whole list, so the start times line up.
-    let width = marks
+    let width = leases
         .iter()
-        .map(|mark| mark.label().chars().count())
+        .map(|lease| lease.mark.label().chars().count())
         .max()
         .unwrap_or(0)
         .max(LABEL_WIDTH);
 
-    marks
-        .iter()
-        .map(|mark| {
-            let label = mark.label();
-            let pad = " ".repeat(width.saturating_sub(label.chars().count()));
-            format!(
-                "{}{} - since {} ({})",
-                label,
-                pad,
-                mark.started_at(),
-                mark.age_at(now)
-            )
-        })
-        .collect()
+    let mut rows = Vec::new();
+    for lease in leases {
+        let label = lease.mark.label();
+        let pad = " ".repeat(width.saturating_sub(label.chars().count()));
+        let stale = lease.is_expired_at(now, gap_minutes, unvouched_minutes);
+        rows.push(format!(
+            "{}{} - since {} ({}) last seen {}{}",
+            label,
+            pad,
+            lease.mark.started_at(),
+            lease.mark.age_at(now),
+            lease.last_seen_at(),
+            if stale { " [stale]" } else { "" }
+        ));
+        if stale {
+            rows.push(format!("  {}", lease.close_command()));
+        }
+    }
+    rows
 }
 
 /// The directory the marks live in: `$TT_MARK_DIR` when set and non-empty, else
@@ -768,14 +817,19 @@ mod tests {
         );
         write(&dir, "vinge.12.impl", &format!("{}\n", now - 45 * 60));
 
-        let marks = open_marks_in(&dir);
-        let rows = rows_at(&marks, at(now));
+        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
         let since = |offset: i64| at(now - offset).format("%H:%M").to_string();
         assert_eq!(
             rows,
             vec![
-                format!("timetracker-rs/54 plan - since {} (0h 15m)", since(15 * 60)),
-                format!("vinge/12 impl          - since {} (0h 45m)", since(45 * 60)),
+                format!(
+                    "timetracker-rs/54 plan - since {} (0h 15m) last seen never",
+                    since(15 * 60)
+                ),
+                format!(
+                    "vinge/12 impl          - since {} (0h 45m) last seen never",
+                    since(45 * 60)
+                ),
             ]
         );
         let separator = |row: &String| row.find(" - since").unwrap();
@@ -793,7 +847,7 @@ mod tests {
         // A phase literally called `last` is a mark.
         write(&dir, "proj.-.last", &format!("{}\n", now));
 
-        let rows = rows_at(&open_marks_in(&dir), at(now));
+        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
         assert!(
             rows.iter().any(|row| row.starts_with("vinge plan ")),
             "the - sentinel leaked or the row is missing: {rows:?}"
@@ -825,19 +879,70 @@ mod tests {
         // A start in the future reads as `0h 0m`, not as `0h -10m`.
         write(&dir, "future.3.impl", &format!("{}\n", now + 600));
 
-        let rows = rows_at(&open_marks_in(&dir), at(now));
+        // A grace wide enough that none of the three reads as stale, so every
+        // row still carries an age in parentheses.
+        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 10_000);
         let ages: Vec<&str> = rows
             .iter()
-            .map(|row| &row[row.find('(').unwrap()..])
+            .map(|row| &row[row.find('(').unwrap()..row.find(')').unwrap() + 1])
             .collect();
         assert_eq!(ages, vec!["(0h 0m)", "(0h 2m)", "(2h 6m)"], "{rows:?}");
+    }
+
+    /// A mark that never beat is flagged and followed by the explicit-minutes
+    /// close line: `--trim` there would log the 5m floor, not the real time.
+    #[test]
+    fn a_stale_beatless_mark_is_flagged_with_the_explicit_minutes_command() {
+        let dir = sandbox("rows-stale-beatless");
+        let now = 1_000_000_000;
+        write(&dir, "vinge.10.review", &format!("{}\n", now - 114 * 3600));
+
+        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows[0].contains("last seen never [stale]"), "{rows:?}");
+        assert_eq!(
+            rows[1],
+            "  tt agent end vinge 10 review \"<summary>\" <minutes>"
+        );
+        assert!(rows[1].contains("vinge"), "the project token must survive");
+    }
+
+    /// A mark that beat but has fallen silent past the gap gets `--trim`, which
+    /// measures to its last beat.
+    #[test]
+    fn a_stale_beaten_mark_is_flagged_with_the_trim_command() {
+        let dir = sandbox("rows-stale-beaten");
+        let now = 1_000_000_000;
+        write(&dir, "loremind.-.ops", &format!("{}\n", now - 6 * 3600));
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(
+            beats_path(&dir, "loremind.-.ops"),
+            format!("{}\n", now - 3 * 3600),
+        )
+        .unwrap();
+
+        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let seen = at(now - 3 * 3600).format("%H:%M").to_string();
+        assert!(
+            rows[0].ends_with(&format!("last seen {seen} [stale]")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows[1],
+            "  tt agent end loremind - ops \"<summary>\" --trim"
+        );
+        assert!(
+            rows[1].contains("loremind"),
+            "the project token must survive"
+        );
     }
 
     #[test]
     fn no_marks_have_no_rows() {
         let dir = sandbox("rows-empty");
         assert_eq!(
-            rows_at(&open_marks_in(&dir), Local::now()),
+            rows_at(&open_leases_in(&dir), Local::now(), 45, 120),
             Vec::<String>::new()
         );
     }

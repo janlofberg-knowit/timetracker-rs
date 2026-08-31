@@ -234,14 +234,18 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
 /// header, blank line, rows at the status-glyph indent, or a bare
 /// `No open marks.`
 fn list() -> Result<()> {
-    let marks = marks::open_marks();
-    if marks.is_empty() {
+    let leases = open_leases();
+    if leases.is_empty() {
         println!("No open marks.");
         return Ok(());
     }
 
     println!("{} Open marks:\n", icons::agent());
-    for row in marks::rows(&marks) {
+    for row in marks::rows(
+        &leases,
+        audit::max_gap_minutes(),
+        audit::max_unvouched_minutes(),
+    ) {
         println!("  {}", row);
     }
     Ok(())
