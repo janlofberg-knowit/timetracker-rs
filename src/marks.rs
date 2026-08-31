@@ -124,6 +124,10 @@ impl Lease {
     /// none it reads `start → now` as one giant gap and logs the 5m floor, so
     /// that case asks for the minutes outright. An automatic beat counts here —
     /// a hook-beaten mark does have something to trim to.
+    ///
+    /// The arguments are the mark's parsed pieces, so a lossy project name
+    /// prints differently from what the operator typed; the line still works,
+    /// because they round-trip through [`mark_key`] back to this same file.
     pub fn close_command(&self) -> String {
         let tail = match self.last_seen {
             Some(_) => "--trim",
@@ -426,16 +430,17 @@ fn append_beat(dir: &Path, key: &str, tag: Option<&str>) -> io::Result<()> {
 /// Never beat a project other than the beating session's own: an unattributable
 /// beat is what let an unrelated session keep an abandoned mark alive.
 pub fn touch_project_in(dir: &Path, project: &str) {
+    // Match on the sanitised filename, never on the parsed display string: the
+    // name is not losslessly splittable, so `my proj` and `app.web` both parse
+    // back into something the raw project never equals.
+    let prefix = crate::paths::sanitise_key(&format!("{project}.")).to_ascii_lowercase();
     for mark in open_marks_in(dir) {
-        if !mark.project.eq_ignore_ascii_case(project) {
+        let issue = mark.issue.as_deref().unwrap_or("-");
+        let key = mark_key(&mark.project, issue, &mark.phase);
+        if !key.to_ascii_lowercase().starts_with(&prefix) {
             continue;
         }
-        let issue = mark.issue.as_deref().unwrap_or("-");
-        let _ = append_beat(
-            dir,
-            &mark_key(&mark.project, issue, &mark.phase),
-            Some("hook"),
-        );
+        let _ = append_beat(dir, &key, Some("hook"));
     }
 }
 
@@ -628,6 +633,36 @@ mod tests {
         }
         assert!(!beats_path(&dir, "b.9.impl").exists());
         assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn an_automatic_beat_is_tagged_so_it_never_anchors_a_close() {
+        let dir = sandbox("touch-project-tag");
+        write(&dir, "a.7.impl", "1000100\n");
+
+        touch_project_in(&dir, "a");
+
+        let body = fs::read_to_string(beats_path(&dir, "a.7.impl")).unwrap();
+        assert!(body.trim_end().ends_with(" hook"), "{body}");
+        let phase = read_phase_in(&dir, "a", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.ended, None, "a tagged last line anchors nothing");
+        assert!(!phase.vouched, "only the model's own touch vouches");
+        assert_eq!(phase.beats.len(), 1, "gaps still count it");
+    }
+
+    /// The project the hook resolves is a display string; the mark file is not.
+    #[test]
+    fn a_beat_matches_the_mark_by_its_sanitised_key() {
+        let dir = sandbox("touch-project-lossy");
+        write(&dir, "my_proj.7.impl", "1000100\n");
+        write(&dir, "app.web.7.impl", "1000200\n");
+
+        touch_project_in(&dir, "my proj");
+        assert!(beats_path(&dir, "my_proj.7.impl").is_file());
+        assert!(!beats_path(&dir, "app.web.7.impl").exists());
+
+        touch_project_in(&dir, "app.web");
+        assert!(beats_path(&dir, "app.web.7.impl").is_file());
     }
 
     fn at(seconds: i64) -> DateTime<Local> {
