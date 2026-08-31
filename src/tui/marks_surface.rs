@@ -62,5 +62,8 @@ impl App {
     /// `Shift-A`: show or hide the surface.
     pub(crate) fn toggle_marks(&mut self) {
         self.show_marks = !self.show_marks;
+        // Opening the surface must not show a second of nothing, and the read
+        // is skipped entirely while it is closed.
+        self.liveness_at = None;
     }
 }

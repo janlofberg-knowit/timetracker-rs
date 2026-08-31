@@ -80,6 +80,13 @@ pub(crate) struct App {
     pub(crate) activity_sessions: Vec<Session>,
     /// Fingerprint of the *activity directory*, so a tick need not list it.
     pub(crate) activity_stamp: Option<PathStamp>,
+    /// Each mark in `marks` paired with its liveness, so a frame never reads
+    /// the beats directory. Refreshed with `unaccounted`, and empty while the
+    /// Agents surface is hidden.
+    pub(crate) leases: Vec<crate::marks::Lease>,
+    /// When liveness was last read, bounding how often a keypress can trigger
+    /// the beats walk. `None` re-reads on the next call.
+    pub(crate) liveness_at: Option<std::time::Instant>,
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
     /// from disk itself. See `docs/decisions/0001-agent-activity-tracking.md`.
@@ -148,6 +155,8 @@ impl App {
             marks_stamp: None,
             activity_sessions: Vec::new(),
             activity_stamp: None,
+            leases: Vec::new(),
+            liveness_at: None,
             unaccounted: Vec::new(),
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
@@ -1141,6 +1150,7 @@ mod tests {
         sandbox("unaccounted-cap");
         seed(vec![entry(0, "first")], 1);
         let mut app = seed_marks(&[]);
+        app.toggle_marks();
 
         let dir = activity_sandbox();
         for (n, project) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] {
@@ -1152,6 +1162,56 @@ mod tests {
         assert_eq!(app.unaccounted.len(), 4);
         assert_eq!(app.visible_unaccounted().len(), 3, "capped at three shown");
         assert_eq!(app.unaccounted_count().as_deref(), Some("3/4"));
+    }
+
+    #[test]
+    fn a_hidden_agents_surface_reads_no_liveness_and_reconciles_nothing() {
+        let _guard = env_guard();
+        sandbox("liveness-hidden");
+        seed(vec![entry(0, "first")], 1);
+        let mark_dir = mark_sandbox();
+        begin_mark(&mark_dir, "smoke.-.impl", 4 * 60);
+        let dir = activity_sandbox();
+        write_session(&dir, "sess-1", "smoke", 3);
+
+        let mut app = App::new().unwrap();
+        assert!(!app.show_marks, "hidden by default");
+        app.activity_stamp = None;
+        app.sync_from_activity();
+
+        assert!(app.leases.is_empty(), "no beats read while hidden");
+        assert!(app.unaccounted.is_empty(), "and nothing reconciled");
+        assert!(app.liveness_at.is_none(), "the interval never started");
+    }
+
+    #[test]
+    fn liveness_is_read_at_most_once_per_interval_however_many_events_arrive() {
+        let _guard = env_guard();
+        sandbox("liveness-throttle");
+        seed(vec![entry(0, "first")], 1);
+        let mark_dir = mark_sandbox();
+        begin_mark(&mark_dir, "smoke.-.impl", 4 * 60);
+        let dir = activity_sandbox();
+
+        let mut app = App::new().unwrap();
+        app.toggle_marks();
+        app.activity_stamp = None;
+        app.sync_from_activity();
+        assert!(app.unaccounted.is_empty(), "no session to flag yet");
+
+        // Whatever lands on disk, and however many keypresses drive the loop,
+        // the next second's worth of calls keep the result already computed.
+        write_session(&dir, "sess-1", "smoke", 3);
+        for _ in 0..5 {
+            app.activity_stamp = None;
+            app.sync_from_activity();
+        }
+        assert!(app.unaccounted.is_empty(), "throttled, not recomputed");
+
+        app.liveness_at = None; // the interval elapsing
+        app.sync_from_activity();
+        assert_eq!(app.unaccounted.len(), 1);
+        assert_eq!(app.leases.len(), 1, "the leases are kept for the surface");
     }
 
     #[test]
