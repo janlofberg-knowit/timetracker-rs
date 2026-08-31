@@ -403,6 +403,12 @@ mod tests {
         std::fs::write(dir.join(key), format!("{}\n", start.timestamp())).unwrap();
     }
 
+    fn beat_mark(dir: &std::path::Path, key: &str) {
+        let beats = dir.join("beats");
+        std::fs::create_dir_all(&beats).unwrap();
+        std::fs::write(beats.join(key), format!("{}\n", Local::now().timestamp())).unwrap();
+    }
+
     fn entry(id: u64, description: &str) -> TimeEntry {
         TimeEntry {
             id,
@@ -1114,6 +1120,7 @@ mod tests {
         seed(vec![entry(0, "first")], 1);
         let mark_dir = mark_sandbox();
         begin_mark(&mark_dir, "smoke.-.impl", 4 * 60); // started before the window
+        beat_mark(&mark_dir, "smoke.-.impl"); // and still alive, so its lease holds
 
         let activity_dir = activity_sandbox();
         write_session(&activity_dir, "sess-1", "smoke", 3);

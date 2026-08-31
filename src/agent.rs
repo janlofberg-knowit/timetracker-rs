@@ -140,7 +140,15 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&[session], &leases, &data.entries, now, floor)
+        audit::unaccounted(
+            &[session],
+            &leases,
+            &data.entries,
+            now,
+            floor,
+            audit::max_gap_minutes(),
+            audit::max_unvouched_minutes(),
+        )
     };
 
     let threshold = auto_log
@@ -287,7 +295,15 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, floor)
+        audit::unaccounted(
+            &sessions,
+            &leases,
+            &data.entries,
+            now,
+            floor,
+            audit::max_gap_minutes(),
+            audit::max_unvouched_minutes(),
+        )
     };
 
     // `auto_log_after_minutes` unset: `--auto-log` is accepted but logs
@@ -308,7 +324,15 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, floor)
+        audit::unaccounted(
+            &sessions,
+            &leases,
+            &data.entries,
+            now,
+            floor,
+            audit::max_gap_minutes(),
+            audit::max_unvouched_minutes(),
+        )
     } else {
         flagged
     };

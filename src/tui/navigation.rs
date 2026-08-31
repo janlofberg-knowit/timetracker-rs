@@ -70,6 +70,8 @@ impl App {
             &self.data.entries,
             Local::now(),
             crate::audit::max_unvouched_minutes(),
+            crate::audit::max_gap_minutes(),
+            crate::audit::max_unvouched_minutes(),
         );
     }
 

@@ -2,8 +2,8 @@
 //! entries — the `tt agent audit` command. See
 //! `docs/decisions/0001-agent-activity-tracking.md`.
 //!
-//! An activity window counts as accounted for when either a mark was open
-//! for its project overlapping any part of it, or a closed `#agent`- or
+//! An activity window counts as accounted for once every part of it falls
+//! inside some same-project mark's lease, or a closed `#agent`- or
 //! `#auto`-tagged entry covers it (see
 //! `docs/decisions/0002-auto-logging-unaccounted-activity.md` for the
 //! latter). Neither is **unaccounted agent activity**: real work that never
@@ -113,60 +113,73 @@ fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
 /// should not trip the warning. A session with no project cannot be
 /// reconciled against anything, so it is skipped rather than assumed
 /// unaccounted.
+///
+/// Reads no config: every threshold arrives as a parameter, so a caller and a
+/// test judge by the same numbers.
 pub fn unaccounted(
     sessions: &[Session],
     leases: &[Lease],
     entries: &[TimeEntry],
     now: DateTime<Local>,
     floor_minutes: i64,
+    gap: i64,
+    unvouched: i64,
 ) -> Vec<Unaccounted> {
     let now_epoch = now.timestamp();
-    let gap = max_gap_minutes();
-    let unvouched = max_unvouched_minutes();
 
     let mut found: Vec<Unaccounted> = sessions
         .iter()
-        .filter_map(|session| {
-            let project = session.project.as_deref()?;
+        .flat_map(|session| {
+            let Some(project) = session.project.as_deref() else {
+                return Vec::new();
+            };
             let end_epoch = session.end.unwrap_or(now_epoch);
             if (end_epoch - session.start) / 60 < floor_minutes {
-                return None;
+                return Vec::new();
             }
 
-            let covered =
-                covered_by_mark(
-                    project,
-                    session.start,
-                    end_epoch,
-                    leases,
-                    now_epoch,
-                    gap,
-                    unvouched,
-                ) || covered_by_entry(project, session.start, end_epoch, entries, now_epoch);
-            if covered {
-                return None;
+            if covered_by_entry(project, session.start, end_epoch, entries, now_epoch) {
+                return Vec::new();
             }
 
-            // Unlike a mark's beats, no subagent dispatches is not evidence
-            // of silence — most sessions never dispatch one at all. Only
-            // treat gaps *between* dispatches (and before the first / after
-            // the last) as idle when there is at least one to anchor on.
-            let idle = if session.subagent_at.is_empty() {
-                Vec::new()
-            } else {
-                marks::gaps_over(session.start, end_epoch, &session.subagent_at, gap)
-                    .into_iter()
-                    .filter_map(|(from, to)| Some(IdleInterval::new(instant(from)?, instant(to)?)))
-                    .collect()
-            };
+            uncovered_by_marks(
+                project,
+                session.start,
+                end_epoch,
+                leases,
+                now_epoch,
+                gap,
+                unvouched,
+            )
+            .into_iter()
+            // The floor applies to what is left as much as to the window: the
+            // short head before a live mark was opened is not worth flagging.
+            .filter(|(from, to)| (to - from) / 60 >= floor_minutes)
+            .filter_map(|(from, to)| {
+                // Unlike a mark's beats, no subagent dispatches is not evidence
+                // of silence — most sessions never dispatch one at all. Only
+                // treat gaps *between* dispatches (and before the first / after
+                // the last) as idle when there is at least one to anchor on.
+                // Computed over the *uncovered* stretch, or an auto-logged
+                // entry would subtract idle time from outside what it reports.
+                let idle = if session.subagent_at.is_empty() {
+                    Vec::new()
+                } else {
+                    marks::gaps_over(from, to, &session.subagent_at, gap)
+                        .into_iter()
+                        .filter_map(|(a, b)| Some(IdleInterval::new(instant(a)?, instant(b)?)))
+                        .collect()
+                };
 
-            Some(Unaccounted {
-                project: project.to_string(),
-                start: instant(session.start)?,
-                end: instant(end_epoch)?,
-                subagents: session.subagents,
-                idle,
+                Some(Unaccounted {
+                    project: project.to_string(),
+                    start: instant(from)?,
+                    end: instant(to)?,
+                    subagents: session.subagents,
+                    idle,
+                })
             })
+            .collect()
         })
         .collect();
 
@@ -174,10 +187,12 @@ pub fn unaccounted(
     found
 }
 
-/// An open mark covers its own start up to whichever comes first, `now` or the
-/// instant its lease expires. An un-renewed mark therefore stops vouching for
-/// its project instead of suppressing the warning built to catch it.
-fn covered_by_mark(
+/// What is left of `start → end` after removing every same-project lease's
+/// covered interval — a lease covers `mark.start` up to whichever comes first,
+/// `now` or its expiry. Subtraction, not overlap: a mark that vouched only for
+/// the head of a still-open session leaves its tail flagged, which is the
+/// weekend incident's own shape.
+fn uncovered_by_marks(
     project: &str,
     start: i64,
     end: i64,
@@ -185,17 +200,43 @@ fn covered_by_mark(
     now: i64,
     gap_minutes: i64,
     unvouched_minutes: i64,
-) -> bool {
-    leases
+) -> Vec<(i64, i64)> {
+    let mut remaining = vec![(start, end)];
+    for lease in leases
         .iter()
         .filter(|lease| lease.mark.project.eq_ignore_ascii_case(project))
-        .any(|lease| {
-            let until = lease
-                .expires_at(gap_minutes, unvouched_minutes)
-                .timestamp()
-                .min(now);
-            overlaps(lease.mark.start.timestamp(), until, start, end)
-        })
+    {
+        let from = lease.mark.start.timestamp();
+        let until = lease
+            .expires_at(gap_minutes, unvouched_minutes)
+            .timestamp()
+            .min(now);
+        if until <= from {
+            continue;
+        }
+        remaining = remaining
+            .into_iter()
+            .flat_map(|stretch| subtract(stretch, (from, until)))
+            .collect();
+    }
+    remaining
+}
+
+/// `stretch` minus `cut`, as the zero, one or two stretches that survive.
+fn subtract(stretch: (i64, i64), cut: (i64, i64)) -> Vec<(i64, i64)> {
+    let (start, end) = stretch;
+    let (cut_start, cut_end) = cut;
+    if !overlaps(start, end, cut_start, cut_end) {
+        return vec![stretch];
+    }
+    let mut kept = Vec::new();
+    if start < cut_start {
+        kept.push((start, cut_start));
+    }
+    if cut_end < end {
+        kept.push((cut_end, end));
+    }
+    kept
 }
 
 /// A closed entry covers a window when it's tagged `#agent` (an agent's own
@@ -272,6 +313,28 @@ mod tests {
 
     const FLOOR: i64 = 120;
     const HOUR: i64 = 3600;
+    const GAP: i64 = 45;
+    const UNVOUCHED: i64 = 120;
+
+    /// The thresholds are stated here, never read from the developer's config:
+    /// this shadows [`super::unaccounted`] for every test below.
+    fn unaccounted(
+        sessions: &[Session],
+        leases: &[Lease],
+        entries: &[TimeEntry],
+        now: DateTime<Local>,
+        floor_minutes: i64,
+    ) -> Vec<Unaccounted> {
+        super::unaccounted(
+            sessions,
+            leases,
+            entries,
+            now,
+            floor_minutes,
+            GAP,
+            UNVOUCHED,
+        )
+    }
 
     #[test]
     fn a_session_with_no_project_is_never_flagged() {
@@ -315,6 +378,26 @@ mod tests {
         // The same mark, beaten ten minutes ago, still vouches.
         let live = vec![beaten("tt", 0, 114 * HOUR - 600)];
         assert!(unaccounted(&sessions, &live, &[], at(114 * HOUR), FLOOR).is_empty());
+    }
+
+    /// The incident as it happened: the session was still open, its mark was
+    /// opened at the same instant and never beat, and the weekend passed.
+    #[test]
+    fn the_remainder_of_a_still_open_session_past_its_marks_expiry_is_flagged() {
+        let sessions = vec![session(Some("tt"), 0, None, 0)];
+        let abandoned = vec![mark("tt", 0)];
+        let flagged = unaccounted(&sessions, &abandoned, &[], at(114 * HOUR), FLOOR);
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].start, at(2 * HOUR));
+        assert_eq!(flagged[0].end, at(114 * HOUR));
+    }
+
+    #[test]
+    fn two_consecutive_leases_covering_a_window_between_them_leave_nothing_flagged() {
+        let sessions = vec![session(Some("tt"), 0, Some(4 * HOUR), 0)];
+        // The first expires 2h in (unvouched), where the second picks up.
+        let leases = vec![mark("tt", 0), beaten("tt", 2 * HOUR, 4 * HOUR)];
+        assert!(unaccounted(&sessions, &leases, &[], at(4 * HOUR), FLOOR).is_empty());
     }
 
     #[test]
