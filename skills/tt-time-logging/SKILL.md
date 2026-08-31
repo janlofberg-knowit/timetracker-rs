@@ -138,6 +138,26 @@ beats is positive evidence that work stopped, so the unmeasured phase gets the l
 allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
 a human.
 
+Heartbeats also arrive **automatically** at every turn boundary: Claude Code's
+`UserPromptSubmit`, `SubagentStop` and `Stop` hooks each beat the open marks of
+the project the beating session resolved, and only that project's. `tt agent
+touch` is therefore a supplement rather than the only source — reach for it when
+a phase runs long inside a single turn.
+
+A mark **expires** when it is not renewed: `max_gap_minutes` past its last
+heartbeat, or `max_unvouched_minutes` past `begin` if it never beat at all. An
+expired mark stops vouching for its project, so that project's activity shows up
+as unaccounted again, and `tt agent list` marks the row `[stale]` and prints
+under it the exact `tt agent end` line that logs the work and clears it —
+`--trim` when there is a heartbeat to measure to, explicit minutes when there is
+none, since `--trim` on a mark that never beat reads the whole span as one gap
+and logs the 5-minute floor.
+
+**An existing install must re-run `install-hooks.mjs`.** The hook scripts are
+copied into Claude Code's own hooks directory, so a machine still holding the
+old copies gets no automatic beat at all, and every mark then expires on the
+unvouched grace.
+
 ## Working in parallel
 
 Marks are keyed `project/issue/phase`, so any number can be open at once — several
