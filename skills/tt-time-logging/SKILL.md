@@ -5,8 +5,13 @@ description: Time-logging contract for coding agents working in a repo tracked w
 
 # Time logging contract
 
-**Before your first file-changing tool call, open a mark.** Close it when that
-phase of work finishes — not at the end of the session.
+**Before your first file-changing tool call, open a mark; close it when that
+phase of work finishes** — `tt agent begin|touch|end <project> <issue|-> <phase>
+["<summary>" on end]`. Project: `$TT_PROJECT`, else the repo directory name.
+Phase: `plan|impl|qa|review|docs|spike|explore|ops`. Full contract: session-start
+context or `/tt-time-logging`.
+
+<!-- card:end — everything above is the per-prompt card; see scripts/tt-contract-hook.mjs -->
 
 ```sh
 tt agent begin <project> <issue|-> <phase>
@@ -27,8 +32,6 @@ issue number, or `-`. `<phase>` is one of:
 | investigation that produces no artifact, answering a specific question | `spike` |
 | open-ended exploration with no specific question | `explore` |
 | tooling, config, environment, release | `ops` |
-
-<!-- card:end — everything above is the per-prompt card; see scripts/tt-contract-hook.mjs -->
 
 Everything below is detail on those three commands. Setup and installation live
 in [README.md](README.md), not here.
