@@ -43,6 +43,36 @@ fn only_the_mark_only_agent_commands_leave_the_store_untouched() {
     }
 }
 
+// --- the automatic beat ----------------------------------------------------
+
+/// `UserPromptSubmit` renews the beating session's own marks and nothing else.
+#[test]
+fn activity_prompt_beats_only_that_projects_marks() {
+    let case = Case::new("activity-prompt");
+    case.write_mark("a.7.impl", now());
+    case.write_mark("b.9.impl", now());
+
+    case.run(&["activity", "prompt", "a"]).assert_status(0);
+
+    assert_eq!(count_lines(&case.beats_file("a.7.impl")), 1);
+    assert!(
+        !case.beats_file("b.9.impl").exists(),
+        "another project's mark was beaten"
+    );
+}
+
+/// An unattributable beat is what let an unrelated session keep an abandoned
+/// mark alive, so no project means no beat.
+#[test]
+fn activity_prompt_with_no_project_beats_nothing() {
+    let case = Case::new("activity-prompt-bare");
+    case.write_mark("a.7.impl", now());
+
+    case.run(&["activity", "prompt"]).assert_status(0);
+
+    assert!(!case.beats_file("a.7.impl").exists());
+}
+
 // --- begin -----------------------------------------------------------------
 
 #[test]

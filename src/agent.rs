@@ -80,6 +80,11 @@ pub fn run(command: &AgentCommands) -> Result<()> {
 /// Silently does nothing if the activity dir can't be resolved — a hook must
 /// never fail the harness event it's attached to.
 fn activity_command(command: &ActivityCommands) -> Result<()> {
+    // Beats only, nothing filed: it must not depend on the activity dir.
+    if let ActivityCommands::Prompt { project } = command {
+        beat_project(project.as_deref());
+        return Ok(());
+    }
     let Some(dir) = activity::activity_dir() else {
         return Ok(());
     };
@@ -104,6 +109,7 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
             // without this beat `end` sees the wait for the report as silence.
             beat_project(project.as_deref());
         }
+        ActivityCommands::Prompt { .. } => unreachable!("handled before the dir read"),
         ActivityCommands::Check {
             session_id,
             auto_log,

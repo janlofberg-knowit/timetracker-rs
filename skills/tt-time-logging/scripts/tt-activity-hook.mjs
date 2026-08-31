@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// SessionStart/Stop/SubagentStop hook: writes to `tt`'s hook-only activity
+// SessionStart/UserPromptSubmit/Stop/SubagentStop hook: writes to `tt`'s hook-only activity
 // ledger (`tt agent activity …`) — see
 // docs/decisions/0001-agent-activity-tracking.md. Installed by
 // install-hooks.mjs.
 //
-// Usage: node tt-activity-hook.mjs <begin|end|subagent>
+// Usage: node tt-activity-hook.mjs <begin|end|subagent|prompt>
 //
 // `session_id` (read from the hook's JSON payload on stdin) is the key every
 // entry is filed under. Missing or unparseable payload: silently skipped —
-// a hook must never fail the harness event it's attached to.
+// a hook must never fail the harness event it's attached to. `prompt` files
+// nothing and only beats this project's open marks, so it needs no session id.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -21,41 +22,51 @@ function readStdin() {
   }
 }
 
-function projectName() {
+// An unresolved project now means no beat at all, so the payload's own `cwd` is
+// tried when the process cwd yields nothing.
+function projectName(cwd) {
   if (process.env.TT_PROJECT) return process.env.TT_PROJECT;
-  try {
-    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      encoding: "utf8",
-    }).trim();
-    return root.split(/[\\/]/).pop();
-  } catch {
-    return null;
+  const candidates = cwd ? [undefined, cwd] : [undefined];
+  for (const dir of candidates) {
+    try {
+      const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        encoding: "utf8",
+        cwd: dir,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (root) return root.split(/[\\/]/).pop();
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
 }
 
 const event = process.argv[2];
-if (!["begin", "end", "subagent"].includes(event)) {
+if (!["begin", "end", "subagent", "prompt"].includes(event)) {
   process.stdout.write("{}");
   process.exit(0);
 }
 
-let sessionId;
+let payload = {};
 try {
-  const payload = JSON.parse(readStdin());
-  sessionId = payload.session_id;
+  payload = JSON.parse(readStdin()) ?? {};
 } catch {
-  sessionId = undefined;
+  payload = {};
 }
 
-if (!sessionId) {
+const sessionId = payload.session_id;
+// Every event but `prompt` is filed under the session id and needs one.
+if (!sessionId && event !== "prompt") {
   process.stdout.write("{}");
   process.exit(0);
 }
 
-// Passed on every event: `begin` files it in the ledger, and `end`/`subagent`
-// beat that project's open marks. An unresolved project means no beat at all.
-const args = ["agent", "activity", event, sessionId];
-const project = projectName();
+// Passed on every event: `begin` files it in the ledger, and the rest beat that
+// project's open marks. An unresolved project means no beat at all.
+const args = ["agent", "activity", event];
+if (event !== "prompt") args.push(sessionId);
+const project = projectName(payload.cwd);
 if (project) args.push(project);
 
 try {

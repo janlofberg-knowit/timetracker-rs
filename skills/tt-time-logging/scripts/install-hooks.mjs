@@ -116,6 +116,7 @@ const stopCmd = `node "${stopCheckAbs}"`;
 const activityBeginCmd = `node "${activityHookAbs}" begin`;
 const activityEndCmd = `node "${activityHookAbs}" end`;
 const activitySubagentCmd = `node "${activityHookAbs}" subagent`;
+const activityPromptCmd = `node "${activityHookAbs}" prompt`;
 
 const hasCommand = (event, command) =>
   settings.hooks[event].some((entry) => entry.hooks?.some((h) => h.command === command));
@@ -135,6 +136,12 @@ if (!hasCommand("SessionStart", activityBeginCmd)) {
 if (!hasCommand("UserPromptSubmit", userPromptSubmitCmd)) {
   settings.hooks.UserPromptSubmit.push({
     hooks: [{ type: "command", command: userPromptSubmitCmd, statusMessage: "Reinforcing tt-time-logging contract" }],
+  });
+}
+
+if (!hasCommand("UserPromptSubmit", activityPromptCmd)) {
+  settings.hooks.UserPromptSubmit.push({
+    hooks: [{ type: "command", command: activityPromptCmd, statusMessage: "Renewing tt marks" }],
   });
 }
 
