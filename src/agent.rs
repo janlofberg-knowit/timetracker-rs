@@ -497,9 +497,11 @@ fn end(
             // end where the timeline does.
             anchor = Some(instant(ended)?);
 
-            // A mark with heartbeats is judged against the interior-silence
-            // threshold, a mark with none against the longer unvouched one.
-            let threshold = if marked.beats.is_empty() {
+            // A mark the model vouched for is judged against the interior-silence
+            // threshold, an unvouched one against the longer unvouched grace.
+            // Keyed on `vouched`, not on the beats being empty: automatic beats
+            // must not drop a hook-only phase onto the shorter threshold.
+            let threshold = if !marked.vouched {
                 audit::max_unvouched_minutes()
             } else {
                 audit::max_gap_minutes()

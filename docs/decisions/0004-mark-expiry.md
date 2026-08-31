@@ -29,16 +29,35 @@ an abandoned mark's last-seen fresh, and beats only arrived on `SubagentStop`.
 
 ## Decision
 
-A **lease** is one open mark plus the instant `tt agent end` would measure it
-to — the beats file's last bare-timestamp line. It expires at that instant plus
-`agent.max_gap_minutes`, or at `mark.start` plus
-`agent.max_unvouched_minutes` when there is no such instant. A beats file that
-exists but holds no bare timestamp takes the longer unvouched grace: no
-measurable evidence is treated as no evidence.
+A **lease** is one open mark plus the instant it was last seen — the beats
+file's last line. It expires at that instant plus `agent.max_gap_minutes`, or at
+`mark.start` plus `agent.max_unvouched_minutes` when the file holds no beat at
+all: no evidence is treated as no evidence.
 
-`audit::unaccounted` bounds a mark's coverage by `min(now, expiry)` rather than
-by `now`, so an expired mark stops vouching and every existing warning surface
-starts firing on its own. `tt agent list` grows a last-seen column, a `[stale]`
+A beat line carries its provenance. `tt agent touch` — the model's own vouch —
+writes a bare `<epoch>`; the hooks write `<epoch> hook`. One file, two meanings,
+and the four readers of it differ deliberately:
+
+- **Measurement** (`Phase::ended`, what `end` bills) anchors only on a bare
+  *last* line, so a trailing hook beat leaves `end` measuring to now. Without
+  this an agent that took its last turn boundary at minute 35 and then worked 25
+  minutes more would bill 35.
+- **Gap detection** (`Phase::beats`, `gaps_over`) counts every line: an
+  automatic beat is still evidence the session was there.
+- **Liveness** (`Lease::last_seen`) takes the last line whatever tag follows it —
+  an automatic beat is precisely the evidence staleness exists to see.
+- **The unvouched threshold** (`Phase::vouched`) asks whether any *bare* line
+  exists, so `max_unvouched_minutes` keeps meaning "the model never vouched"
+  rather than "the file is empty", and a hook-only phase is not dropped onto the
+  shorter gap threshold.
+
+`audit::unaccounted` subtracts each same-project lease's covered interval
+(`mark.start → min(now, expiry)`) from the session window and flags whatever
+remains, so an expired mark stops vouching for the stretch it did not cover and
+every existing warning surface starts firing on its own. Clamping the bound
+alone was not enough: the any-overlap predicate around it still answered
+"covered" for a still-open session whose mark expired at its head.
+`tt agent list` grows a last-seen column, a `[stale]`
 marker, and one indented line per stale mark holding the exact `tt agent end`
 line that logs the work and clears it — `--trim` for a mark with a heartbeat to
 measure to, the explicit-minutes form for one without, since `--trim` there
@@ -55,13 +74,13 @@ Together they renew a live session's marks at every turn boundary, and only the
 marks of the project the beating session resolved; no resolved project means no
 beat.
 
-`tt agent end`'s measurement, its thresholds, `gaps_over`, `read_phase_in` and
-the mark file format are all unchanged.
+`tt agent end`'s measurement, its thresholds and `gaps_over` are unchanged; the
+beat line's optional tag is the only format change.
 
 ## Alternatives considered
 
 - **An implicit beat at `begin`.** This was the bug report's own suggestion.
-  Rejected: `end`'s threshold switch is `beats.is_empty()`, so a beat at
+  Rejected: `end`'s threshold switch is whether the model vouched, so a beat at
   `begin` collapses the distinction between an unmeasured phase and a beaten
   one — and the common `begin` → work 20m → `end` flow with no touches, which
   today logs 20 minutes by measuring to now, would start logging the 5-minute

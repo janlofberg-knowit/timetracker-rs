@@ -8,6 +8,14 @@
 //! splittable. Heartbeats are one append-only file per mark in a `beats/`
 //! subdirectory, and an unfinished close leaves a `closing/` entry beside them.
 //!
+//! A beat line has two provenances: `<epoch>` is the model's own `tt agent
+//! touch`, `<epoch> hook` is an automatic beat from the harness hooks. The four
+//! readers of that file differ deliberately — measurement ([`Phase::ended`])
+//! anchors only on a bare last line, gap detection ([`Phase::beats`]) counts
+//! every line, liveness ([`lease_in`]) takes the last line whatever its tag, and
+//! the unvouched threshold ([`Phase::vouched`]) asks whether any bare line
+//! exists. See docs/decisions/0004-mark-expiry.md.
+//!
 //! Only the start timestamp is read; see [`open_marks_in`].
 
 use chrono::{DateTime, Local, TimeDelta};
@@ -76,16 +84,15 @@ impl Mark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lease {
     pub mark: Mark,
-    /// The beats file's **last** bare-timestamp line, not its largest beat;
-    /// `None` when there is no such line.
+    /// The beats file's **last** line's timestamp whatever tag follows it, not
+    /// its largest beat; `None` when the file holds no beat at all.
     pub last_seen: Option<DateTime<Local>>,
 }
 
 impl Lease {
     /// The instant this mark stops vouching: `last_seen + gap_minutes`, or
-    /// `mark.start + unvouched_minutes` when it never beat. A beats file with no
-    /// bare timestamp takes the unvouched grace — no measurable evidence is
-    /// treated as no evidence.
+    /// `mark.start + unvouched_minutes` when it never beat at all — no
+    /// measurable evidence is treated as no evidence.
     pub fn expires_at(&self, gap_minutes: i64, unvouched_minutes: i64) -> DateTime<Local> {
         match self.last_seen {
             Some(seen) => seen + TimeDelta::minutes(gap_minutes),
@@ -115,7 +122,8 @@ impl Lease {
     ///
     /// `--trim` only for a mark with a heartbeat to measure to: on a mark with
     /// none it reads `start → now` as one giant gap and logs the 5m floor, so
-    /// that case asks for the minutes outright.
+    /// that case asks for the minutes outright. An automatic beat counts here —
+    /// a hook-beaten mark does have something to trim to.
     pub fn close_command(&self) -> String {
         let tail = match self.last_seen {
             Some(_) => "--trim",
@@ -141,11 +149,12 @@ pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
         &mark.phase,
     );
     let body = fs::read_to_string(beats_path(dir, &key)).unwrap_or_default();
+    // The **last** line whatever follows its timestamp: an automatic `hook`
+    // beat is exactly the evidence staleness exists to see.
     let last_seen = body
         .lines()
         .next_back()
-        .filter(|line| all_digits(line))
-        .and_then(|line| line.parse().ok())
+        .and_then(beat_of)
         .and_then(crate::time::instant);
     Lease {
         mark: mark.clone(),
@@ -386,18 +395,33 @@ pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
         return Ok(Touch::NoMark);
     }
 
-    let beats = beats_path(dir, &key);
+    append_beat(dir, &key, None)?;
+    Ok(Touch::Recorded)
+}
+
+/// The one writer of a beat line: `<epoch>` bare, or `<epoch> <tag>` when the
+/// beat is not the model's own vouch. Only a bare line vouches for time and
+/// only a bare *last* line anchors what `end` bills, so never tag a `touch` and
+/// never leave an automatic beat untagged.
+fn append_beat(dir: &Path, key: &str, tag: Option<&str>) -> io::Result<()> {
+    let beats = beats_path(dir, key);
     if let Some(parent) = beats.parent() {
         fs::create_dir_all(parent)?;
     }
     let mut file = OpenOptions::new().append(true).create(true).open(&beats)?;
-    writeln!(file, "{}", Local::now().timestamp())?;
-    Ok(Touch::Recorded)
+    match tag {
+        Some(tag) => writeln!(file, "{} {}", Local::now().timestamp(), tag)?,
+        None => writeln!(file, "{}", Local::now().timestamp())?,
+    }
+    Ok(())
 }
 
-/// Append one heartbeat to every open mark in `dir` **whose project matches**,
-/// case-insensitively. A mark whose beats cannot be written is skipped; the rest
-/// are still beaten.
+/// Append one automatic `hook` beat to every open mark in `dir` **whose project
+/// matches**, case-insensitively. A mark whose beats cannot be written is
+/// skipped; the rest are still beaten.
+///
+/// Tagged, never bare: these beats prove the session is alive, and must not move
+/// what `end` measures or make an unvouched phase look vouched.
 ///
 /// Never beat a project other than the beating session's own: an unattributable
 /// beat is what let an unrelated session keep an abandoned mark alive.
@@ -407,7 +431,11 @@ pub fn touch_project_in(dir: &Path, project: &str) {
             continue;
         }
         let issue = mark.issue.as_deref().unwrap_or("-");
-        let _ = touch_in(dir, &mark.project, issue, &mark.phase);
+        let _ = append_beat(
+            dir,
+            &mark_key(&mark.project, issue, &mark.phase),
+            Some("hook"),
+        );
     }
 }
 
@@ -469,9 +497,15 @@ pub struct Phase {
     /// not a bare timestamp. Never sort or dedup: [`gaps_over`] judges that.
     pub beats: Vec<i64>,
     /// The instant the phase is measured to: the beats file's **last line**, not
-    /// its largest beat. `None` when there is no such line, leaving the caller
-    /// nothing better to measure to than now.
+    /// its largest beat, and only when that line is a *bare* timestamp. `None`
+    /// when there is no such line — including when the last beat is an
+    /// automatic one — leaving the caller nothing better to measure to than now.
+    /// Load-bearing: no automatic beat may shorten what `end` bills.
     pub ended: Option<i64>,
+    /// Whether the model ever vouched for this phase, i.e. whether any bare
+    /// timestamp is present. Automatic beats do not count: `max_unvouched_minutes`
+    /// means "the model never vouched", not "the file is empty".
+    pub vouched: bool,
 }
 
 /// A line's leading whitespace-delimited field as a bare timestamp, or `None`.
@@ -511,13 +545,17 @@ pub fn read_phase_in(
 
     // No beats file leaves the single start→end interval to judge.
     let body = fs::read_to_string(&source).unwrap_or_default();
+    // Gap detection counts every line, tagged or not: an automatic beat is
+    // still evidence the session was there.
     let beats = body.lines().filter_map(beat_of).collect();
     let ended = body.lines().next_back().filter(|line| all_digits(line));
+    let vouched = body.lines().any(all_digits);
 
     Ok(Some(Phase {
         started,
         beats,
         ended: ended.and_then(|line| line.parse().ok()),
+        vouched,
     }))
 }
 
@@ -618,11 +656,22 @@ mod tests {
     }
 
     #[test]
-    fn a_beats_file_with_no_bare_timestamp_takes_the_unvouched_grace() {
+    fn a_tagged_beat_is_still_a_last_seen_for_liveness() {
         let dir = sandbox("lease-annotated");
         write(&dir, "proj.7.impl", "1000000\n");
         fs::create_dir_all(dir.join("beats")).unwrap();
-        fs::write(beats_path(&dir, "proj.7.impl"), "1000600 note\n").unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000600 hook\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, Some(at(1_000_600)));
+        assert_eq!(lease.expires_at(45, 120), at(1_000_600 + 45 * 60));
+    }
+
+    #[test]
+    fn an_empty_beats_file_takes_the_unvouched_grace() {
+        let dir = sandbox("lease-empty-beats");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, None);
         assert_eq!(lease.expires_at(45, 120), at(1_000_000 + 120 * 60));

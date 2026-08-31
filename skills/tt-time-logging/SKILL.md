@@ -128,27 +128,31 @@ A mark's start time survives the agent's context being truncated or compacted, s
 not hold start times in context. Marks live in the application's own cache directory;
 `TT_MARK_DIR` overrides it.
 
-`touch` matters twice over: `end` measures start → last touch, not start → now, so
-idle time after the work finished is not counted — and the heartbeats it appends are
-what let a long phase log without a question. `end` refuses on a *silent gap*, never
-on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES`
+`touch` matters twice over: `end` measures start → your last touch, not start → now,
+so idle time after the work finished is not counted — and the heartbeats it appends
+are what let a long phase log without a question. `end` refuses on a *silent gap*,
+never on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES`
 or `agent.max_gap_minutes` (default 45) is what gets flagged.
 
-A phase that produced **no heartbeat at all** is judged on its own threshold instead,
-`TT_MAX_UNVOUCHED_MINUTES` or `agent.max_unvouched_minutes` (default 120). No beats is the absence of instrumentation —
-a session that compacted, or `begin`/`end` without any `touch` — where a hole between
-beats is positive evidence that work stopped, so the unmeasured phase gets the longer
-allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
-a human.
+A phase **you never touched** is judged on its own threshold instead,
+`TT_MAX_UNVOUCHED_MINUTES` or `agent.max_unvouched_minutes` (default 120). No touch is
+the absence of instrumentation — a session that compacted, or `begin`/`end` without
+any `touch` — where a hole between heartbeats is positive evidence that work stopped,
+so the unmeasured phase gets the longer allowance. Long enough is still refused: 120
+minutes with nothing to show for it wants a human.
 
-Heartbeats also arrive **automatically** at every turn boundary: Claude Code's
-`UserPromptSubmit`, `SubagentStop` and `Stop` hooks each beat the open marks of
-the project the beating session resolved, and only that project's. `tt agent
-touch` is therefore a supplement rather than the only source — reach for it when
-a phase runs long inside a single turn.
+Two kinds of heartbeat share one file, and only one of them vouches for time. **Your
+`tt agent touch` is the vouch**: `end` measures to it, and it is what lifts a phase off
+the unvouched threshold. **The hooks' beats prove the session is alive**, nothing more —
+Claude Code's `UserPromptSubmit`, `SubagentStop` and `Stop` each beat the open marks of
+the project the beating session resolved, and only that project's, at every turn
+boundary. They keep a mark from expiring; they never move what `end` bills and never
+make an untouched phase look touched. So `tt agent touch` is still yours to run when a
+phase runs long inside a single turn.
 
 A mark **expires** when it is not renewed: `max_gap_minutes` past its last
-heartbeat, or `max_unvouched_minutes` past `begin` if it never beat at all. An
+heartbeat from either source, or `max_unvouched_minutes` past `begin` if nothing beat
+at all. An
 expired mark stops vouching for its project, so that project's activity shows up
 as unaccounted again, and `tt agent list` marks the row `[stale]` and prints
 under it the exact `tt agent end` line that logs the work and clears it —
@@ -221,8 +225,8 @@ the plain begin → touch → end flow is enough.
   of work in it, and the message names that stretch's length and clock interval, then
   quotes what `--full` and what `--trim` would log. Length alone is never the
   complaint: a long session that kept heartbeating logs silently. Which threshold
-  applied depends on the evidence — 45 minutes between beats, 120 for a phase that
-  never beat at all.
+  applied depends on the evidence — 45 minutes between beats, 120 for a phase you
+  never touched.
 
   **Ask the operator about the named gap — never pick between `--full` and `--trim`
   yourself**, and reach for neither by reflex; only the person who was there knows

@@ -369,6 +369,78 @@ fn an_unvouched_span_over_the_unvouched_threshold_is_flagged() {
     assert!(case.store().entries.is_empty(), "nothing was logged");
 }
 
+// --- automatic beats -------------------------------------------------------
+//
+// No automatic beat may shorten what `end` bills, or move a phase off the
+// unvouched threshold.
+
+/// The same 90-minute span `an_unvouched_span_under_the_unvouched_threshold_logs`
+/// bills, with hook beats all through it.
+#[test]
+fn hook_beats_alone_bill_the_same_span_on_the_same_threshold() {
+    let case = Case::new("gaps-hook-only");
+    let span = 90;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 20 * 60, start + 50 * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "hooks beat, the model did not"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// A hook beat after the model's last touch must not pull the bill back to it.
+#[test]
+fn a_hook_beat_after_a_touch_still_measures_to_now() {
+    let case = Case::new("gaps-hook-after-touch");
+    let span = 60;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    let file = case.beats_file("proj.7.impl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!("{}\n{} hook\n", start + 35 * 60, start + 40 * 60),
+    )
+    .unwrap();
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "closing work after the last beat",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// An abandoned mark whose only beats are automatic: refused, then `--trim`
+/// logs the span up to its last beat.
+#[test]
+fn an_abandoned_hook_beaten_mark_is_refused_and_trims_to_its_last_beat() {
+    let case = Case::new("gaps-hook-abandoned");
+    let start = now() - 200 * 60;
+    let last_beat = start + 40 * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
+
+    let refused = case.run(&["end", "proj", "7", "impl", "left open over the weekend"]);
+    refused.assert_status(65);
+    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
+
+    let trimmed = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "left open over the weekend",
+        "--trim",
+    ]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has(&logged_duration((last_beat - start) / 60));
+}
+
 /// Beating once does not buy the longer allowance: 46 minutes, one over.
 #[test]
 fn a_beaten_phase_is_still_judged_at_the_interior_threshold() {
