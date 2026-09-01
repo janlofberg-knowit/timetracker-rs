@@ -4,6 +4,10 @@ use crate::storage::PathStamp;
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use crossterm::event::KeyCode;
+use std::time::{Duration as StdDuration, Instant};
+
+/// How often the Agents surface re-reads liveness and reconciles.
+const LIVENESS_INTERVAL: StdDuration = StdDuration::from_secs(1);
 
 impl App {
     /// Record the store's fingerprint, then load it. Stamp *before* the read —
@@ -34,16 +38,37 @@ impl App {
         }
         self.marks_stamp = current;
         self.marks = crate::marks::open_marks_in(&dir);
+        // A mark opened or closed is exactly when the leases are worth
+        // re-reading, whatever the liveness interval says.
+        self.liveness_at = None;
     }
 
     /// Pick up activity-ledger writes made outside the TUI (by hooks in other
-    /// sessions), and recompute [`App::unaccounted`] from whatever `marks` and
-    /// `data` already hold this tick. Call after
-    /// [`sync_from_marks`](Self::sync_from_marks) and
-    /// [`sync_from_store`](Self::sync_from_store) so both are current;
-    /// reconciliation itself is cheap enough to redo every tick; only the
-    /// session directory read is gated on its own `stat`.
+    /// sessions), read each open mark's liveness, and recompute
+    /// [`App::unaccounted`]. Call after [`sync_from_marks`](Self::sync_from_marks)
+    /// and [`sync_from_store`](Self::sync_from_store) so both are current.
+    ///
+    /// Runs at most once per [`LIVENESS_INTERVAL`], and not at all while the
+    /// Agents surface is hidden: this is the event loop's own body, so it is
+    /// reached on every keypress, not once per poll tick.
     pub(crate) fn sync_from_activity(&mut self) {
+        if !self.show_marks {
+            self.leases.clear();
+            self.unaccounted.clear();
+            return;
+        }
+        // The beats read cannot be stamp-gated — an append inside `beats/`
+        // changes no directory mtime — so bound it in time instead, keeping the
+        // last result until the interval is up.
+        if self
+            .liveness_at
+            .is_some_and(|last| last.elapsed() < LIVENESS_INTERVAL)
+        {
+            return;
+        }
+        self.liveness_at = Some(Instant::now());
+        self.liveness_thresholds = crate::audit::thresholds();
+
         if let Some(dir) = crate::activity::activity_dir() {
             let current = PathStamp::read(&dir);
             if !PathStamp::unchanged(self.activity_stamp, current) {
@@ -53,12 +78,21 @@ impl App {
         } else {
             self.activity_sessions.clear();
         }
+        // No marks costs nothing, which is the normal case.
+        self.leases = match crate::marks::mark_dir() {
+            Some(dir) if !self.marks.is_empty() => self
+                .marks
+                .iter()
+                .map(|mark| crate::marks::lease_in(&dir, mark))
+                .collect(),
+            _ => Vec::new(),
+        };
         self.unaccounted = crate::audit::unaccounted(
             &self.activity_sessions,
-            &self.marks,
+            &self.leases,
             &self.data.entries,
             Local::now(),
-            crate::audit::max_unvouched_minutes(),
+            self.liveness_thresholds,
         );
     }
 

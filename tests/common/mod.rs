@@ -243,6 +243,14 @@ impl Case {
         fs::write(file, body).unwrap();
     }
 
+    /// The same, tagged as the hooks write them: `<epoch> hook`.
+    pub fn hook_beats_at(&self, key: &str, beats: &[i64]) {
+        let file = self.beats_file(key);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let body: String = beats.iter().map(|beat| format!("{beat} hook\n")).collect();
+        fs::write(file, body).unwrap();
+    }
+
     /// Regular files directly in the mark directory — the `beats` subdirectory is not one.
     pub fn mark_count(&self) -> usize {
         count_files(&self.marks)

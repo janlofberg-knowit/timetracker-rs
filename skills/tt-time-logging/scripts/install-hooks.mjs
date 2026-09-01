@@ -32,6 +32,7 @@
 // Usage (from anywhere, after `npx skills add ...`):
 //   node <wherever the skill landed>/scripts/install-hooks.mjs
 
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +117,7 @@ const stopCmd = `node "${stopCheckAbs}"`;
 const activityBeginCmd = `node "${activityHookAbs}" begin`;
 const activityEndCmd = `node "${activityHookAbs}" end`;
 const activitySubagentCmd = `node "${activityHookAbs}" subagent`;
+const activityPromptCmd = `node "${activityHookAbs}" prompt`;
 
 const hasCommand = (event, command) =>
   settings.hooks[event].some((entry) => entry.hooks?.some((h) => h.command === command));
@@ -135,6 +137,12 @@ if (!hasCommand("SessionStart", activityBeginCmd)) {
 if (!hasCommand("UserPromptSubmit", userPromptSubmitCmd)) {
   settings.hooks.UserPromptSubmit.push({
     hooks: [{ type: "command", command: userPromptSubmitCmd, statusMessage: "Reinforcing tt-time-logging contract" }],
+  });
+}
+
+if (!hasCommand("UserPromptSubmit", activityPromptCmd)) {
+  settings.hooks.UserPromptSubmit.push({
+    hooks: [{ type: "command", command: activityPromptCmd, statusMessage: "Renewing tt marks" }],
   });
 }
 
@@ -186,4 +194,35 @@ if (existsSync(claudeMdPath)) {
   console.log(`No ${claudeMdPath} found — skipped the CLAUDE.md pointer.`);
 }
 
-console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");
+// The hooks need a `tt` that understands `tt agent activity prompt` and the
+// project positional on `end`/`subagent`. An older binary rejects those with
+// clap's exit 2, which the activity hook's own catch swallows — the ledger
+// silently stops recording `end=`/`subagent=` lines. Probe the subcommand
+// rather than parsing a version: with no project argument it is a deliberate
+// no-op on a capable binary, so nothing is written either way. Install
+// regardless: the contract injection works against any version.
+const understandsPrompt = () => {
+  try {
+    execFileSync("tt", ["agent", "activity", "prompt"], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch (error) {
+    // No `tt` on PATH at all is not a version complaint.
+    return error?.code === "ENOENT";
+  }
+};
+
+if (!understandsPrompt()) {
+  console.log("");
+  console.log(
+    "WARNING: the installed tt does not understand `tt agent activity prompt`, " +
+      "which these hooks need.",
+  );
+  console.log(
+    "  Until you upgrade, marks will not be renewed automatically and the " +
+      "activity ledger will stop recording session ends and subagent " +
+      "dispatches — silently, since a hook never fails its event.",
+  );
+  console.log("");
+}

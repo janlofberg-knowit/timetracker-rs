@@ -233,10 +233,21 @@ pub enum ActivityCommands {
         session_id: String,
         project: Option<String>,
     },
-    /// Stop: close this session's activity window.
-    End { session_id: String },
-    /// SubagentStop: record that one subagent dispatch finished.
-    Subagent { session_id: String },
+    /// Stop: close this session's activity window, and beat this project's
+    /// open marks.
+    End {
+        session_id: String,
+        project: Option<String>,
+    },
+    /// SubagentStop: record that one subagent dispatch finished, and beat this
+    /// project's open marks.
+    Subagent {
+        session_id: String,
+        project: Option<String>,
+    },
+    /// UserPromptSubmit: beat this project's open marks. Writes nothing to the
+    /// ledger, so it takes no session id.
+    Prompt { project: Option<String> },
     /// Stop: report this one session's window if it is unaccounted for,
     /// silent otherwise. Same reconciliation as `tt agent audit`, narrowed
     /// to a single session so the Stop hook can warn immediately.

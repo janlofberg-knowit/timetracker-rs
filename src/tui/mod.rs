@@ -80,6 +80,16 @@ pub(crate) struct App {
     pub(crate) activity_sessions: Vec<Session>,
     /// Fingerprint of the *activity directory*, so a tick need not list it.
     pub(crate) activity_stamp: Option<PathStamp>,
+    /// Each mark in `marks` paired with its liveness, so a frame never reads
+    /// the beats directory. Refreshed with `unaccounted`, and empty while the
+    /// Agents surface is hidden.
+    pub(crate) leases: Vec<crate::marks::Lease>,
+    /// When liveness was last read, bounding how often a keypress can trigger
+    /// the beats walk. `None` re-reads on the next call.
+    pub(crate) liveness_at: Option<std::time::Instant>,
+    /// `(max_gap_minutes, max_unvouched_minutes)` as of that read, so a frame
+    /// can judge a lease stale without loading the config.
+    pub(crate) liveness_thresholds: crate::marks::Thresholds,
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
     /// from disk itself. See `docs/decisions/0001-agent-activity-tracking.md`.
@@ -148,6 +158,9 @@ impl App {
             marks_stamp: None,
             activity_sessions: Vec::new(),
             activity_stamp: None,
+            leases: Vec::new(),
+            liveness_at: None,
+            liveness_thresholds: crate::audit::thresholds(),
             unaccounted: Vec::new(),
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
@@ -401,6 +414,12 @@ mod tests {
     fn begin_mark(dir: &std::path::Path, key: &str, minutes_ago: i64) {
         let start = Local::now() - chrono::Duration::minutes(minutes_ago);
         std::fs::write(dir.join(key), format!("{}\n", start.timestamp())).unwrap();
+    }
+
+    fn beat_mark(dir: &std::path::Path, key: &str) {
+        let beats = dir.join("beats");
+        std::fs::create_dir_all(&beats).unwrap();
+        std::fs::write(beats.join(key), format!("{}\n", Local::now().timestamp())).unwrap();
     }
 
     fn entry(id: u64, description: &str) -> TimeEntry {
@@ -1010,7 +1029,14 @@ mod tests {
             ("ops.-.rota", 300),
         ]);
 
-        let shown: Vec<String> = app.visible_marks().iter().map(Mark::label).collect();
+        let mut app = app;
+        app.toggle_marks();
+        app.sync_from_activity();
+        let shown: Vec<String> = app
+            .visible_leases()
+            .iter()
+            .map(|lease| lease.mark.label())
+            .collect();
         assert_eq!(
             shown,
             vec!["tt/14 impl", "loremind/64 plan", "vinge plan"],
@@ -1114,6 +1140,7 @@ mod tests {
         seed(vec![entry(0, "first")], 1);
         let mark_dir = mark_sandbox();
         begin_mark(&mark_dir, "smoke.-.impl", 4 * 60); // started before the window
+        beat_mark(&mark_dir, "smoke.-.impl"); // and still alive, so its lease holds
 
         let activity_dir = activity_sandbox();
         write_session(&activity_dir, "sess-1", "smoke", 3);
@@ -1134,6 +1161,7 @@ mod tests {
         sandbox("unaccounted-cap");
         seed(vec![entry(0, "first")], 1);
         let mut app = seed_marks(&[]);
+        app.toggle_marks();
 
         let dir = activity_sandbox();
         for (n, project) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] {
@@ -1145,6 +1173,56 @@ mod tests {
         assert_eq!(app.unaccounted.len(), 4);
         assert_eq!(app.visible_unaccounted().len(), 3, "capped at three shown");
         assert_eq!(app.unaccounted_count().as_deref(), Some("3/4"));
+    }
+
+    #[test]
+    fn a_hidden_agents_surface_reads_no_liveness_and_reconciles_nothing() {
+        let _guard = env_guard();
+        sandbox("liveness-hidden");
+        seed(vec![entry(0, "first")], 1);
+        let mark_dir = mark_sandbox();
+        begin_mark(&mark_dir, "smoke.-.impl", 4 * 60);
+        let dir = activity_sandbox();
+        write_session(&dir, "sess-1", "smoke", 3);
+
+        let mut app = App::new().unwrap();
+        assert!(!app.show_marks, "hidden by default");
+        app.activity_stamp = None;
+        app.sync_from_activity();
+
+        assert!(app.leases.is_empty(), "no beats read while hidden");
+        assert!(app.unaccounted.is_empty(), "and nothing reconciled");
+        assert!(app.liveness_at.is_none(), "the interval never started");
+    }
+
+    #[test]
+    fn liveness_is_read_at_most_once_per_interval_however_many_events_arrive() {
+        let _guard = env_guard();
+        sandbox("liveness-throttle");
+        seed(vec![entry(0, "first")], 1);
+        let mark_dir = mark_sandbox();
+        begin_mark(&mark_dir, "smoke.-.impl", 4 * 60);
+        let dir = activity_sandbox();
+
+        let mut app = App::new().unwrap();
+        app.toggle_marks();
+        app.activity_stamp = None;
+        app.sync_from_activity();
+        assert!(app.unaccounted.is_empty(), "no session to flag yet");
+
+        // Whatever lands on disk, and however many keypresses drive the loop,
+        // the next second's worth of calls keep the result already computed.
+        write_session(&dir, "sess-1", "smoke", 3);
+        for _ in 0..5 {
+            app.activity_stamp = None;
+            app.sync_from_activity();
+        }
+        assert!(app.unaccounted.is_empty(), "throttled, not recomputed");
+
+        app.liveness_at = None; // the interval elapsing
+        app.sync_from_activity();
+        assert_eq!(app.unaccounted.len(), 1);
+        assert_eq!(app.leases.len(), 1, "the leases are kept for the surface");
     }
 
     #[test]
@@ -2094,6 +2172,36 @@ mod tests {
         assert_eq!(second.1 - first.1, 3, "cursor did not follow the Tab order");
         // "héllo" is five columns wide, "acme" four — both share the chunk's x.
         assert_eq!(first.0 - second.0, 1, "cursor column ignored display width");
+    }
+
+    #[test]
+    fn the_agents_panel_marks_a_stale_mark_and_leaves_a_fresh_one_alone() {
+        let _guard = env_guard();
+        sandbox("stale-render");
+        seed(vec![entry(0, "first")], 1);
+        let dir = mark_sandbox();
+        // Fresh: beaten just now. Stale: opened well past the unvouched grace.
+        begin_mark(&dir, "fresh.-.impl", 4 * 60);
+        beat_mark(&dir, "fresh.-.impl");
+        begin_mark(&dir, "stale.-.impl", 5 * 60);
+
+        let mut app = App::new().unwrap();
+        app.toggle_marks();
+        app.sync_from_activity();
+
+        let screen = frame_lines(&mut app, 100, 30);
+        let row = |label: &str| {
+            screen
+                .iter()
+                .find(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("no row for {label}:\n{}", screen.join("\n")))
+                .clone()
+        };
+        assert!(row("stale impl").contains("[stale]"));
+        assert!(row("stale impl").contains("last seen never"));
+        let fresh = row("fresh impl");
+        assert!(!fresh.contains("[stale]"), "{fresh}");
+        assert!(fresh.contains("last seen "), "{fresh}");
     }
 
     #[test]

@@ -24,7 +24,10 @@ pressure. If you're using Claude Code, run this once after installing to wire in
 real enforcement (a `SessionStart` hook that injects the full contract once per
 session, a `UserPromptSubmit` hook that re-injects the short operating card on
 every prompt so the discipline survives context getting pushed out in a long
-session, and a `Stop` hook that warns about marks left open):
+session, a `Stop` hook that warns about marks left open, and
+`UserPromptSubmit`/`SubagentStop`/`Stop` hooks that renew this project's open
+marks at every turn boundary so a mark that is still being worked does not
+expire):
 
 ```sh
 node <wherever the skill landed>/scripts/install-hooks.mjs
@@ -38,8 +41,19 @@ keep working regardless of where the skill itself is installed. It requires
 Claude Code to have already been run at least once (so `~/.claude` exists) —
 if it hasn't, the script says so and exits without writing anything.
 
+**These hooks need a `tt` that understands `tt agent activity prompt`.** They
+pass a project to `tt agent activity`, which an older binary rejects — and a
+hook never fails its event, so the failure is silent: no automatic beat, and no
+session ends or subagent dispatches in the activity ledger. The installer probes
+for the subcommand — running it with no project is a no-op — and warns if it is
+missing; it still installs, since the contract injection works either way.
+
 Safe to re-run. Then open `/hooks` once (or restart) so Claude Code picks up the
 new `~/.claude/settings.json`.
+
+**Re-run it after upgrading `tt`, too.** The automatic heartbeat lives in these
+copied scripts, so an install still holding older copies gets no automatic beat
+at all — and every mark then expires on the unvouched grace.
 
 **Re-run it after editing `SKILL.md`.** The hooks read the copy under
 `~/.claude/hooks/tt-time-logging/`, which is a snapshot taken at install time —

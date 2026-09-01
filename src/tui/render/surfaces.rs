@@ -7,9 +7,12 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-/// The `Marks` surface: `project/issue phase`, start time and elapsed, newest
-/// first. Rows come from `crate::marks` so the CLI and the TUI cannot disagree;
-/// elapsed is asked for per frame, so it counts up between directory reads.
+/// The `Marks` surface: `project/issue phase`, start time, elapsed, and the
+/// mark's last heartbeat, newest first. The last-seen wording and the `[stale]`
+/// marker are `marks::rows_at`'s, so the panel and `tt agent list` read a mark's
+/// liveness the same way; the columns are the panel's own. Elapsed is asked for
+/// per frame, so it counts up between reads — but liveness comes from
+/// `App.leases`, since a frame reads no directory.
 pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     /// Narrowest the label column gets, so short labels still line their times up.
     const LABEL_WIDTH: usize = 18;
@@ -34,38 +37,49 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let marks = app.visible_marks();
+    let leases = app.visible_leases();
     // One label column for the whole box, so the times read as columns.
-    let label_width = marks
+    let label_width = leases
         .iter()
-        .map(|mark| mark.label().chars().count())
+        .map(|lease| lease.mark.label().chars().count())
         .max()
         .unwrap_or(0)
         .max(LABEL_WIDTH);
 
-    let lines: Vec<Line> = if marks.is_empty() {
+    let now = chrono::Local::now();
+
+    let lines: Vec<Line> = if leases.is_empty() {
         vec![Line::from(Span::styled(
             " no phases in progress",
             Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
-        marks
+        leases
             .iter()
-            .map(|mark| {
-                let label = mark.label();
+            .map(|lease| {
+                let label = lease.mark.label();
                 let pad = " ".repeat(label_width.saturating_sub(label.chars().count()));
+                let stale = lease.is_expired_at(now, app.liveness_thresholds);
                 Line::from(vec![
                     Span::styled(
                         format!(" {}{}", label, pad),
                         Style::default().fg(Color::White),
                     ),
                     Span::styled(
-                        format!(" {}", mark.started_at()),
+                        format!(" {}", lease.mark.started_at()),
                         Style::default().fg(theme::inactive()),
                     ),
                     Span::styled(
-                        format!("   ({})", mark.elapsed()),
+                        format!("   ({})", lease.mark.elapsed()),
                         Style::default().fg(theme::highlight()),
+                    ),
+                    Span::styled(
+                        format!("  last seen {}", lease.last_seen_at()),
+                        Style::default().fg(theme::inactive()),
+                    ),
+                    Span::styled(
+                        if stale { " [stale]" } else { "" }.to_string(),
+                        Style::default().fg(theme::accent()),
                     ),
                 ])
             })

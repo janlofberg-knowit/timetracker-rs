@@ -19,7 +19,7 @@ use crate::audit;
 use crate::cli::{ActivityCommands, AgentCommands};
 use crate::commands;
 use crate::icons;
-use crate::marks::{self, Begin, Touch};
+use crate::marks::{self, Begin, Thresholds, Touch};
 use crate::storage;
 use crate::tracker;
 
@@ -80,6 +80,11 @@ pub fn run(command: &AgentCommands) -> Result<()> {
 /// Silently does nothing if the activity dir can't be resolved — a hook must
 /// never fail the harness event it's attached to.
 fn activity_command(command: &ActivityCommands) -> Result<()> {
+    // Beats only, nothing filed: it must not depend on the activity dir.
+    if let ActivityCommands::Prompt { project } = command {
+        beat_project(project.as_deref());
+        return Ok(());
+    }
     let Some(dir) = activity::activity_dir() else {
         return Ok(());
     };
@@ -88,15 +93,23 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
             session_id,
             project,
         } => activity::begin_in(&dir, session_id, project.as_deref())?,
-        ActivityCommands::End { session_id } => activity::end_in(&dir, session_id)?,
-        ActivityCommands::Subagent { session_id } => {
+        ActivityCommands::End {
+            session_id,
+            project,
+        } => {
+            activity::end_in(&dir, session_id)?;
+            beat_project(project.as_deref());
+        }
+        ActivityCommands::Subagent {
+            session_id,
+            project,
+        } => {
             activity::subagent_in(&dir, session_id)?;
             // The hook is the one witness to when a subagent's work stopped;
             // without this beat `end` sees the wait for the report as silence.
-            if let Some(marks) = marks::mark_dir() {
-                marks::touch_all_in(&marks);
-            }
+            beat_project(project.as_deref());
         }
+        ActivityCommands::Prompt { .. } => unreachable!("handled before the dir read"),
         ActivityCommands::Check {
             session_id,
             auto_log,
@@ -120,14 +133,14 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     let Some(session) = activity::read_session_in(dir, session_id) else {
         return Ok(());
     };
-    let marks = marks::open_marks();
+    let leases = open_leases();
     let now = chrono::Local::now();
-    let floor = audit::max_unvouched_minutes();
+    let thresholds = audit::thresholds();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&[session], &marks, &data.entries, now, floor)
+        audit::unaccounted(&[session], &leases, &data.entries, now, thresholds)
     };
 
     let threshold = auto_log
@@ -145,6 +158,22 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         }
     }
     Ok(())
+}
+
+/// Beat the open marks of the project a hook resolved. `None` beats nothing: an
+/// unattributable beat would keep another project's abandoned mark alive.
+fn beat_project(project: Option<&str>) {
+    if let (Some(project), Some(dir)) = (project, marks::mark_dir()) {
+        marks::touch_project_in(&dir, project);
+    }
+}
+
+/// Every open mark paired with its last heartbeat. A mark directory that cannot
+/// be resolved reads as no marks, never as an error.
+fn open_leases() -> Vec<marks::Lease> {
+    marks::mark_dir()
+        .map(|dir| marks::open_leases_in(&dir))
+        .unwrap_or_default()
 }
 
 /// The mark directory, or an error — a `begin` must never silently record
@@ -226,14 +255,14 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
 /// header, blank line, rows at the status-glyph indent, or a bare
 /// `No open marks.`
 fn list() -> Result<()> {
-    let marks = marks::open_marks();
-    if marks.is_empty() {
+    let leases = open_leases();
+    if leases.is_empty() {
         println!("No open marks.");
         return Ok(());
     }
 
     println!("{} Open marks:\n", icons::agent());
-    for row in marks::rows(&marks) {
+    for row in marks::rows(&leases, audit::thresholds()) {
         println!("  {}", row);
     }
     Ok(())
@@ -247,14 +276,14 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let sessions = activity::activity_dir()
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
-    let marks = marks::open_marks();
-    let floor = audit::max_unvouched_minutes();
+    let leases = open_leases();
+    let thresholds = audit::thresholds();
     let now = chrono::Local::now();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &marks, &data.entries, now, floor)
+        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     };
 
     // `auto_log_after_minutes` unset: `--auto-log` is accepted but logs
@@ -275,7 +304,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &marks, &data.entries, now, floor)
+        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     } else {
         flagged
     };
@@ -387,8 +416,9 @@ fn log_entry(
 }
 
 /// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`:
-/// close a marked phase, measured to its **last heartbeat** and never to now. A
-/// flagged silence with nothing said about it **refuses** the close.
+/// close a marked phase, measured to its last **bare** heartbeat wherever that
+/// sits in the beats file; only a phase with no bare beat at all measures to
+/// now. A flagged silence with nothing said about it **refuses** the close.
 ///
 /// Explicit minutes win over both flags and skip the mark's timestamps entirely;
 /// `--full` logs the measured span, `--trim` the span minus every flagged gap.
@@ -440,14 +470,21 @@ fn end(
             // end where the timeline does.
             anchor = Some(instant(ended)?);
 
-            // A mark with heartbeats is judged against the interior-silence
-            // threshold, a mark with none against the longer unvouched one.
-            let threshold = if marked.beats.is_empty() {
-                audit::max_unvouched_minutes()
-            } else {
-                audit::max_gap_minutes()
-            };
-            let gaps = marks::gaps_over(marked.started, ended, &marked.beats, threshold);
+            // Keyed on `vouched`, never on the beats being empty: an automatic
+            // beat must not drop a hook-only phase onto the shorter threshold.
+            let Thresholds { gap, unvouched } = audit::thresholds();
+            let interior = if marked.vouched { gap } else { unvouched };
+            let mut gaps = marks::gaps_over(marked.started, ended, &marked.beats, interior);
+            // The trailing stretch is always judged at `gap`. Only where the
+            // interior threshold is the larger of the two, and never a stretch
+            // `gaps_over` already flagged — it must not be pushed twice.
+            if interior > gap
+                && let Some(tail) = marks::trailing_silence(marked.started, ended, &marked.beats)
+                && (tail.1 - tail.0) / 60 > gap
+                && gaps.last() != Some(&tail)
+            {
+                gaps.push(tail);
+            }
             if gaps.is_empty() {
                 measured
             } else {

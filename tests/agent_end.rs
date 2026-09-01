@@ -369,6 +369,127 @@ fn an_unvouched_span_over_the_unvouched_threshold_is_flagged() {
     assert!(case.store().entries.is_empty(), "nothing was logged");
 }
 
+// --- automatic beats -------------------------------------------------------
+//
+// No automatic beat may shorten what `end` bills, or move a phase off the
+// unvouched threshold.
+
+/// The same 90-minute span `an_unvouched_span_under_the_unvouched_threshold_logs`
+/// bills, with hook beats all through it.
+#[test]
+fn hook_beats_alone_bill_the_same_span_on_the_same_threshold() {
+    let case = Case::new("gaps-hook-only");
+    let span = 90;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 20 * 60, start + 50 * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "hooks beat, the model did not"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// A hook beat after the model's last touch must not discard that touch: the
+/// bill is the touch's, not the whole span to now.
+#[test]
+fn a_hook_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
+    let case = Case::new("gaps-hook-after-touch");
+    let start = now() - 61 * 60;
+    case.write_mark("proj.7.impl", start);
+    let file = case.beats_file("proj.7.impl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!("{}\n{} hook\n", start + 20 * 60, start + 21 * 60),
+    )
+    .unwrap();
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "closing work after the last beat",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(20));
+}
+
+/// An abandoned mark whose only beats are automatic: refused, then `--trim`
+/// logs the span up to its last beat.
+#[test]
+fn an_abandoned_hook_beaten_mark_is_refused_and_trims_to_its_last_beat() {
+    let case = Case::new("gaps-hook-abandoned");
+    let start = now() - 200 * 60;
+    // Half a minute of slack, so a second spent running the close does not
+    // round the trimmed remainder down to 39m.
+    let last_beat = start + 40 * 60 + 30;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
+
+    let refused = case.run(&["end", "proj", "7", "impl", "left open over the weekend"]);
+    refused.assert_status(65);
+    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
+
+    let trimmed = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "left open over the weekend",
+        "--trim",
+    ]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has(&logged_duration((last_beat - start) / 60));
+}
+
+// --- interior versus trailing silence --------------------------------------
+
+/// An unvouched phase's trailing stretch is judged at the gap threshold, so an
+/// operator wandering off after the work stopped is refused, and `--trim` bills
+/// only up to the last beat.
+#[test]
+fn an_unvouched_phase_is_refused_for_a_wander_before_the_close() {
+    let case = Case::new("gaps-trailing-wander");
+    let start = now() - 130 * 60;
+    // Half a minute of slack against the second the close itself takes.
+    let last_beat = start + 30 * 60 + 30;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
+
+    let refused = case.run(&["end", "proj", "7", "impl", "wandered off after the work"]);
+    refused.assert_status(65);
+    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
+
+    let trimmed = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "wandered off after the work",
+        "--trim",
+    ]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has(&logged_duration(30));
+}
+
+/// The same 100-minute hole *between* two beats keeps the unvouched grace.
+#[test]
+fn an_unvouched_phase_is_not_refused_for_an_interior_hole() {
+    let case = Case::new("gaps-interior-hole");
+    let span = 130;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at(
+        "proj.7.impl",
+        &[start + 10 * 60, start + 110 * 60, start + span * 60 - 60],
+    );
+
+    let run = case.run(&["end", "proj", "7", "impl", "one long autonomous turn"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
 /// Beating once does not buy the longer allowance: 46 minutes, one over.
 #[test]
 fn a_beaten_phase_is_still_judged_at_the_interior_threshold() {

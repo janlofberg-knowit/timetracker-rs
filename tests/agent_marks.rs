@@ -43,6 +43,36 @@ fn only_the_mark_only_agent_commands_leave_the_store_untouched() {
     }
 }
 
+// --- the automatic beat ----------------------------------------------------
+
+/// `UserPromptSubmit` renews the beating session's own marks and nothing else.
+#[test]
+fn activity_prompt_beats_only_that_projects_marks() {
+    let case = Case::new("activity-prompt");
+    case.write_mark("a.7.impl", now());
+    case.write_mark("b.9.impl", now());
+
+    case.run(&["activity", "prompt", "a"]).assert_status(0);
+
+    assert_eq!(count_lines(&case.beats_file("a.7.impl")), 1);
+    assert!(
+        !case.beats_file("b.9.impl").exists(),
+        "another project's mark was beaten"
+    );
+}
+
+/// An unattributable beat is what let an unrelated session keep an abandoned
+/// mark alive, so no project means no beat.
+#[test]
+fn activity_prompt_with_no_project_beats_nothing() {
+    let case = Case::new("activity-prompt-bare");
+    case.write_mark("a.7.impl", now());
+
+    case.run(&["activity", "prompt"]).assert_status(0);
+
+    assert!(!case.beats_file("a.7.impl").exists());
+}
+
 // --- begin -----------------------------------------------------------------
 
 #[test]
@@ -169,11 +199,45 @@ fn list_shows_an_open_mark_as_a_house_style_row() {
     assert_eq!(
         run.stdout,
         format!(
-            "\u{1F916} Open marks:\n\n  proj/23 impl       - since {} (0h 10m)\n",
+            "\u{1F916} Open marks:\n\n  proj/23 impl       - since {} (0h 10m) last seen never\n",
             clock(start)
         ),
         "the header, the blank line and one padded row"
     );
+}
+
+/// The incident's shape: a mark days old with no heartbeat is flagged, and the
+/// line under it is the one that logs the work and clears it.
+#[test]
+fn list_flags_a_stale_mark_with_the_command_that_clears_it() {
+    let case = Case::new("list-stale");
+    case.write_mark("proj.23.impl", now() - 114 * 3600);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("last seen never [stale]");
+    run.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" <minutes>");
+}
+
+/// A stale mark in the 45–120m band: the `--trim` the row prints has to remove
+/// the trailing silence rather than log the same span a bare close would.
+#[test]
+fn the_trim_a_stale_beaten_row_prints_changes_the_bill() {
+    let case = Case::new("list-stale-trim");
+    let start = now() - 130 * 60;
+    // Half a minute of slack against the second the close itself takes.
+    let last_beat = start + 30 * 60 + 30;
+    case.write_mark("proj.23.impl", start);
+    case.hook_beats_at("proj.23.impl", &[last_beat]);
+
+    let listed = case.run(&["list"]);
+    listed.assert_status(0);
+    listed.assert_stdout_has("[stale]");
+    listed.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" --trim");
+
+    let trimmed = case.run(&["end", "proj", "23", "impl", "<summary>", "--trim"]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has("- Duration: 0h 30m");
 }
 
 #[test]
