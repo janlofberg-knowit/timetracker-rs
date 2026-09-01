@@ -194,42 +194,30 @@ if (existsSync(claudeMdPath)) {
   console.log(`No ${claudeMdPath} found — skipped the CLAUDE.md pointer.`);
 }
 
-// The release that understands `tt agent activity prompt` and the project
-// positional on `end`/`subagent`. An older binary rejects those with clap's
-// exit 2, which the activity hook's own catch swallows — the ledger silently
-// stops recording `end=`/`subagent=` lines. Install anyway: the contract
-// injection works against any version.
-const requiredTt = "0.9.0";
-
-const parseSemver = (text) => {
-  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text ?? "");
-  return match ? match.slice(1, 4).map(Number) : null;
-};
-
-const installedTt = () => {
+// The hooks need a `tt` that understands `tt agent activity prompt` and the
+// project positional on `end`/`subagent`. An older binary rejects those with
+// clap's exit 2, which the activity hook's own catch swallows — the ledger
+// silently stops recording `end=`/`subagent=` lines. Probe the subcommand
+// rather than parsing a version: with no project argument it is a deliberate
+// no-op on a capable binary, so nothing is written either way. Install
+// regardless: the contract injection works against any version.
+const understandsPrompt = () => {
   try {
-    return execFileSync("tt", ["--version"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+    execFileSync("tt", ["agent", "activity", "prompt"], {
+      stdio: ["ignore", "ignore", "ignore"],
     });
-  } catch {
-    return null;
+    return true;
+  } catch (error) {
+    // No `tt` on PATH at all is not a version complaint.
+    return error?.code === "ENOENT";
   }
 };
 
-const isOlder = (a, b) => {
-  for (let i = 0; i < 3; i += 1) {
-    if (a[i] !== b[i]) return a[i] < b[i];
-  }
-  return false;
-};
-
-const installed = parseSemver(installedTt());
-if (installed && isOlder(installed, parseSemver(requiredTt))) {
+if (!understandsPrompt()) {
   console.log("");
   console.log(
-    `WARNING: tt ${installed.join(".")} is installed, but these hooks need tt ` +
-      `${requiredTt} or newer.`,
+    "WARNING: the installed tt does not understand `tt agent activity prompt`, " +
+      "which these hooks need.",
   );
   console.log(
     "  Until you upgrade, marks will not be renewed automatically and the " +
@@ -238,5 +226,3 @@ if (installed && isOlder(installed, parseSemver(requiredTt))) {
   );
   console.log("");
 }
-
-console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");
