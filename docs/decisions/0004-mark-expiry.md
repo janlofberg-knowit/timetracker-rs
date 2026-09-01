@@ -38,10 +38,12 @@ A beat line carries its provenance. `tt agent touch` — the model's own vouch �
 writes a bare `<epoch>`; the hooks write `<epoch> hook`. One file, two meanings,
 and the four readers of it differ deliberately:
 
-- **Measurement** (`Phase::ended`, what `end` bills) anchors only on a bare
-  *last* line, so a trailing hook beat leaves `end` measuring to now. Without
-  this an agent that took its last turn boundary at minute 35 and then worked 25
-  minutes more would bill 35.
+- **Measurement** (`Phase::ended`, what `end` bills) anchors on the last **bare**
+  line wherever it sits in the file: tagged lines are invisible to measurement
+  entirely, and `end` falls back to measuring to now only when the file holds no
+  bare line at all. Reading the anchor off the final line alone instead would
+  discard a model vouch the moment a hook beat followed it — a phase touched at
+  minute 20 and hook-beaten at 21 would bill 61 minutes at a close an hour later.
 - **Gap detection** (`Phase::beats`, `gaps_over`) counts every line: an
   automatic beat is still evidence the session was there.
 - **Liveness** (`Lease::last_seen`) takes the last line whatever tag follows it —

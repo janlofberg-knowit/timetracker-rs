@@ -389,18 +389,18 @@ fn hook_beats_alone_bill_the_same_span_on_the_same_threshold() {
     run.assert_stdout_has(&logged_duration(span));
 }
 
-/// A hook beat after the model's last touch must not pull the bill back to it.
+/// A hook beat after the model's last touch must not discard that touch: the
+/// bill is the touch's, not the whole span to now.
 #[test]
-fn a_hook_beat_after_a_touch_still_measures_to_now() {
+fn a_hook_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
     let case = Case::new("gaps-hook-after-touch");
-    let span = 60;
-    let start = now() - span * 60;
+    let start = now() - 61 * 60;
     case.write_mark("proj.7.impl", start);
     let file = case.beats_file("proj.7.impl");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
-        format!("{}\n{} hook\n", start + 35 * 60, start + 40 * 60),
+        format!("{}\n{} hook\n", start + 20 * 60, start + 21 * 60),
     )
     .unwrap();
 
@@ -412,7 +412,7 @@ fn a_hook_beat_after_a_touch_still_measures_to_now() {
         "closing work after the last beat",
     ]);
     run.assert_status(0);
-    run.assert_stdout_has(&logged_duration(span));
+    run.assert_stdout_has(&logged_duration(20));
 }
 
 /// An abandoned mark whose only beats are automatic: refused, then `--trim`

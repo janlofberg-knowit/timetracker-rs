@@ -11,8 +11,9 @@
 //! A beat line has two provenances: `<epoch>` is the model's own `tt agent
 //! touch`, `<epoch> hook` is an automatic beat from the harness hooks. The four
 //! readers of that file differ deliberately — measurement ([`Phase::ended`])
-//! anchors only on a bare last line, gap detection ([`Phase::beats`]) counts
-//! every line, liveness ([`lease_in`]) takes the last line whatever its tag, and
+//! anchors on the last bare line wherever it sits, gap detection
+//! ([`Phase::beats`]) counts every line, liveness ([`lease_in`]) takes the last
+//! line whatever its tag, and
 //! the unvouched threshold ([`Phase::vouched`]) asks whether any bare line
 //! exists. See docs/decisions/0004-mark-expiry.md.
 //!
@@ -405,8 +406,8 @@ pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
 
 /// The one writer of a beat line: `<epoch>` bare, or `<epoch> <tag>` when the
 /// beat is not the model's own vouch. Only a bare line vouches for time and
-/// only a bare *last* line anchors what `end` bills, so never tag a `touch` and
-/// never leave an automatic beat untagged.
+/// only a bare line anchors what `end` bills, so never tag a `touch` and never
+/// leave an automatic beat untagged.
 fn append_beat(dir: &Path, key: &str, tag: Option<&str>) -> io::Result<()> {
     let beats = beats_path(dir, key);
     if let Some(parent) = beats.parent() {
@@ -501,11 +502,11 @@ pub struct Phase {
     /// Every heartbeat, **in file order**, dropping lines whose first field is
     /// not a bare timestamp. Never sort or dedup: [`gaps_over`] judges that.
     pub beats: Vec<i64>,
-    /// The instant the phase is measured to: the beats file's **last line**, not
-    /// its largest beat, and only when that line is a *bare* timestamp. `None`
-    /// when there is no such line — including when the last beat is an
-    /// automatic one — leaving the caller nothing better to measure to than now.
-    /// Load-bearing: no automatic beat may shorten what `end` bills.
+    /// The instant the phase is measured to: the **last bare** beat line
+    /// wherever it sits, not the largest beat. Tagged lines are invisible here,
+    /// so `None` means the file holds no bare beat at all and the caller has
+    /// nothing better to measure to than now. Load-bearing: no automatic beat
+    /// may move what `end` bills.
     pub ended: Option<i64>,
     /// Whether the model ever vouched for this phase, i.e. whether any bare
     /// timestamp is present. Automatic beats do not count: `max_unvouched_minutes`
@@ -553,7 +554,8 @@ pub fn read_phase_in(
     // Gap detection counts every line, tagged or not: an automatic beat is
     // still evidence the session was there.
     let beats = body.lines().filter_map(beat_of).collect();
-    let ended = body.lines().next_back().filter(|line| all_digits(line));
+    // The last **bare** line wherever it sits: a tagged beat never anchors.
+    let ended = body.lines().rfind(|line| all_digits(line));
     let vouched = body.lines().any(all_digits);
 
     Ok(Some(Phase {
@@ -1363,6 +1365,38 @@ mod tests {
         assert_eq!(phase.started, 1_000_000);
         assert_eq!(phase.beats, vec![1_000_600, 1_002_000, 1_001_200]);
         assert_eq!(phase.ended, Some(1_001_200));
+    }
+
+    /// A model vouch followed by automatic beats still anchors the close.
+    #[test]
+    fn a_tagged_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
+        let dir = sandbox("phase-tagged-after-bare");
+        let start = 1_000_000;
+        write(&dir, "proj.7.impl", &format!("{start}\n"));
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        write(
+            &dir,
+            "beats/proj.7.impl",
+            &format!("{}\n{} hook\n", start + 20 * 60, start + 21 * 60),
+        );
+
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.ended, Some(start + 20 * 60));
+        assert!(phase.vouched);
+        assert_eq!(phase.beats.len(), 2, "gap detection still sees both");
+        assert_eq!((phase.ended.unwrap() - phase.started) / 60, 20);
+    }
+
+    #[test]
+    fn a_phase_whose_only_beats_are_tagged_measures_to_now() {
+        let dir = sandbox("phase-only-tagged");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        write(&dir, "beats/proj.7.impl", "1000600 hook\n1000900 hook\n");
+
+        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        assert_eq!(phase.ended, None);
+        assert!(!phase.vouched);
     }
 
     #[test]

@@ -444,8 +444,9 @@ fn log_entry(
 }
 
 /// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`:
-/// close a marked phase, measured to its **last heartbeat** and never to now. A
-/// flagged silence with nothing said about it **refuses** the close.
+/// close a marked phase, measured to its last **bare** heartbeat wherever that
+/// sits in the beats file; only a phase with no bare beat at all measures to
+/// now. A flagged silence with nothing said about it **refuses** the close.
 ///
 /// Explicit minutes win over both flags and skip the mark's timestamps entirely;
 /// `--full` logs the measured span, `--trim` the span minus every flagged gap.
