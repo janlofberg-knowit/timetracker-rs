@@ -67,10 +67,7 @@ impl App {
             return;
         }
         self.liveness_at = Some(Instant::now());
-        self.liveness_thresholds = (
-            crate::audit::max_gap_minutes(),
-            crate::audit::max_unvouched_minutes(),
-        );
+        self.liveness_thresholds = crate::audit::thresholds();
 
         if let Some(dir) = crate::activity::activity_dir() {
             let current = PathStamp::read(&dir);
@@ -95,9 +92,7 @@ impl App {
             &self.leases,
             &self.data.entries,
             Local::now(),
-            crate::audit::max_unvouched_minutes(),
-            self.liveness_thresholds.0,
-            self.liveness_thresholds.1,
+            self.liveness_thresholds,
         );
     }
 

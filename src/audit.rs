@@ -12,7 +12,7 @@
 use chrono::{DateTime, Local};
 
 use crate::activity::Session;
-use crate::marks::{self, Lease};
+use crate::marks::{self, Lease, Thresholds};
 use crate::time::instant;
 use crate::tracker::{IdleInterval, TimeEntry};
 
@@ -104,28 +104,35 @@ pub fn auto_log_after_minutes() -> Option<i64> {
     (configured > max_unvouched_minutes()).then_some(configured)
 }
 
+/// The thresholds every judgement below an entry point is made by, read from
+/// the environment and config once. Resolve at `run_audit`, `check_session`,
+/// `list`, `end` and the TUI's sync, and pass the value down; nothing below
+/// them reads config, so a caller and a test judge by the same numbers.
+pub fn thresholds() -> Thresholds {
+    Thresholds {
+        gap: max_gap_minutes(),
+        unvouched: max_unvouched_minutes(),
+    }
+}
+
 /// Half-open interval overlap: touching endpoints do not count.
 fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
-/// Every session below `floor_minutes` is not flagged — a one-line question
-/// should not trip the warning. A session with no project cannot be
+/// Every session below `thresholds.unvouched` is not flagged — a one-line
+/// question should not trip the warning. A session with no project cannot be
 /// reconciled against anything, so it is skipped rather than assumed
 /// unaccounted.
-///
-/// Reads no config: every threshold arrives as a parameter, so a caller and a
-/// test judge by the same numbers.
 pub fn unaccounted(
     sessions: &[Session],
     leases: &[Lease],
     entries: &[TimeEntry],
     now: DateTime<Local>,
-    floor_minutes: i64,
-    gap: i64,
-    unvouched: i64,
+    thresholds: Thresholds,
 ) -> Vec<Unaccounted> {
     let now_epoch = now.timestamp();
+    let floor_minutes = thresholds.unvouched;
 
     let mut found: Vec<Unaccounted> = sessions
         .iter()
@@ -144,8 +151,7 @@ pub fn unaccounted(
                 end_epoch,
                 leases,
                 now_epoch,
-                gap,
-                unvouched,
+                thresholds,
             );
             uncovered_by_entries(project, stretches, entries, now_epoch)
                 .into_iter()
@@ -162,7 +168,7 @@ pub fn unaccounted(
                     let idle = if session.subagent_at.is_empty() {
                         Vec::new()
                     } else {
-                        marks::gaps_over(from, to, &session.subagent_at, gap)
+                        marks::gaps_over(from, to, &session.subagent_at, thresholds.gap)
                             .into_iter()
                             .filter_map(|(a, b)| Some(IdleInterval::new(instant(a)?, instant(b)?)))
                             .collect()
@@ -209,8 +215,7 @@ fn uncovered_by_marks(
     end: i64,
     leases: &[Lease],
     now: i64,
-    gap_minutes: i64,
-    unvouched_minutes: i64,
+    thresholds: Thresholds,
 ) -> Vec<(i64, i64)> {
     let mut remaining = vec![(start, end)];
     // The same segment rule the beat uses, so a lossy name still joins.
@@ -219,10 +224,7 @@ fn uncovered_by_marks(
         .filter(|lease| marks::owned_by(&lease.mark, project))
     {
         let from = lease.mark.start.timestamp();
-        let until = lease
-            .expires_at(gap_minutes, unvouched_minutes)
-            .timestamp()
-            .min(now);
+        let until = lease.expires_at(thresholds).timestamp().min(now);
         if until <= from {
             continue;
         }
@@ -343,8 +345,6 @@ mod tests {
 
     const FLOOR: i64 = 120;
     const HOUR: i64 = 3600;
-    const GAP: i64 = 45;
-    const UNVOUCHED: i64 = 120;
 
     /// The thresholds are stated here, never read from the developer's config:
     /// this shadows [`super::unaccounted`] for every test below.
@@ -360,9 +360,10 @@ mod tests {
             leases,
             entries,
             now,
-            floor_minutes,
-            GAP,
-            UNVOUCHED,
+            Thresholds {
+                gap: 45,
+                unvouched: floor_minutes,
+            },
         )
     }
 

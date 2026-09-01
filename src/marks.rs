@@ -79,6 +79,17 @@ impl Mark {
     }
 }
 
+/// The pair of silences `tt agent end` and the audit judge by, resolved once per
+/// entry point — see [`crate::audit::thresholds`]. `gap` bounds a silence
+/// between beats and the trailing stretch after the last one; `unvouched` is the
+/// longer grace a phase the model never vouched for gets, and doubles as the
+/// floor under which an activity window is not worth flagging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Thresholds {
+    pub gap: i64,
+    pub unvouched: i64,
+}
+
 /// One open mark plus the instant [`crate::agent`]'s `end` would measure it to,
 /// so a caller can judge whether the mark still vouches for its project.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,13 +101,13 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// The instant this mark stops vouching: `last_seen + gap_minutes`, or
-    /// `mark.start + unvouched_minutes` when it never beat at all — no
+    /// The instant this mark stops vouching: `last_seen + gap`, or
+    /// `mark.start + unvouched` when it never beat at all — no
     /// measurable evidence is treated as no evidence.
-    pub fn expires_at(&self, gap_minutes: i64, unvouched_minutes: i64) -> DateTime<Local> {
+    pub fn expires_at(&self, thresholds: Thresholds) -> DateTime<Local> {
         match self.last_seen {
-            Some(seen) => seen + TimeDelta::minutes(gap_minutes),
-            None => self.mark.start + TimeDelta::minutes(unvouched_minutes),
+            Some(seen) => seen + TimeDelta::minutes(thresholds.gap),
+            None => self.mark.start + TimeDelta::minutes(thresholds.unvouched),
         }
     }
 
@@ -105,15 +116,10 @@ impl Lease {
     /// stale beaten mark is exactly one whose trailing stretch `end` would
     /// flag, and the `--trim` [`close_command`](Lease::close_command) prints
     /// always removes something.
-    pub fn is_expired_at(
-        &self,
-        now: DateTime<Local>,
-        gap_minutes: i64,
-        unvouched_minutes: i64,
-    ) -> bool {
+    pub fn is_expired_at(&self, now: DateTime<Local>, thresholds: Thresholds) -> bool {
         let (since, allowed) = match self.last_seen {
-            Some(seen) => (seen, gap_minutes),
-            None => (self.mark.start, unvouched_minutes),
+            Some(seen) => (seen, thresholds.gap),
+            None => (self.mark.start, thresholds.unvouched),
         };
         (now - since).num_seconds() / 60 > allowed
     }
@@ -192,17 +198,12 @@ const LABEL_WIDTH: usize = 18;
 /// ` - since HH:MM`, the house `{h}h {m}m` duration, and the mark's last
 /// heartbeat. A row whose lease has expired is marked `[stale]` and followed by
 /// an indented line holding the command that logs its work and clears it.
-pub fn rows(leases: &[Lease], gap_minutes: i64, unvouched_minutes: i64) -> Vec<String> {
-    rows_at(leases, Local::now(), gap_minutes, unvouched_minutes)
+pub fn rows(leases: &[Lease], thresholds: Thresholds) -> Vec<String> {
+    rows_at(leases, Local::now(), thresholds)
 }
 
 /// The `now`-taking half of [`rows`], for tests.
-pub fn rows_at(
-    leases: &[Lease],
-    now: DateTime<Local>,
-    gap_minutes: i64,
-    unvouched_minutes: i64,
-) -> Vec<String> {
+pub fn rows_at(leases: &[Lease], now: DateTime<Local>, thresholds: Thresholds) -> Vec<String> {
     // One column for the whole list, so the start times line up.
     let width = leases
         .iter()
@@ -215,7 +216,7 @@ pub fn rows_at(
     for lease in leases {
         let label = lease.mark.label();
         let pad = " ".repeat(width.saturating_sub(label.chars().count()));
-        let stale = lease.is_expired_at(now, gap_minutes, unvouched_minutes);
+        let stale = lease.is_expired_at(now, thresholds);
         rows.push(format!(
             "{}{} - since {} ({}) last seen {}{}",
             label,
@@ -660,6 +661,12 @@ mod tests {
     /// process-wide; shared with the TUI's tests via `storage::env_guard`.
     use crate::storage::env_guard;
 
+    /// The shipped defaults, stated here rather than read from config.
+    const HOUSE: Thresholds = Thresholds {
+        gap: 45,
+        unvouched: 120,
+    };
+
     /// A fresh scratch mark directory: the real one is live and off limits.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-marks-test-{name}"));
@@ -754,7 +761,7 @@ mod tests {
         let leases = open_leases_in(&dir);
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].last_seen, None);
-        assert_eq!(leases[0].expires_at(45, 120), at(1_000_000 + 120 * 60));
+        assert_eq!(leases[0].expires_at(HOUSE), at(1_000_000 + 120 * 60));
     }
 
     #[test]
@@ -765,7 +772,7 @@ mod tests {
         fs::write(beats_path(&dir, "proj.-.plan"), "1000300\n1000600\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, Some(at(1_000_600)));
-        assert_eq!(lease.expires_at(45, 120), at(1_000_600 + 45 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 45 * 60));
     }
 
     #[test]
@@ -776,7 +783,7 @@ mod tests {
         fs::write(beats_path(&dir, "proj.7.impl"), "1000600 hook\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, Some(at(1_000_600)));
-        assert_eq!(lease.expires_at(45, 120), at(1_000_600 + 45 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 45 * 60));
     }
 
     #[test]
@@ -787,7 +794,7 @@ mod tests {
         fs::write(beats_path(&dir, "proj.7.impl"), "\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, None);
-        assert_eq!(lease.expires_at(45, 120), at(1_000_000 + 120 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_000 + 120 * 60));
     }
 
     #[test]
@@ -991,7 +998,7 @@ mod tests {
         );
         write(&dir, "vinge.12.impl", &format!("{}\n", now - 45 * 60));
 
-        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
         let since = |offset: i64| at(now - offset).format("%H:%M").to_string();
         assert_eq!(
             rows,
@@ -1021,7 +1028,7 @@ mod tests {
         // A phase literally called `last` is a mark.
         write(&dir, "proj.-.last", &format!("{}\n", now));
 
-        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
         assert!(
             rows.iter().any(|row| row.starts_with("vinge plan ")),
             "the - sentinel leaked or the row is missing: {rows:?}"
@@ -1055,7 +1062,14 @@ mod tests {
 
         // A grace wide enough that none of the three reads as stale, so every
         // row still carries an age in parentheses.
-        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 10_000);
+        let rows = rows_at(
+            &open_leases_in(&dir),
+            at(now),
+            Thresholds {
+                gap: 45,
+                unvouched: 10_000,
+            },
+        );
         let ages: Vec<&str> = rows
             .iter()
             .map(|row| &row[row.find('(').unwrap()..row.find(')').unwrap() + 1])
@@ -1071,7 +1085,7 @@ mod tests {
         let now = 1_000_000_000;
         write(&dir, "vinge.10.review", &format!("{}\n", now - 114 * 3600));
 
-        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(rows[0].contains("last seen never [stale]"), "{rows:?}");
         assert_eq!(
@@ -1095,7 +1109,7 @@ mod tests {
         )
         .unwrap();
 
-        let rows = rows_at(&open_leases_in(&dir), at(now), 45, 120);
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
         assert_eq!(rows.len(), 2, "{rows:?}");
         let seen = at(now - 3 * 3600).format("%H:%M").to_string();
         assert!(
@@ -1116,7 +1130,7 @@ mod tests {
     fn no_marks_have_no_rows() {
         let dir = sandbox("rows-empty");
         assert_eq!(
-            rows_at(&open_leases_in(&dir), Local::now(), 45, 120),
+            rows_at(&open_leases_in(&dir), Local::now(), HOUSE),
             Vec::<String>::new()
         );
     }
@@ -1444,8 +1458,8 @@ mod tests {
         fs::write(beats_path(&dir, "proj.7.impl"), format!("{start} hook\n")).unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
 
-        assert!(!lease.is_expired_at(at(start + 45 * 60 + 59), 45, 120));
-        assert!(lease.is_expired_at(at(start + 46 * 60), 45, 120));
+        assert!(!lease.is_expired_at(at(start + 45 * 60 + 59), HOUSE));
+        assert!(lease.is_expired_at(at(start + 46 * 60), HOUSE));
     }
 
     #[test]

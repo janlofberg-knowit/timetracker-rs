@@ -19,7 +19,7 @@ use crate::audit;
 use crate::cli::{ActivityCommands, AgentCommands};
 use crate::commands;
 use crate::icons;
-use crate::marks::{self, Begin, Touch};
+use crate::marks::{self, Begin, Thresholds, Touch};
 use crate::storage;
 use crate::tracker;
 
@@ -135,20 +135,12 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     };
     let leases = open_leases();
     let now = chrono::Local::now();
-    let floor = audit::max_unvouched_minutes();
+    let thresholds = audit::thresholds();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(
-            &[session],
-            &leases,
-            &data.entries,
-            now,
-            floor,
-            audit::max_gap_minutes(),
-            audit::max_unvouched_minutes(),
-        )
+        audit::unaccounted(&[session], &leases, &data.entries, now, thresholds)
     };
 
     let threshold = auto_log
@@ -270,11 +262,7 @@ fn list() -> Result<()> {
     }
 
     println!("{} Open marks:\n", icons::agent());
-    for row in marks::rows(
-        &leases,
-        audit::max_gap_minutes(),
-        audit::max_unvouched_minutes(),
-    ) {
+    for row in marks::rows(&leases, audit::thresholds()) {
         println!("  {}", row);
     }
     Ok(())
@@ -289,21 +277,13 @@ fn run_audit(auto_log: bool) -> Result<()> {
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
     let leases = open_leases();
-    let floor = audit::max_unvouched_minutes();
+    let thresholds = audit::thresholds();
     let now = chrono::Local::now();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(
-            &sessions,
-            &leases,
-            &data.entries,
-            now,
-            floor,
-            audit::max_gap_minutes(),
-            audit::max_unvouched_minutes(),
-        )
+        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     };
 
     // `auto_log_after_minutes` unset: `--auto-log` is accepted but logs
@@ -324,15 +304,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(
-            &sessions,
-            &leases,
-            &data.entries,
-            now,
-            floor,
-            audit::max_gap_minutes(),
-            audit::max_unvouched_minutes(),
-        )
+        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     } else {
         flagged
     };
@@ -501,12 +473,8 @@ fn end(
             // Interior holes are judged on `vouched`, not on the beats being
             // empty: automatic beats must not drop a hook-only phase onto the
             // shorter threshold.
-            let gap = audit::max_gap_minutes();
-            let interior = if marked.vouched {
-                gap
-            } else {
-                audit::max_unvouched_minutes()
-            };
+            let Thresholds { gap, unvouched } = audit::thresholds();
+            let interior = if marked.vouched { gap } else { unvouched };
             let mut gaps = marks::gaps_over(marked.started, ended, &marked.beats, interior);
             // The trailing stretch is always judged at the gap threshold. Only
             // when the interior threshold is the larger of the two, and never a

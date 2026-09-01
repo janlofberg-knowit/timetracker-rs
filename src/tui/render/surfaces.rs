@@ -47,7 +47,6 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
         .max(LABEL_WIDTH);
 
     let now = chrono::Local::now();
-    let (gap, unvouched) = app.liveness_thresholds;
 
     let lines: Vec<Line> = if leases.is_empty() {
         vec![Line::from(Span::styled(
@@ -60,7 +59,7 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
             .map(|lease| {
                 let label = lease.mark.label();
                 let pad = " ".repeat(label_width.saturating_sub(label.chars().count()));
-                let stale = lease.is_expired_at(now, gap, unvouched);
+                let stale = lease.is_expired_at(now, app.liveness_thresholds);
                 Line::from(vec![
                     Span::styled(
                         format!(" {}{}", label, pad),

@@ -89,7 +89,7 @@ pub(crate) struct App {
     pub(crate) liveness_at: Option<std::time::Instant>,
     /// `(max_gap_minutes, max_unvouched_minutes)` as of that read, so a frame
     /// can judge a lease stale without loading the config.
-    pub(crate) liveness_thresholds: (i64, i64),
+    pub(crate) liveness_thresholds: crate::marks::Thresholds,
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
     /// from disk itself. See `docs/decisions/0001-agent-activity-tracking.md`.
@@ -160,10 +160,7 @@ impl App {
             activity_stamp: None,
             leases: Vec::new(),
             liveness_at: None,
-            liveness_thresholds: (
-                crate::audit::max_gap_minutes(),
-                crate::audit::max_unvouched_minutes(),
-            ),
+            liveness_thresholds: crate::audit::thresholds(),
             unaccounted: Vec::new(),
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
