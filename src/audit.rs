@@ -213,9 +213,10 @@ fn uncovered_by_marks(
     unvouched_minutes: i64,
 ) -> Vec<(i64, i64)> {
     let mut remaining = vec![(start, end)];
+    // The same segment rule the beat uses, so a lossy name still joins.
     for lease in leases
         .iter()
-        .filter(|lease| lease.mark.project.eq_ignore_ascii_case(project))
+        .filter(|lease| marks::owned_by(&lease.mark, project))
     {
         let from = lease.mark.start.timestamp();
         let until = lease
@@ -436,6 +437,34 @@ mod tests {
         assert_eq!(
             unaccounted(&sessions, &marks, &[], at(3 * HOUR), FLOOR).len(),
             1
+        );
+    }
+
+    /// The lease's project is parsed out of a sanitised filename, so both sides
+    /// have to be normalised or a lossy name never joins.
+    #[test]
+    fn a_lease_for_a_lossy_project_name_still_covers_its_session() {
+        let sessions = vec![session(Some("my proj"), 0, Some(3 * HOUR), 0)];
+        let leases = vec![beaten("my_proj", 0, 3 * HOUR)];
+        assert!(unaccounted(&sessions, &leases, &[], at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    #[test]
+    fn a_mark_of_a_dot_related_project_does_not_cover() {
+        let sessions = vec![session(Some("app"), 0, Some(3 * HOUR), 0)];
+        let leases = vec![Lease {
+            mark: crate::marks::Mark {
+                project: "app".to_string(),
+                issue: Some("web.7".to_string()),
+                phase: "impl".to_string(),
+                start: at(0),
+            },
+            last_seen: Some(at(3 * HOUR)),
+        }];
+        assert_eq!(
+            unaccounted(&sessions, &leases, &[], at(3 * HOUR), FLOOR).len(),
+            1,
+            "an app.web mark covered an app session"
         );
     }
 

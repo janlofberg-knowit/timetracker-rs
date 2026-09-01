@@ -13,9 +13,8 @@
 //! readers of that file differ deliberately — measurement ([`Phase::ended`])
 //! anchors on the last bare line wherever it sits, gap detection
 //! ([`Phase::beats`]) counts every line, liveness ([`lease_in`]) takes the last
-//! line whatever its tag, and
-//! the unvouched threshold ([`Phase::vouched`]) asks whether any bare line
-//! exists. See docs/decisions/0004-mark-expiry.md.
+//! line whatever its tag, and the unvouched threshold ([`Phase::vouched`]) asks
+//! whether any bare line exists. See docs/decisions/0004-mark-expiry.md.
 //!
 //! Only the start timestamp is read; see [`open_marks_in`].
 
@@ -441,18 +440,43 @@ fn append_beat(dir: &Path, key: &str, tag: Option<&str>) -> io::Result<()> {
 /// Never beat a project other than the beating session's own: an unattributable
 /// beat is what let an unrelated session keep an abandoned mark alive.
 pub fn touch_project_in(dir: &Path, project: &str) {
-    // Match on the sanitised filename, never on the parsed display string: the
-    // name is not losslessly splittable, so `my proj` and `app.web` both parse
-    // back into something the raw project never equals.
-    let prefix = crate::paths::sanitise_key(&format!("{project}.")).to_ascii_lowercase();
     for mark in open_marks_in(dir) {
-        let issue = mark.issue.as_deref().unwrap_or("-");
-        let key = mark_key(&mark.project, issue, &mark.phase);
-        if !key.to_ascii_lowercase().starts_with(&prefix) {
+        if !owned_by(&mark, project) {
             continue;
         }
-        let _ = append_beat(dir, &key, Some("hook"));
+        let issue = mark.issue.as_deref().unwrap_or("-");
+        let _ = append_beat(
+            dir,
+            &mark_key(&mark.project, issue, &mark.phase),
+            Some("hook"),
+        );
     }
+}
+
+/// Whether `project` owns `mark`. Matched on the sanitised filename, never on
+/// the parsed display string: the name is not losslessly splittable, so a
+/// dotted or lossy project parses back into something the raw name never
+/// equals. The boundary is a whole **segment**, never a character prefix —
+/// `app` does not own `app.web`'s mark, nor `app.web` an `app` mark.
+///
+/// Sanitisation is not injective, so `my proj` and a real `my_proj` share one
+/// name and cannot be told apart here.
+pub fn owned_by(mark: &Mark, project: &str) -> bool {
+    let key = mark_key(
+        &mark.project,
+        mark.issue.as_deref().unwrap_or("-"),
+        &mark.phase,
+    );
+    key_project(&key)
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(&crate::paths::sanitise_key(project)))
+}
+
+/// A mark key's project: everything before its issue and phase segments, which
+/// [`mark_key`] always appends. `None` when the name holds no two dots.
+fn key_project(key: &str) -> Option<&str> {
+    let (head, _phase) = key.rsplit_once('.')?;
+    let (project, _issue) = head.rsplit_once('.')?;
+    Some(project)
 }
 
 /// Record that a close for one phase is under way, holding the mark's start
@@ -694,6 +718,29 @@ mod tests {
 
         touch_project_in(&dir, "app.web");
         assert!(beats_path(&dir, "app.web.7.impl").is_file());
+    }
+
+    /// The boundary is a segment, so neither name reaches the other's mark.
+    #[test]
+    fn a_dot_related_project_does_not_cross_beat() {
+        let dir = sandbox("touch-project-segment");
+        write(&dir, "app.7.impl", "1000100\n");
+        write(&dir, "app.web.7.impl", "1000200\n");
+
+        touch_project_in(&dir, "app");
+        assert!(beats_path(&dir, "app.7.impl").is_file());
+        assert!(
+            !beats_path(&dir, "app.web.7.impl").exists(),
+            "app beat app.web's mark"
+        );
+
+        let _ = fs::remove_file(beats_path(&dir, "app.7.impl"));
+        touch_project_in(&dir, "app.web");
+        assert!(beats_path(&dir, "app.web.7.impl").is_file());
+        assert!(
+            !beats_path(&dir, "app.7.impl").exists(),
+            "app.web beat app's mark"
+        );
     }
 
     fn at(seconds: i64) -> DateTime<Local> {
