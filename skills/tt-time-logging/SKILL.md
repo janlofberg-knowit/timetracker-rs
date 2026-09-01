@@ -141,6 +141,12 @@ any `touch` — where a hole between heartbeats is positive evidence that work s
 so the unmeasured phase gets the longer allowance. Long enough is still refused: 120
 minutes with nothing to show for it wants a human.
 
+Those two thresholds apply to holes *between* beats. The **trailing** stretch, from
+the last beat to where `end` is measuring to, is always judged at the 45-minute
+standard whether or not you touched, so idling after the work stopped is refused
+rather than billed. A phase with no beats at all has no trailing stretch: it stays
+one span on the 120-minute allowance.
+
 Two kinds of heartbeat share one file, and only one of them vouches for time. **Your
 `tt agent touch` is the vouch**: `end` measures to it, and it is what lifts a phase off
 the unvouched threshold. **The hooks' beats prove the session is alive**, nothing more —

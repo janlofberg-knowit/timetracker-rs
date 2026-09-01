@@ -219,6 +219,27 @@ fn list_flags_a_stale_mark_with_the_command_that_clears_it() {
     run.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" <minutes>");
 }
 
+/// A stale mark in the 45–120m band: the `--trim` the row prints has to remove
+/// the trailing silence rather than log the same span a bare close would.
+#[test]
+fn the_trim_a_stale_beaten_row_prints_changes_the_bill() {
+    let case = Case::new("list-stale-trim");
+    let start = now() - 130 * 60;
+    // Half a minute of slack against the second the close itself takes.
+    let last_beat = start + 30 * 60 + 30;
+    case.write_mark("proj.23.impl", start);
+    case.hook_beats_at("proj.23.impl", &[last_beat]);
+
+    let listed = case.run(&["list"]);
+    listed.assert_status(0);
+    listed.assert_stdout_has("[stale]");
+    listed.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" --trim");
+
+    let trimmed = case.run(&["end", "proj", "23", "impl", "<summary>", "--trim"]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has("- Duration: 0h 30m");
+}
+
 #[test]
 fn list_drops_the_issue_for_the_sentinel() {
     let case = Case::new("list-sentinel");

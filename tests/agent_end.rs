@@ -421,7 +421,9 @@ fn a_hook_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
 fn an_abandoned_hook_beaten_mark_is_refused_and_trims_to_its_last_beat() {
     let case = Case::new("gaps-hook-abandoned");
     let start = now() - 200 * 60;
-    let last_beat = start + 40 * 60;
+    // Half a minute of slack, so a second spent running the close does not
+    // round the trimmed remainder down to 39m.
+    let last_beat = start + 40 * 60 + 30;
     case.write_mark("proj.7.impl", start);
     case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
 
@@ -439,6 +441,53 @@ fn an_abandoned_hook_beaten_mark_is_refused_and_trims_to_its_last_beat() {
     ]);
     trimmed.assert_status(0);
     trimmed.assert_stdout_has(&logged_duration((last_beat - start) / 60));
+}
+
+// --- interior versus trailing silence --------------------------------------
+
+/// An unvouched phase's trailing stretch is judged at the gap threshold, so an
+/// operator wandering off after the work stopped is refused, and `--trim` bills
+/// only up to the last beat.
+#[test]
+fn an_unvouched_phase_is_refused_for_a_wander_before_the_close() {
+    let case = Case::new("gaps-trailing-wander");
+    let start = now() - 130 * 60;
+    // Half a minute of slack against the second the close itself takes.
+    let last_beat = start + 30 * 60 + 30;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
+
+    let refused = case.run(&["end", "proj", "7", "impl", "wandered off after the work"]);
+    refused.assert_status(65);
+    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
+
+    let trimmed = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "wandered off after the work",
+        "--trim",
+    ]);
+    trimmed.assert_status(0);
+    trimmed.assert_stdout_has(&logged_duration(30));
+}
+
+/// The same 100-minute hole *between* two beats keeps the unvouched grace.
+#[test]
+fn an_unvouched_phase_is_not_refused_for_an_interior_hole() {
+    let case = Case::new("gaps-interior-hole");
+    let span = 130;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at(
+        "proj.7.impl",
+        &[start + 10 * 60, start + 110 * 60, start + span * 60 - 60],
+    );
+
+    let run = case.run(&["end", "proj", "7", "impl", "one long autonomous turn"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
 }
 
 /// Beating once does not buy the longer allowance: 46 minutes, one over.

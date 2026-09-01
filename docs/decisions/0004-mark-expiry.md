@@ -53,6 +53,29 @@ and the four readers of it differ deliberately:
   rather than "the file is empty", and a hook-only phase is not dropped onto the
   shorter gap threshold.
 
+**Interior silence and trailing silence are judged separately.** A long
+autonomous turn and an idle operator look nearly identical in a sparse beats
+file, so each threshold is applied to the case it was designed for. A hole
+*between* two beats keeps today's switch — `max_gap_minutes` once the model has
+vouched, `max_unvouched_minutes` when it has not — so a long turn with only a
+boundary beat at its end is never refused. The **trailing** stretch, from the
+last beat to whatever `end` is measuring to, is always judged at
+`max_gap_minutes`, so 100 minutes of operator idle after the work stopped is
+refused rather than billed silently. Two boundaries hold that in place: a phase
+with **no beats at all** has no trailing stretch and stays wholly on the
+unvouched grace, or the ordinary `begin` → work 60m → `end` with no touches
+would start refusing; and the extra test only applies where the interior
+threshold is the larger of the two, since for a vouched phase `gaps_over` has
+already flagged the trailing stretch and it must not be counted twice.
+
+This is also what makes the printed close line honest. A stale mark with a beat
+is by definition one whose last beat is older than `max_gap_minutes`, so its
+trailing stretch is always flagged and the `--trim` the row prints always
+changes the bill. For that equivalence to be exact, `Lease::is_expired_at`
+judges by the same rule `gaps_over` does — integer-floor minutes, strictly
+greater — rather than comparing instants, which had a mark one second past its
+expiry printing a `--trim` that would trim nothing.
+
 `audit::unaccounted` subtracts each same-project lease's covered interval
 (`mark.start → min(now, expiry)`) from the session window and flags whatever
 remains, so an expired mark stops vouching for the stretch it did not cover and
@@ -76,8 +99,8 @@ Together they renew a live session's marks at every turn boundary, and only the
 marks of the project the beating session resolved; no resolved project means no
 beat.
 
-`tt agent end`'s measurement, its thresholds and `gaps_over` are unchanged; the
-beat line's optional tag is the only format change.
+`tt agent end`'s thresholds and `gaps_over` itself are unchanged; the beat
+line's optional tag is the only format change.
 
 ## Alternatives considered
 

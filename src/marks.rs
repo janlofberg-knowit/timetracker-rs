@@ -101,14 +101,22 @@ impl Lease {
         }
     }
 
-    /// Whether the lease has run out by `now`, strictly past its expiry.
+    /// Whether the lease has run out by `now`. Judged the way [`gaps_over`]
+    /// judges a silence — **integer-floor minutes, strictly greater** — so a
+    /// stale beaten mark is exactly one whose trailing stretch `end` would
+    /// flag, and the `--trim` [`close_command`](Lease::close_command) prints
+    /// always removes something.
     pub fn is_expired_at(
         &self,
         now: DateTime<Local>,
         gap_minutes: i64,
         unvouched_minutes: i64,
     ) -> bool {
-        now > self.expires_at(gap_minutes, unvouched_minutes)
+        let (since, allowed) = match self.last_seen {
+            Some(seen) => (seen, gap_minutes),
+            None => (self.mark.start, unvouched_minutes),
+        };
+        (now - since).num_seconds() / 60 > allowed
     }
 
     /// The mark's last heartbeat as `HH:MM`, or `never` when it has none.
@@ -124,7 +132,9 @@ impl Lease {
     /// `--trim` only for a mark with a heartbeat to measure to: on a mark with
     /// none it reads `start → now` as one giant gap and logs the 5m floor, so
     /// that case asks for the minutes outright. An automatic beat counts here —
-    /// a hook-beaten mark does have something to trim to.
+    /// a hook-beaten mark does have something to trim to, and `end` judges its
+    /// trailing stretch at the same threshold
+    /// [`is_expired_at`](Lease::is_expired_at) does.
     ///
     /// The arguments are the mark's parsed pieces, so a lossy project name
     /// prints differently from what the operator typed; the line still works,
@@ -598,6 +608,25 @@ pub fn gaps_over(start: i64, end: i64, beats: &[i64], threshold_minutes: i64) ->
         gaps.push((prev, end));
     }
     gaps
+}
+
+/// The stretch from the last beat that advanced the sequence to `end`, or `None`
+/// when no beat did — a phase with no usable beat has **no trailing stretch**,
+/// only the single `start → end` span [`gaps_over`] already judges.
+///
+/// The skip rule is [`gaps_over`]'s, so the two agree on which beats count. This
+/// returns the stretch whatever its length; the caller applies the threshold.
+pub fn trailing_silence(start: i64, end: i64, beats: &[i64]) -> Option<(i64, i64)> {
+    let mut prev = start;
+    let mut beaten = false;
+    for &beat in beats {
+        if beat <= prev || beat >= end {
+            continue;
+        }
+        prev = beat;
+        beaten = true;
+    }
+    (beaten && end > prev).then_some((prev, end))
 }
 
 #[cfg(test)]
@@ -1335,6 +1364,41 @@ mod tests {
         // 46m00s is.
         let end = start + 46 * 60;
         assert_eq!(gaps_over(start, end, &[], 45), vec![(start, end)]);
+    }
+
+    #[test]
+    fn a_phase_with_no_beats_has_no_trailing_stretch() {
+        assert_eq!(trailing_silence(0, 100 * 60, &[]), None);
+        // Nor has one whose every beat is skipped by the sequence rule.
+        assert_eq!(trailing_silence(0, 100 * 60, &[0, 200 * 60]), None);
+    }
+
+    #[test]
+    fn the_trailing_stretch_runs_from_the_last_advancing_beat() {
+        let start = 1_000_000;
+        let beats = [start + 10 * 60, start + 20 * 60, start + 15 * 60];
+        let end = start + 200 * 60;
+        assert_eq!(
+            trailing_silence(start, end, &beats),
+            Some((start + 20 * 60, end))
+        );
+        // Nothing left after the last beat is no stretch at all.
+        assert_eq!(trailing_silence(start, start + 10 * 60, &beats), None);
+    }
+
+    /// Between expiry and expiry plus 59s the trailing stretch still floors to
+    /// the threshold, so the mark is not yet stale.
+    #[test]
+    fn expiry_is_floor_minutes_and_strictly_greater() {
+        let dir = sandbox("lease-expiry-floor");
+        let start = 1_000_000;
+        write(&dir, "proj.7.impl", &format!("{start}\n"));
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), format!("{start} hook\n")).unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+
+        assert!(!lease.is_expired_at(at(start + 45 * 60 + 59), 45, 120));
+        assert!(lease.is_expired_at(at(start + 46 * 60), 45, 120));
     }
 
     #[test]
