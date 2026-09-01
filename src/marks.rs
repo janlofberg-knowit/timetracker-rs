@@ -111,11 +111,10 @@ impl Lease {
         }
     }
 
-    /// Whether the lease has run out by `now`. Judged the way [`gaps_over`]
-    /// judges a silence — **integer-floor minutes, strictly greater** — so a
-    /// stale beaten mark is exactly one whose trailing stretch `end` would
-    /// flag, and the `--trim` [`close_command`](Lease::close_command) prints
-    /// always removes something.
+    /// Whether the lease has run out by `now`, on [`gaps_over`]'s rule:
+    /// **integer-floor minutes, strictly greater**. Keep the two in step, or
+    /// the `--trim` [`close_command`](Lease::close_command) prints stops
+    /// matching what `end` would flag.
     pub fn is_expired_at(&self, now: DateTime<Local>, thresholds: Thresholds) -> bool {
         let (since, allowed) = match self.last_seen {
             Some(seen) => (seen, thresholds.gap),
@@ -134,16 +133,13 @@ impl Lease {
 
     /// The `tt agent end` line that logs this mark's work and clears it.
     ///
-    /// `--trim` only for a mark with a heartbeat to measure to: on a mark with
-    /// none it reads `start → now` as one giant gap and logs the 5m floor, so
-    /// that case asks for the minutes outright. An automatic beat counts here —
-    /// a hook-beaten mark does have something to trim to, and `end` judges its
-    /// trailing stretch at the same threshold
-    /// [`is_expired_at`](Lease::is_expired_at) does.
+    /// `--trim` only for a mark with a heartbeat, including an automatic one;
+    /// on a mark with none it would log the 5m floor, so that case asks for the
+    /// minutes outright.
     ///
     /// The arguments are the mark's parsed pieces, so a lossy project name
-    /// prints differently from what the operator typed; the line still works,
-    /// because they round-trip through [`mark_key`] back to this same file.
+    /// prints differently from what the operator typed; they still round-trip
+    /// through [`mark_key`] back to this same file.
     pub fn close_command(&self) -> String {
         let tail = match self.last_seen {
             Some(_) => "--trim",
@@ -169,8 +165,7 @@ pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
         &mark.phase,
     );
     let body = fs::read_to_string(beats_path(dir, &key)).unwrap_or_default();
-    // The **last** line whatever follows its timestamp: an automatic `hook`
-    // beat is exactly the evidence staleness exists to see.
+    // The last line whatever tag follows its timestamp.
     let last_seen = body
         .lines()
         .next_back()
@@ -435,11 +430,9 @@ fn append_beat(dir: &Path, key: &str, tag: Option<&str>) -> io::Result<()> {
 /// matches**, case-insensitively. A mark whose beats cannot be written is
 /// skipped; the rest are still beaten.
 ///
-/// Tagged, never bare: these beats prove the session is alive, and must not move
-/// what `end` measures or make an unvouched phase look vouched.
-///
-/// Never beat a project other than the beating session's own: an unattributable
-/// beat is what let an unrelated session keep an abandoned mark alive.
+/// Tagged, never bare: these beats must not move what `end` measures or make an
+/// unvouched phase look vouched. Never beat a project other than the beating
+/// session's own.
 pub fn touch_project_in(dir: &Path, project: &str) {
     for mark in open_marks_in(dir) {
         if !owned_by(&mark, project) {
@@ -454,14 +447,13 @@ pub fn touch_project_in(dir: &Path, project: &str) {
     }
 }
 
-/// Whether `project` owns `mark`. Matched on the sanitised filename, never on
-/// the parsed display string: the name is not losslessly splittable, so a
-/// dotted or lossy project parses back into something the raw name never
-/// equals. The boundary is a whole **segment**, never a character prefix —
-/// `app` does not own `app.web`'s mark, nor `app.web` an `app` mark.
+/// Whether `project` owns `mark`. Compare the sanitised filename, never the
+/// parsed display string: the name is not losslessly splittable. The boundary is
+/// a whole **segment**, never a character prefix — `app` does not own
+/// `app.web`'s mark, nor `app.web` an `app` mark.
 ///
-/// Sanitisation is not injective, so `my proj` and a real `my_proj` share one
-/// name and cannot be told apart here.
+/// Sanitisation is not injective: `my proj` and a real `my_proj` share one name
+/// and cannot be told apart here.
 pub fn owned_by(mark: &Mark, project: &str) -> bool {
     let key = mark_key(
         &mark.project,
@@ -636,11 +628,9 @@ pub fn gaps_over(start: i64, end: i64, beats: &[i64], threshold_minutes: i64) ->
 }
 
 /// The stretch from the last beat that advanced the sequence to `end`, or `None`
-/// when no beat did — a phase with no usable beat has **no trailing stretch**,
-/// only the single `start → end` span [`gaps_over`] already judges.
-///
-/// The skip rule is [`gaps_over`]'s, so the two agree on which beats count. This
-/// returns the stretch whatever its length; the caller applies the threshold.
+/// when no beat did: a phase with no usable beat has **no trailing stretch**.
+/// The skip rule is [`gaps_over`]'s, so the two agree on which beats count. The
+/// length is unjudged; the caller applies the threshold.
 pub fn trailing_silence(start: i64, end: i64, beats: &[i64]) -> Option<(i64, i64)> {
     let mut prev = start;
     let mut beaten = false;

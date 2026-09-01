@@ -159,12 +159,10 @@ pub fn unaccounted(
                 // short head before a live mark was opened is not worth flagging.
                 .filter(|(from, to)| (to - from) / 60 >= floor_minutes)
                 .filter_map(|(from, to)| {
-                    // Unlike a mark's beats, no subagent dispatches is not evidence
-                    // of silence — most sessions never dispatch one at all. Only
-                    // treat gaps *between* dispatches (and before the first / after
-                    // the last) as idle when there is at least one to anchor on.
-                    // Computed over the *uncovered* stretch, or an auto-logged
-                    // entry would subtract idle time from outside what it reports.
+                    // No dispatches is not evidence of silence, so a session
+                    // with none carries no idle. Computed over the *uncovered*
+                    // stretch, or an auto-logged entry would subtract idle time
+                    // from outside what it reports.
                     let idle = if session.subagent_at.is_empty() {
                         Vec::new()
                     } else {
@@ -174,10 +172,8 @@ pub fn unaccounted(
                             .collect()
                     };
 
-                    // Each fragment reports only the dispatches inside it, so the
-                    // rows sum to the session's. With no timestamps to split by
-                    // there is nothing to attribute, so the session's own count
-                    // stands.
+                    // Per fragment, so the rows sum to the session's. With no
+                    // timestamps to split by, the session's own count stands.
                     let subagents = if session.subagent_at.is_empty() {
                         session.subagents
                     } else {
@@ -206,9 +202,7 @@ pub fn unaccounted(
 
 /// What is left of `start → end` after removing every same-project lease's
 /// covered interval — a lease covers `mark.start` up to whichever comes first,
-/// `now` or its expiry. Subtraction, not overlap: a mark that vouched only for
-/// the head of a still-open session leaves its tail flagged, which is the
-/// weekend incident's own shape.
+/// `now` or its expiry. Subtraction, never an any-overlap test.
 fn uncovered_by_marks(
     project: &str,
     start: i64,
@@ -255,12 +249,11 @@ fn subtract(stretch: (i64, i64), cut: (i64, i64)) -> Vec<(i64, i64)> {
 
 /// What is left of `stretches` after removing every covering entry's span. An
 /// entry covers when it is tagged `#agent` (an agent's own self-report) or
-/// `#auto` (a prior `--auto-log` run); the two provenances are deliberately
-/// distinct tags, checked together only here. One still open covers up to `now`.
+/// `#auto` (a prior `--auto-log` run); the two are distinct tags, checked
+/// together only here. One still open covers up to `now`.
 ///
-/// Subtraction, not overlap, and applied to the stretches the leases left: the
-/// two coverage sources compose, so auto-logging one fragment cannot hide the
-/// rest of its session.
+/// Subtraction, applied to what the leases left, so the two coverage sources
+/// compose: auto-logging one fragment must not hide the rest of its session.
 fn uncovered_by_entries(
     project: &str,
     stretches: Vec<(i64, i64)>,

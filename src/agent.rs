@@ -470,15 +470,14 @@ fn end(
             // end where the timeline does.
             anchor = Some(instant(ended)?);
 
-            // Interior holes are judged on `vouched`, not on the beats being
-            // empty: automatic beats must not drop a hook-only phase onto the
-            // shorter threshold.
+            // Keyed on `vouched`, never on the beats being empty: an automatic
+            // beat must not drop a hook-only phase onto the shorter threshold.
             let Thresholds { gap, unvouched } = audit::thresholds();
             let interior = if marked.vouched { gap } else { unvouched };
             let mut gaps = marks::gaps_over(marked.started, ended, &marked.beats, interior);
-            // The trailing stretch is always judged at the gap threshold. Only
-            // when the interior threshold is the larger of the two, and never a
-            // stretch `gaps_over` already flagged: it must not be pushed twice.
+            // The trailing stretch is always judged at `gap`. Only where the
+            // interior threshold is the larger of the two, and never a stretch
+            // `gaps_over` already flagged — it must not be pushed twice.
             if interior > gap
                 && let Some(tail) = marks::trailing_silence(marked.started, ended, &marked.beats)
                 && (tail.1 - tail.0) / 60 > gap

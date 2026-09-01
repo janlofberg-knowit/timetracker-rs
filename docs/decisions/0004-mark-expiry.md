@@ -114,7 +114,17 @@ line's optional tag is the only format change.
   already implements the reclamation, and a printed command keeps the operator
   in the loop about work only they can summarise, Vim-swap-file style.
 - **Stamping the owning session id into the mark to prove abandonment rather
-  than infer it.** A real improvement in attribution, but it needs a mark-file
-  format change and buys nothing a timestamp does not already give.
+  than infer it.** It is the only thing that catches a same-project orphan (see
+  the limitation below), which no timestamp can. Deferred rather than rejected:
+  it needs a mark-file format change, which is its own Story.
 - **Adding last-seen to `Mark`.** Rejected: it would either rot behind the
   TUI's directory-stamp refresh or force a beats read on every frame.
+
+## Known limitations
+
+**A same-project orphan never expires.** Renewal is scoped to the project, not
+to the session that opened the mark, so an abandoned mark in a repo someone
+keeps working is renewed by every new session's turn boundaries — the weekend
+incident's shape minus the weekend. Only a session id on the mark distinguishes
+the orphan from the live work, and that is deferred. Until then `tt agent list`
+is how such a mark gets noticed.

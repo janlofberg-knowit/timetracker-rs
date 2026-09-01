@@ -262,9 +262,12 @@ default_limit = 20     # default for `tt list` when -n isn't passed
 
 [agent]
 max_gap_minutes = 45        # silence between heartbeats that `tt agent end` refuses on,
-                            # and how long past its last beat a mark keeps vouching
-max_unvouched_minutes = 120 # how long a phase with no heartbeat at all may run,
-                            # and how long a never-beaten mark keeps vouching
+                            # also applied to the stretch after the last beat whether
+                            # or not the model touched, and how long past its last
+                            # beat a mark keeps vouching
+max_unvouched_minutes = 120 # how long a phase with no heartbeat at all may run, how
+                            # long a hole *between* beats may run when the model never
+                            # touched, and how long a never-beaten mark keeps vouching
 
 [layout]
 show_projects = true   # whether the Projects, Agent, Summary, and Tags panels
