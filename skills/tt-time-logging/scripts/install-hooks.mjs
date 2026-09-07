@@ -97,9 +97,8 @@ const isLegacyInjector = (command) =>
   command.startsWith("node -e ") &&
   command.includes("tt-time-logging");
 
-// Stop ran tt-stop-check.mjs beside the activity hook until the check moved
-// into the activity hook itself. Left in place it would run the check a second
-// time, in parallel with the beat it must follow.
+// A separate `Stop` entry running tt-stop-check.mjs: left in place it would run
+// the check a second time, in parallel with the beat it must follow.
 const isStopCheck = (command) =>
   typeof command === "string" && command.includes("tt-stop-check.mjs");
 

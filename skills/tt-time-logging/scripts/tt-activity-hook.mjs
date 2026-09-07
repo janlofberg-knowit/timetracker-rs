@@ -32,7 +32,7 @@ function readStdin() {
 // answer would beat the wrong project's marks. No project means no beat at all.
 function projectName(cwd) {
   if (process.env.TT_PROJECT) return process.env.TT_PROJECT;
-  const candidates = cwd ? [cwd] : [undefined];
+  const candidates = cwd ? [cwd] : [];
   for (const dir of candidates) {
     try {
       const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
