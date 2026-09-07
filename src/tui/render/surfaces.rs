@@ -7,12 +7,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-/// The `Marks` surface: `project/issue phase`, start time, elapsed, and the
-/// mark's last heartbeat, newest first. The last-seen wording and the `[stale]`
-/// marker are `marks::rows_at`'s, so the panel and `tt agent list` read a mark's
-/// liveness the same way; the columns are the panel's own. Elapsed is asked for
-/// per frame, so it counts up between reads — but liveness comes from
-/// `App.leases`, since a frame reads no directory.
+/// The `Marks` surface: `project/issue phase`, start time, elapsed, and the mark's
+/// last heartbeat, newest first. The last-seen wording and the `[stale]` marker are
+/// `marks::rows_at`'s; the columns are the panel's own. Liveness comes from `App.leases`.
 pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     /// Narrowest the label column gets, so short labels still line their times up.
     const LABEL_WIDTH: usize = 18;

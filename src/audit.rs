@@ -2,9 +2,9 @@
 //! entries — the `tt agent audit` command. See
 //! `docs/decisions/0001-agent-activity-tracking.md`.
 //!
-//! An activity window counts as accounted for once every part of it falls
-//! inside some same-project mark's lease or a same-project `#agent`- or
-//! `#auto`-tagged entry. Both sources subtract, so they compose (see
+//! An activity window counts as accounted for once every part of it falls inside
+//! a same-project mark's lease or a same-project `#agent`- or `#auto`-tagged entry
+//! — both subtract, so they compose (see
 //! `docs/decisions/0002-auto-logging-unaccounted-activity.md` for the
 //! latter). Neither is **unaccounted agent activity**: real work that never
 //! got tracked at all.
@@ -16,9 +16,8 @@ use crate::marks::{self, Lease, Thresholds};
 use crate::time::instant;
 use crate::tracker::TimeEntry;
 
-/// One contiguous **active** stretch with no evidence it was tracked: a
-/// window's idle holes are cut out before it becomes a row, so nothing here
-/// reports a hole and an entry covering a row covers it whole.
+/// One contiguous **active** stretch with no evidence it was tracked; a window's
+/// idle holes are cut out before it becomes a row, so an entry covers a row whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unaccounted {
     pub project: String,
@@ -99,10 +98,8 @@ pub fn auto_log_after_minutes() -> Option<i64> {
     (configured > max_unvouched_minutes()).then_some(configured)
 }
 
-/// The thresholds every judgement below an entry point is made by, read from
-/// the environment and config once. Resolve at `run_audit`, `check_session`,
-/// `list`, `end` and the TUI's sync, and pass the value down; nothing below
-/// them reads config, so a caller and a test judge by the same numbers.
+/// The thresholds every judgement below is made by, read from the environment and
+/// config once at an entry point and passed down; nothing below this reads config.
 pub fn thresholds() -> Thresholds {
     Thresholds {
         gap: max_gap_minutes(),
@@ -115,10 +112,9 @@ fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
-/// Every session below `thresholds.unvouched` is not flagged — a one-line
-/// question should not trip the warning. A session with no project cannot be
-/// reconciled against anything, so it is skipped rather than assumed
-/// unaccounted.
+/// Every session below `thresholds.unvouched` is not flagged. A session with no
+/// project cannot be reconciled against anything, so it is skipped rather than
+/// assumed unaccounted.
 pub fn unaccounted(
     sessions: &[Session],
     leases: &[Lease],
@@ -149,9 +145,8 @@ pub fn unaccounted(
                 thresholds,
             );
             let fragments = uncovered_by_entries(project, stretches, entries, now_epoch);
-            // Every row is one contiguous active stretch: no dispatches is not
-            // evidence of silence, so such a session's fragments pass through
-            // whole, and otherwise each fragment is cut at its own idle holes.
+            // Every row is one contiguous active stretch: with no dispatches a
+            // fragment passes through whole, otherwise it is cut at its idle holes.
             let active: Vec<(i64, i64)> = if session.subagent_at.is_empty() {
                 fragments
             } else {
@@ -175,8 +170,7 @@ pub fn unaccounted(
                     .collect()
             };
 
-            // The floor applies to the session's total active time, not to each
-            // row.
+            // The floor applies to the session's total active time, not to each row.
             let uncovered: i64 = active.iter().map(|(from, to)| (to - from) / 60).sum();
             if uncovered < floor_minutes {
                 return Vec::new();
@@ -185,8 +179,7 @@ pub fn unaccounted(
             active
                 .into_iter()
                 .filter_map(|(from, to)| {
-                    // Per row, so the rows sum to the session's. With no
-                    // timestamps to split by, the session's own count stands.
+                    // Per row, so the rows sum to the session's; with no timestamps its own count stands.
                     let subagents = if session.subagent_at.is_empty() {
                         session.subagents
                     } else {
@@ -212,9 +205,8 @@ pub fn unaccounted(
     found
 }
 
-/// What is left of `start → end` after removing every same-project lease's
-/// covered interval — a lease covers `mark.start` up to whichever comes first,
-/// `now` or its expiry. Subtraction, never an any-overlap test.
+/// What is left of `start → end` after removing every same-project lease's covered
+/// interval — `mark.start` up to `now` or its expiry. Subtraction, never any-overlap.
 fn uncovered_by_marks(
     project: &str,
     start: i64,
@@ -259,13 +251,9 @@ fn subtract(stretch: (i64, i64), cut: (i64, i64)) -> Vec<(i64, i64)> {
     kept
 }
 
-/// What is left of `stretches` after removing every covering entry's span. An
-/// entry covers when it is tagged `#agent` (an agent's own self-report) or
-/// `#auto` (a prior `--auto-log` run); the two are distinct tags, checked
-/// together only here. One still open covers up to `now`.
-///
-/// Subtraction, applied to what the leases left, so the two coverage sources
-/// compose: auto-logging one fragment must not hide the rest of its session.
+/// What is left of `stretches` after removing every covering entry's span; an entry
+/// covers when tagged `#agent` or `#auto`, and one still open covers up to `now`.
+/// Subtraction of what the leases left, so the two coverage sources compose.
 fn uncovered_by_entries(
     project: &str,
     stretches: Vec<(i64, i64)>,
@@ -276,8 +264,7 @@ fn uncovered_by_entries(
     for entry in entries
         .iter()
         .filter(|entry| entry.has_tag("agent") || entry.has_tag("auto"))
-        // The same segment rule the lease join uses, so the project a
-        // `[stale]` row prints is one this join accepts.
+        // The same segment rule the lease join uses.
         .filter(|entry| {
             entry
                 .project
@@ -355,15 +342,13 @@ mod tests {
     const FLOOR: i64 = 120;
     const HOUR: i64 = 3600;
 
-    /// The house pair, stated here so no test below reads the developer's
-    /// config.
+    /// The house pair, so no test below reads the developer's config.
     const HOUSE: Thresholds = Thresholds {
         gap: 45,
         unvouched: FLOOR,
     };
 
-    /// The thresholds are stated here, never read from the developer's config:
-    /// this shadows [`super::unaccounted`] for every test below.
+    /// Shadows [`super::unaccounted`] for every test below, with stated thresholds.
     fn unaccounted(
         sessions: &[Session],
         leases: &[Lease],
@@ -383,9 +368,6 @@ mod tests {
         )
     }
 
-    /// One instant decides both surfaces: before it the lease covers the whole
-    /// window and its row is fresh; from it the row is `[stale]` and the
-    /// coverage stops there, so anything past it is uncovered.
     #[test]
     fn one_instant_decides_both_the_stale_row_and_the_coverage() {
         let leases = vec![beaten("tt", 0, 3 * HOUR)];
@@ -430,8 +412,6 @@ mod tests {
         assert!(unaccounted(&sessions, &marks, &[], at(3 * HOUR), FLOOR).is_empty());
     }
 
-    /// The weekend incident: four marks sat open for days with no heartbeat and
-    /// silenced the warning for their own projects.
     #[test]
     fn a_mark_open_for_days_with_no_beats_no_longer_covers() {
         let sessions = vec![session(Some("tt"), 110 * HOUR, Some(113 * HOUR), 0)];
@@ -446,8 +426,6 @@ mod tests {
         assert!(unaccounted(&sessions, &live, &[], at(114 * HOUR), FLOOR).is_empty());
     }
 
-    /// The incident as it happened: the session was still open, its mark was
-    /// opened at the same instant and never beat, and the weekend passed.
     #[test]
     fn the_remainder_of_a_still_open_session_past_its_marks_expiry_is_flagged() {
         let sessions = vec![session(Some("tt"), 0, None, 0)];
@@ -476,8 +454,6 @@ mod tests {
         );
     }
 
-    /// The lease's project is parsed out of a sanitised filename, so both sides
-    /// have to be normalised or a lossy name never joins.
     #[test]
     fn a_lease_for_a_lossy_project_name_still_covers_its_session() {
         let sessions = vec![session(Some("my proj"), 0, Some(3 * HOUR), 0)];
@@ -544,7 +520,6 @@ mod tests {
         assert_eq!((flagged[0].start, flagged[0].end), (at(0), at(2 * HOUR)));
     }
 
-    /// Auto-logging one fragment must not hide the rest of the session.
     #[test]
     fn an_entry_covering_the_middle_leaves_the_head_and_the_tail_flagged() {
         let sessions = vec![session(Some("tt"), 0, Some(6 * HOUR), 0)];
@@ -556,8 +531,7 @@ mod tests {
         );
     }
 
-    /// The floor gates the session's total, so eleven hours with no evidence
-    /// cannot hide behind fragments that are each under it.
+    /// The floor gates the session's total, not each fragment.
     #[test]
     fn six_uncovered_fragments_under_the_floor_are_all_reported() {
         let sessions = vec![session(Some("tt"), 0, Some(12 * HOUR), 0)];
@@ -585,8 +559,6 @@ mod tests {
         assert!(unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).is_empty());
     }
 
-    /// `Lease::close_command` prints the mark's sanitised project, so the entry
-    /// an operator logs by following a `[stale]` row has to join.
     #[test]
     fn an_entry_for_a_lossy_project_name_still_covers_its_session() {
         let sessions = vec![session(Some("my proj"), 0, Some(3 * HOUR), 0)];
@@ -607,7 +579,6 @@ mod tests {
         }
     }
 
-    /// A session split into fragments reports each fragment's own dispatches.
     #[test]
     fn each_fragment_counts_only_the_dispatches_inside_it() {
         let dispatches = vec![
@@ -728,8 +699,6 @@ mod tests {
         assert_eq!((flagged[0].start, flagged[0].end), (at(0), at(3 * HOUR)));
     }
 
-    /// Only the stretch up to the last dispatch is active, so a window whose
-    /// dispatches stop early reports the minutes before them and no more.
     #[test]
     fn a_window_active_for_ten_minutes_is_under_the_floor() {
         let sessions = vec![session_with_subagents(
@@ -741,8 +710,6 @@ mod tests {
         assert!(unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR).is_empty());
     }
 
-    /// Every row is one contiguous active stretch, so an idle hole is neither
-    /// reported nor billed.
     #[test]
     fn a_fragment_is_split_at_its_idle_holes() {
         let minute = 60;

@@ -1,13 +1,7 @@
-//! The `tt agent` commands: the agent layer's phase marks.
-//!
-//! Presentation only; [`crate::marks`] owns every fact about the mark files.
-//!
-//! **`begin`, `touch`, `cancel`, `list` and a plain `audit` must touch no
-//! store** — `main.rs` dispatches them ahead of its migrate preamble. `item`,
-//! `end` and `audit --auto-log` log an entry through [`crate::commands::log`] and
-//! dispatch after it.
-//!
-//! The messages are a contract: their caller is an agent following prose.
+//! The `tt agent` commands: the agent layer's phase marks. Presentation only;
+//! [`crate::marks`] owns every fact about the mark files. **`begin`, `touch`,
+//! `cancel`, `list` and a plain `audit` must touch no store** — `main.rs` dispatches
+//! them ahead of its migrate preamble. The messages are a contract read by an agent.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local};
@@ -77,8 +71,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
     }
 }
 
-/// Silently does nothing if the activity dir can't be resolved — a hook must
-/// never fail the harness event it's attached to.
+/// Silently does nothing if the activity dir can't be resolved: a hook must not fail its event.
 fn activity_command(command: &ActivityCommands) -> Result<()> {
     // Beats only, nothing filed: it must not depend on the activity dir.
     if let ActivityCommands::Prompt { project } = command {
@@ -105,8 +98,7 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
             project,
         } => {
             activity::subagent_in(&dir, session_id)?;
-            // The hook is the one witness to when a subagent's work stopped;
-            // without this beat `end` sees the wait for the report as silence.
+            // Without this beat `end` sees the wait for the report as silence.
             beat_project(project.as_deref());
         }
         ActivityCommands::Prompt { .. } => unreachable!("handled before the dir read"),
@@ -118,17 +110,9 @@ fn activity_command(command: &ActivityCommands) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent activity check <session_id> [--auto-log]`: the same
-/// reconciliation as `tt agent audit`, narrowed to one session, so the `Stop`
-/// hook can warn immediately rather than waiting for the next `audit` run.
-/// Silent when the session is accounted for, unknown, or has no resolved
-/// project.
-///
-/// `--auto-log` is passed unconditionally by the hook; `tt` itself decides
-/// whether to act on it via `agent.auto_log_on_stop` (see
-/// docs/decisions/0003-auto-log-on-stop.md) — a flag with the setting off is
-/// the same as a plain check. A window that gets written is marked
-/// `(auto-logged)` in its line, so the hook can tell the two cases apart.
+/// `tt agent audit` narrowed to one session, for the `Stop` hook: silent when the session
+/// is accounted for, unknown, or has no resolved project. `--auto-log` acts only when
+/// `agent.auto_log_on_stop` is set; a written window is marked `(auto-logged)`.
 fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Result<()> {
     let Some(session) = activity::read_session_in(dir, session_id) else {
         return Ok(());
@@ -160,30 +144,26 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     Ok(())
 }
 
-/// Beat the open marks of the project a hook resolved. `None` beats nothing: an
-/// unattributable beat would keep another project's abandoned mark alive.
+/// Beat the open marks of the project a hook resolved; `None` beats nothing.
 fn beat_project(project: Option<&str>) {
     if let (Some(project), Some(dir)) = (project, marks::mark_dir()) {
         marks::touch_project_in(&dir, project);
     }
 }
 
-/// Every open mark paired with its last heartbeat. A mark directory that cannot
-/// be resolved reads as no marks, never as an error.
+/// Every open mark paired with its last heartbeat; no mark directory reads as none.
 fn open_leases() -> Vec<marks::Lease> {
     marks::mark_dir()
         .map(|dir| marks::open_leases_in(&dir))
         .unwrap_or_default()
 }
 
-/// The mark directory, or an error — a `begin` must never silently record
-/// nothing.
+/// The mark directory, or an error: a `begin` must never silently record nothing.
 fn mark_dir() -> Result<std::path::PathBuf> {
     marks::mark_dir().context("could not determine a cache directory for the marks")
 }
 
-/// The phase as the messages name it: `<project>/<issue> <phase>`, with the `-`
-/// sentinel left in place. Only `list` collapses it.
+/// The phase as the messages name it: `<project>/<issue> <phase>`, `-` sentinel included.
 fn phase_name(project: &str, issue: &str, phase: &str) -> String {
     format!("{}/{} {}", project, issue, phase)
 }
@@ -215,8 +195,7 @@ fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// Report a close that was started and never finished, and exit 75. The leftover
-/// is named, never cleared: only the operator can tell whether its entry landed.
+/// Report a close that was started and never finished, and exit 75; nothing is cleared.
 fn refuse_unfinished_close(project: &str, issue: &str, phase: &str) -> ! {
     eprintln!(
         "tt: {} has an unfinished close — a previous close may already have recorded its entry",
@@ -226,8 +205,7 @@ fn refuse_unfinished_close(project: &str, issue: &str, phase: &str) -> ! {
     std::process::exit(75);
 }
 
-/// `tt agent touch <project> <issue|-> <phase>`: record one heartbeat. Exits 64
-/// on an unmarked phase; anyhow would exit 1, so the code is set explicitly.
+/// `tt agent touch <project> <issue|-> <phase>`: one heartbeat; exit 64 on an unmarked phase.
 fn touch(project: &str, issue: &str, phase: &str) -> Result<()> {
     let dir = mark_dir()?;
     match marks::touch_in(&dir, project, issue, phase)? {
@@ -242,8 +220,7 @@ fn touch(project: &str, issue: &str, phase: &str) -> Result<()> {
     }
 }
 
-/// `tt agent cancel <project> <issue|-> <phase>`: drop a mark without logging.
-/// Succeeds whether or not there was anything to drop.
+/// `tt agent cancel <project> <issue|-> <phase>`: drop a mark without logging, present or not.
 fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
     let dir = mark_dir()?;
     marks::cancel_in(&dir, project, issue, phase)?;
@@ -251,10 +228,8 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent list [project]`: every open mark, newest first, in
-/// `commands::list`'s shape — header, blank line, rows at the status-glyph
-/// indent, or a bare `No open marks.` A project narrows the list to the marks
-/// it owns, so a caller needs no filter over this output.
+/// `tt agent list [project]`: every open mark of the project, newest first, in
+/// `commands::list`'s shape, or a bare `No open marks.`
 fn list(project: Option<&str>) -> Result<()> {
     let mut leases = open_leases();
     if let Some(project) = project {
@@ -272,10 +247,8 @@ fn list(project: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent audit`: reconcile the activity ledger against marks and logged
-/// entries, reporting activity with no evidence it was ever tracked. Missing
-/// or unreadable activity/mark directories read as empty rather than erroring
-/// — an audit must never fail over there being nothing to audit yet.
+/// `tt agent audit`: reconcile the activity ledger against marks and logged entries,
+/// reporting activity with no evidence it was tracked. Missing directories read as empty.
 fn run_audit(auto_log: bool) -> Result<()> {
     let sessions = activity::activity_dir()
         .map(|dir| activity::read_sessions_in(&dir))
@@ -290,8 +263,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
         audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     };
 
-    // `auto_log_after_minutes` unset: `--auto-log` is accepted but logs
-    // nothing, exactly like a plain audit — see AgentConfig::auto_log_after_minutes.
+    // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
     let mut wrote_any = false;
     if auto_log && let Some(threshold) = audit::auto_log_after_minutes() {
         for item in &flagged {
@@ -303,8 +275,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
         }
     }
 
-    // Re-read: the entries just written cover their own rows, so the report
-    // below must not still call them unaccounted.
+    // Re-read: the entries just written now cover their own rows.
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
@@ -325,11 +296,8 @@ fn run_audit(auto_log: bool) -> Result<()> {
     Ok(())
 }
 
-/// `--auto-log`: write one fixed-phase `#auto` entry for an unaccounted
-/// window, the way `tt agent item` would — except **never** tagged `#agent`,
-/// since this was not an agent's own self-report. Phase and summary are
-/// always the same literal text; nothing here guesses either. See
-/// docs/decisions/0002-auto-logging-unaccounted-activity.md.
+/// `--auto-log`: write one fixed-phase `#auto` entry for an unaccounted window, the way
+/// `tt agent item` would but **never** tagged `#agent`; phase and summary are literal text.
 fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
     let minutes = item.end.signed_duration_since(item.start).num_minutes();
     commands::log(commands::LogRequest {
@@ -338,18 +306,14 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
         extra_tags: Vec::new(),
         project: Some(item.project.clone()),
         idle: Vec::new(),
-        // The row is already one contiguous active stretch, so the entry spans
-        // it whole; nothing here may cut it a second time.
+        // The row is one contiguous active stretch; nothing here may cut it again.
         trim: false,
         ended_at: Some(item.end),
     })
 }
 
-/// `tt agent item <project> <issue|-> <phase> <summary> <minutes>`: log one
-/// finished piece of work in one call, for a duration already known some
-/// other way. No mark file is read, written or cleared — this is the
-/// fallback for when there was nothing to `begin`/`end` around; prefer that
-/// pair whenever the work can be marked as it happens instead.
+/// `tt agent item <project> <issue|-> <phase> <summary> <minutes>`: log one finished piece
+/// of work for a duration already known. No mark file is read, written or cleared.
 fn item(
     project: &str,
     issue: &str,
@@ -365,8 +329,7 @@ fn item(
     log_entry(project, issue, phase, summary, minutes, Span::unmarked())
 }
 
-/// A minutes argument, or exit 64 with `minutes must be a whole number, got
-/// '<x>'` — hand-parsed because clap would exit 2 with its own usage block.
+/// A minutes argument, or exit 64 with `minutes must be a whole number, got '<x>'`.
 /// Stricter than `parse`: no sign, no whitespace, no `+`.
 fn whole_minutes(raw: &str) -> i64 {
     let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
@@ -379,10 +342,8 @@ fn whole_minutes(raw: &str) -> i64 {
     }
 }
 
-/// The timeline `log_entry` records the entry on: the flagged silence, whether
-/// to cut it out, and where the span ends. `ended_at` is the mark's last
-/// heartbeat for a mark-derived close and `None` where there is no mark
-/// timeline to pin to.
+/// The timeline `log_entry` records the entry on. `ended_at` is the mark's last bare
+/// heartbeat for a mark-derived close, `None` where there is no mark timeline.
 struct Span {
     idle: Vec<IdleInterval>,
     trim: bool,
@@ -390,7 +351,6 @@ struct Span {
 }
 
 impl Span {
-    /// A span with no mark behind it: no silence, nothing to trim, no anchor.
     fn unmarked() -> Self {
         Span {
             idle: Vec::new(),
@@ -400,8 +360,7 @@ impl Span {
     }
 }
 
-/// Log the entry both `item` and `end` end at. `extra_tags` stays empty: every
-/// tag is already in the description.
+/// Log the entry both `item` and `end` end at; every tag is already in the description.
 fn log_entry(
     project: &str,
     issue: &str,
@@ -421,13 +380,11 @@ fn log_entry(
     })
 }
 
-/// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`:
-/// close a marked phase, measured to its last **bare** heartbeat wherever that
-/// sits in the beats file; only a phase with no bare beat at all measures to
-/// now. A flagged silence with nothing said about it **refuses** the close.
-///
-/// Explicit minutes win over both flags and skip the mark's timestamps entirely;
-/// `--full` logs the measured span, `--trim` the span minus every flagged gap.
+/// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`: close a
+/// marked phase, measured to its last **bare** heartbeat wherever that sits in the beats
+/// file; only a phase with no bare beat measures to now. A flagged silence with nothing
+/// said about it **refuses** the close. Explicit minutes win over both flags and skip the
+/// mark's timestamps; `--full` logs the measured span, `--trim` it minus every gap.
 fn end(
     project: &str,
     issue: &str,
@@ -466,8 +423,7 @@ fn end(
                 std::process::exit(64);
             };
 
-            // Measured to the last bare beat, clamped so a heartbeat behind the
-            // mark is a zero-length phase.
+            // Clamped, so a heartbeat behind the mark is a zero-length phase.
             let ended = marked
                 .beats
                 .last()
@@ -475,13 +431,10 @@ fn end(
                 .unwrap_or_else(|| Local::now().timestamp())
                 .max(marked.started);
             let measured = (ended - marked.started) / 60;
-            // The gaps below are epochs on this timeline, so the entry has to
-            // end where the timeline does.
+            // The gaps are epochs on this timeline, so the entry ends where it does.
             anchor = Some(instant(ended)?);
 
-            // An unvouched phase is judged as one whole-span silence against the
-            // longer grace. Its beats file may hold hook lines, which
-            // `read_phase_in` has already dropped — presence is not work.
+            // An unvouched phase is one whole-span silence against the longer grace.
             let Thresholds { gap, unvouched } = audit::thresholds();
             let gaps = match marked.beats.is_empty() {
                 true => marks::gaps_over(marked.started, ended, &[], unvouched),
@@ -490,22 +443,19 @@ fn end(
             if gaps.is_empty() {
                 measured
             } else {
-                // One interval per flagged gap, recorded whether or not the
-                // caller trimmed, so the TUI can still trim it later.
+                // One interval per flagged gap whether or not the caller trimmed.
                 idle = gaps
                     .iter()
                     .map(|&(from, to)| Ok(IdleInterval::new(instant(from)?, instant(to)?)))
                     .collect::<Result<Vec<_>>>()?;
-                // Every over-threshold gap, not just the worst one the refusal
-                // names. Reported, never logged: `split_at_idle` subtracts.
+                // Every over-threshold gap. Reported, never logged: `split_at_idle` subtracts.
                 let silent: i64 = gaps.iter().map(|(from, to)| (to - from) / 60).sum();
                 let trimmed = (measured - silent).max(0);
 
                 if full {
                     measured
                 } else if trim {
-                    // The measured span, not `trimmed`: `split_at_idle` cuts the
-                    // same gaps, and a pre-trimmed span subtracts them twice.
+                    // The measured span, not `trimmed`: `split_at_idle` cuts the same gaps.
                     split_at_idle = true;
                     measured
                 } else {
@@ -515,8 +465,7 @@ fn end(
         }
     };
 
-    // Written before the entry, so a mark directory that cannot be written fails
-    // here with nothing logged and the retry safe.
+    // Written before the entry, so a failure here logs nothing and the retry is safe.
     marks::start_closing_in(&dir, project, issue, phase)?;
     log_entry(
         project,
@@ -530,8 +479,7 @@ fn end(
             ended_at: anchor,
         },
     )?;
-    // Cleared only once the entry is recorded, on every successful close; a
-    // refusal returned above with the mark and its beats left in place.
+    // Cleared only once the entry is recorded; a refusal leaves the mark and its beats.
     if let Err(err) = marks::cancel_in(&dir, project, issue, phase) {
         eprintln!(
             "tt: {} is recorded, but its mark could not be cleared: {err}",
@@ -545,8 +493,7 @@ fn end(
     Ok(())
 }
 
-/// Refuse the close, naming the worst hole, and exit 65. Both the silent total
-/// and the interval go on one line, **unrounded**.
+/// Refuse the close, naming the worst hole, and exit 65; both totals **unrounded**.
 fn refuse(
     project: &str,
     issue: &str,
@@ -572,8 +519,7 @@ fn refuse(
         clock(worst.1),
         clock(worst.2)
     );
-    // A zero trim is exactly the case where the holes cover the span, so
-    // `--trim` stores all of it: offer the explicit minutes alone.
+    // A zero trim means the holes cover the span: offer the explicit minutes alone.
     match trimmed {
         0 => eprintln!("tt: --full logs {measured}m"),
         trimmed => eprintln!("tt: --full logs {measured}m, --trim logs {trimmed}m"),
@@ -592,8 +538,7 @@ fn article(minutes: i64) -> &'static str {
     }
 }
 
-/// [`crate::time::instant`] with the context this layer owes the operator: a
-/// mark that will not parse names the value that would not.
+/// [`crate::time::instant`], naming the value that would not parse.
 fn instant(epoch: i64) -> Result<DateTime<Local>> {
     crate::time::instant(epoch).with_context(|| format!("{epoch} is not a valid timestamp"))
 }
@@ -608,20 +553,15 @@ fn clock(epoch: i64) -> String {
 
 // --- the shared convention -------------------------------------------------
 //
-// `item` and `end` must log an entry the same way, so the rounding, the stray-`#`
-// stripping and the three tags live here once.
+// `item` and `end` log the same way: the rounding, the stripping and the tags live here.
 
-/// Round minutes **up** to the next 5 minutes, never below 5. Always a
-/// ceiling, never nearest — a logged span never reads shorter than what was
-/// actually spent.
+/// Round minutes **up** to the next 5 minutes, never below 5: a ceiling, never nearest.
 fn round_five(minutes: i64) -> i64 {
     (((minutes + 4) / 5) * 5).max(5)
 }
 
-/// Strip a `#` run that begins a word, so a summary mentioning "#12" does not
-/// become a tag. A **mid-word** `#` is left alone: `C#` and `F#` are real words.
-///
-/// [`parse_tags`]: crate::tracker::parse_tags
+/// Strip a `#` run that begins a word, so a summary mentioning "#12" does not become
+/// a tag. A **mid-word** `#` is left alone: `C#` and `F#` are real words.
 fn strip_stray_tags(summary: &str) -> String {
     let mut stripped = String::with_capacity(summary.len());
     let mut at_word_start = true;
@@ -636,17 +576,15 @@ fn strip_stray_tags(summary: &str) -> String {
     stripped
 }
 
-/// The phase vocabulary, in the order the docs list it. `src/report.rs` reads it
-/// back off the stored tags, so it must stay the one list. Not used to validate
-/// the `phase` argument: any word is accepted.
+/// The phase vocabulary, in the order the docs list it. `src/report.rs` reads it back
+/// off the stored tags, so this must stay the one list; it validates nothing.
 pub const PHASES: [&str; 8] = [
     "plan", "impl", "qa", "review", "docs", "spike", "explore", "ops",
 ];
 
 /// The description `commands::log` is given: the summary, then one tag per axis the
-/// `project` field cannot express — the item (omitted for the `-` sentinel), the
-/// phase, and `#agent`. There is **no bare `#<project>` tag**; `commands::log` runs
-/// `parse_tags` over this string to build the entry's tags.
+/// `project` field cannot express — the item (omitted for `-`), the phase, and
+/// `#agent`. There is **no bare `#<project>` tag**; `commands::log` runs `parse_tags`.
 fn description(project: &str, issue: &str, phase: &str, summary: &str) -> String {
     let mut description = strip_stray_tags(summary);
     if issue != "-" {
@@ -662,14 +600,11 @@ mod tests {
 
     #[test]
     fn the_article_follows_how_the_number_is_spoken() {
-        // Every number opening on the digit 8, whatever its magnitude.
         for minutes in [8, 80, 85, 800] {
             assert_eq!(article(minutes), "an", "{minutes}");
         }
-        // The two teens read as one vowel-initial word.
         assert_eq!(article(11), "an");
         assert_eq!(article(18), "an");
-        // And their multiples, which are not: "a hundred and ten".
         for minutes in [7, 45, 70, 110, 118, 180, 1, 0] {
             assert_eq!(article(minutes), "a", "{minutes}");
         }
@@ -686,7 +621,6 @@ mod tests {
 
     #[test]
     fn rounding_never_goes_below_five_minutes() {
-        // A two-minute errand costs five, and so does zero.
         assert_eq!(round_five(0), 5);
         assert_eq!(round_five(1), 5);
         assert_eq!(round_five(2), 5);
@@ -698,7 +632,6 @@ mod tests {
         // Without the strip, `parse_tags` would harvest `#12` as a tag.
         assert_eq!(strip_stray_tags("closed #12 at last"), "closed 12 at last");
         assert_eq!(strip_stray_tags("#12 closed"), "12 closed");
-        // A run goes whole, and the whitespace it followed survives.
         assert_eq!(strip_stray_tags("closed ##12"), "closed 12");
         assert_eq!(strip_stray_tags("a\t#12"), "a\t12");
     }

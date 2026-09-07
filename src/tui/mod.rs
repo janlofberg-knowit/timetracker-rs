@@ -80,15 +80,12 @@ pub(crate) struct App {
     pub(crate) activity_sessions: Vec<Session>,
     /// Fingerprint of the *activity directory*, so a tick need not list it.
     pub(crate) activity_stamp: Option<PathStamp>,
-    /// Each mark in `marks` paired with its liveness, so a frame never reads
-    /// the beats directory. Refreshed with `unaccounted`, and empty while the
-    /// Agents surface is hidden.
+    /// Each mark in `marks` paired with its liveness, so a frame never reads the
+    /// beats directory; empty while the Agents surface is hidden.
     pub(crate) leases: Vec<crate::marks::Lease>,
-    /// When liveness was last read, bounding how often a keypress can trigger
-    /// the beats walk. `None` re-reads on the next call.
+    /// When liveness was last read; `None` re-reads on the next call.
     pub(crate) liveness_at: Option<std::time::Instant>,
-    /// `(max_gap_minutes, max_unvouched_minutes)` as of that read, so a frame
-    /// can judge a lease stale without loading the config.
+    /// The thresholds as of that read, so a frame judges staleness without the config.
     pub(crate) liveness_thresholds: crate::marks::Thresholds,
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
@@ -1211,8 +1208,7 @@ mod tests {
         app.sync_from_activity();
         assert!(app.unaccounted.is_empty(), "no session to flag yet");
 
-        // Whatever lands on disk, and however many keypresses drive the loop,
-        // the next second's worth of calls keep the result already computed.
+        // However many keypresses drive the loop, the next second's calls keep the result.
         write_session(&dir, "sess-1", "smoke", 3);
         for _ in 0..5 {
             app.activity_stamp = None;

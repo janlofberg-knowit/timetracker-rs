@@ -1,7 +1,6 @@
 //! The collapsible `Marks` surface: the phase marks left open by `tt agent
-//! begin` paired with their liveness, read from `App.leases` on the event
-//! loop's tick — a frame never reads the directory. Display-only: no focus
-//! ring, no cursor, no `Enter`, no scroll.
+//! begin` paired with their liveness, read from `App.leases` — a frame never
+//! reads the directory. Display-only: no focus ring, no cursor, no scroll.
 //!
 //! Below the marks, a second state — unaccounted activity, from `App.unaccounted`
 //! (see `src/audit.rs`) — appears only when there is any, so an operator who never
@@ -63,8 +62,7 @@ impl App {
     /// `Shift-A`: show or hide the surface.
     pub(crate) fn toggle_marks(&mut self) {
         self.show_marks = !self.show_marks;
-        // Opening the surface must not show a second of nothing, and the read
-        // is skipped entirely while it is closed.
+        // Opening the surface must not show a second of nothing.
         self.liveness_at = None;
     }
 }

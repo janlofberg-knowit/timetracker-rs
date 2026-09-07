@@ -42,15 +42,14 @@ pub fn env_or(value: Option<OsString>, default: Option<PathBuf>) -> Option<PathB
     }
 }
 
-/// Every character outside `[A-Za-z0-9_-]` replaced by `_`, and every `.` by
-/// `-`.
+/// Every character outside `[A-Za-z0-9_-]` replaced by `_`, and every `.` by `-`.
 ///
 /// Both a mark's key and an activity session's id become filenames built from
 /// text this program does not control — a project name from the environment, a
 /// session id from the harness. Sanitising them the same way is what lets a
 /// path be rebuilt from its parts and still find the file it wrote. A `.` is
-/// legal in a filename but reserved as [`crate::marks::mark_key`]'s segment
-/// separator, so no sanitised segment may hold one.
+/// reserved as [`crate::marks::mark_key`]'s segment separator, so no sanitised
+/// segment may hold one.
 pub fn sanitise_key(raw: &str) -> String {
     raw.chars()
         .map(|c| match c {

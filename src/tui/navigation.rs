@@ -38,28 +38,22 @@ impl App {
         }
         self.marks_stamp = current;
         self.marks = crate::marks::open_marks_in(&dir);
-        // A mark opened or closed is exactly when the leases are worth
-        // re-reading, whatever the liveness interval says.
+        // A mark opened or closed is when the leases are worth re-reading.
         self.liveness_at = None;
     }
 
     /// Pick up activity-ledger writes made outside the TUI (by hooks in other
-    /// sessions), read each open mark's liveness, and recompute
-    /// [`App::unaccounted`]. Call after [`sync_from_marks`](Self::sync_from_marks)
-    /// and [`sync_from_store`](Self::sync_from_store) so both are current.
-    ///
-    /// Runs at most once per [`LIVENESS_INTERVAL`], and not at all while the
-    /// Agents surface is hidden: this is the event loop's own body, so it is
-    /// reached on every keypress, not once per poll tick.
+    /// sessions), read each open mark's liveness, and recompute [`App::unaccounted`].
+    /// Call after [`sync_from_marks`](Self::sync_from_marks) and
+    /// [`sync_from_store`](Self::sync_from_store) so both are current. Runs at most once
+    /// per [`LIVENESS_INTERVAL`], and not at all while the Agents surface is hidden.
     pub(crate) fn sync_from_activity(&mut self) {
         if !self.show_marks {
             self.leases.clear();
             self.unaccounted.clear();
             return;
         }
-        // The beats read cannot be stamp-gated — an append inside `beats/`
-        // changes no directory mtime — so bound it in time instead, keeping the
-        // last result until the interval is up.
+        // The beats read cannot be stamp-gated: an append inside `beats/` changes no mtime.
         if self
             .liveness_at
             .is_some_and(|last| last.elapsed() < LIVENESS_INTERVAL)
