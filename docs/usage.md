@@ -246,6 +246,30 @@ nested keys flattened to `review.by` and array elements to `files[0]`.
 
 Trimming an entry copies its data onto every piece.
 
+### Well-known keys
+
+Unknown keys are always kept, whoever wrote them, so a tool that wants fields of
+its own takes its own top-level namespace rather than adding to another's.
+
+`agent` is the namespace for agent work:
+
+| Key | Written by | Value |
+|---|---|---|
+| `agent.label` | `tt` | the `--agent <label>` the close was made under |
+| `agent.model` | the caller, via `--data` | the model that did the work, e.g. `opus` |
+| `agent.effort` | the caller, via `--data` | the reasoning effort it ran at, e.g. `high` |
+| `agent.tokens.input` | the caller, via `--data` | input tokens, a number |
+| `agent.tokens.output` | the caller, via `--data` | output tokens, a number |
+
+```sh
+tt agent end tt 163 review "read the diff" --agent code \
+  --data '{"agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
+```
+
+`tt agent end --agent <label>` merges `agent.label` into whatever `--data`
+passed. A `label` the caller wrote itself wins, and an `agent` key that is not an
+object is a usage error.
+
 ---
 
 ## Data storage
