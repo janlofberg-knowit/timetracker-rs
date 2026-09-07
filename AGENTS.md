@@ -43,7 +43,8 @@ Everything below is detail on those three commands.
    it is about the **unit**: if every worker logged its own turn, one issue would
    produce twenty rows instead of one and the rollup would stop meaning anything.
    When several subagents work the same project/issue/phase **concurrently**,
-   their time still lands as one entry — see [Parallel subagents on one
+   the orchestrator holds one mark per dispatch under `--agent <label>` and
+   closes each on its own span — see [Parallel subagents on one
    phase](#parallel-subagents-on-one-phase).
 2. **The unit is a completed piece of work, not a commit.** Planning is work. So is
    a review that concludes "don't ship" and an investigation that produces no code.
@@ -112,6 +113,10 @@ tt agent end   <project> <issue|-> <phase> "<summary>"
 # Never a substitute for measuring a span you could have marked instead.
 tt agent item  <project> <issue|-> <phase> "<summary>" <minutes>
 
+# one in-flight subagent's own mark on a phase, for a parallel fan-out — see
+# Parallel subagents on one phase. `begin`, `touch`, `end` and `cancel` take it.
+tt agent begin <project> <issue|-> <phase> --agent <label>
+
 tt agent list [PROJECT]                        # what is still open
 tt agent cancel <project> <issue|-> <phase>    # drop without logging
 tt agent audit [--auto-log]                    # unaccounted activity; see below
@@ -173,8 +178,9 @@ unvouched grace.
 
 ## Working in parallel
 
-Marks are keyed `project/issue/phase`, so any number can be open at once — several
-issues in one repo, several repos, or both. They are independent: ending one never
+Marks are keyed `project/issue/phase`, plus an optional `--agent <label>`, so any
+number can be open at once — several issues in one repo, several repos, several
+subagents on one phase, or all of them. They are independent: ending one never
 touches another.
 
 If you run no subagents, rule 1 costs you nothing, since you are the only writer. Log
@@ -193,36 +199,45 @@ The TUI shows the same open phases in its **Agents** panel, on `Shift-A`.
 ### Parallel subagents on one phase
 
 Fanning several subagents out at once onto the same `project`/`issue`/`phase` —
-a judge panel, a set of parallel reviewers, several independent finders — needs
-a different close than the default begin → touch → end: a wall-clock span
-across a parallel batch measures *elapsed* time, not the effort actually spent,
-and would undercount it. Three subagents at 20 minutes each is 60 minutes of
-work, not the 20 minutes the clock shows.
+a judge panel, a set of parallel reviewers, several independent finders — puts
+work that ran side by side inside one wall-clock span, which measures *elapsed*
+time rather than the effort spent. Three subagents at 20 minutes each is 60
+minutes of work, not the 20 minutes the clock shows. So the unit is one mark per
+in-flight subagent, keyed by a fourth `--agent <label>` segment, and every span
+is measured rather than summed from what the tooling reported.
 
-1. **Open the mark once, before the first dispatch.** `tt agent begin <project>
-   <issue> <phase>` — if `tt agent list` already shows this exact key open,
-   it's either your own earlier work on it (reuse it) or another session's
-   (leave it; say what you found). This mark exists for visibility while the
-   batch runs (`tt agent list`, the TUI's **Agents** panel), not for its own
-   duration.
-2. **Do not end it as each subagent returns.** Wait for every subagent
-   dispatched in that batch to report back, however many rounds that takes.
-3. **Sum each contributor's time.** Use each subagent's own elapsed wall-clock
-   time for its dispatch — most agent tooling reports this on completion — not
-   anything it says about itself in its own report. Add your own time too, if
-   you did real work on the same phase yourself rather than only dispatching
-   and reading results.
-4. **Close it once, after the last one reports.** `tt agent cancel <project>
-   <issue> <phase>` to drop the now-unwanted wall-clock mark, then
-   `tt agent item <project> <issue> <phase> "<summary>" <summed minutes>` to
-   log the real total as one entry.
+1. **Open one mark per dispatch, as you dispatch it.** `tt agent begin <project>
+   <issue> <phase> --agent <label>`, with a label naming that subagent's job:
+   `code-review`, `style-review`, `finder-2`. Two labels on one phase are two
+   independent marks, and `tt agent list` and the TUI's **Agents** panel show
+   one row each.
+2. **Close each one as that subagent reports.** `tt agent end <project> <issue>
+   <phase> --agent <label> "<summary>"` — its own summary, on its own measured
+   span. A label addresses only its own mark, so a close never clears a
+   sibling's.
+3. **Bill your own time under `--agent orchestrator`.** Dispatching, relaying
+   and reading reports is real work on the same phase. Open it beside the
+   others and close it with **explicit minutes** — never `--full` and never
+   `--trim`, because its wall clock spans the whole fan-out that the subagents'
+   own spans already bill.
+4. **A per-agent mark needs no `touch`.** The hooks beat every open mark of the
+   project, tagged, so a mark never expires while its subagent runs and the beat
+   never moves what `end` bills. An untouched span inside the 120-minute
+   unvouched grace closes on what it measured.
+
+No code reserves `orchestrator` or validates any label. It is a convention.
+
+The label is no tag axis: an entry carries the same `#<project>/<issue>`,
+`#<phase>` and `#agent` tags whatever label closed it, so `tt report` still sums
+a whole fan-out under its one issue and phase. Name the subagent in the summary
+prose when the row should say which one it was.
 
 A different phase — even on the same issue, even dispatched in the same
-breath — is never folded into this. Give it its own `begin`/`item` pair; marks
-are keyed `project/issue/phase` for exactly this reason.
+breath — is never folded into this. Give it its own marks; a mark is keyed
+`project/issue/phase` plus the label for exactly this reason.
 
-Subagents dispatched one after another rather than concurrently don't need any
-of this: a wall-clock span already accumulates sequential work correctly, so
+Subagents dispatched one after another rather than concurrently need no labels:
+one mark's wall-clock span already accumulates sequential work correctly, so
 the plain begin → touch → end flow is enough.
 
 ## When `end` refuses
