@@ -238,8 +238,9 @@ pub enum AgentCommands {
         /// each one
         #[arg(long)]
         trim: bool,
-        /// One subagent's label on this phase, addressing a mark of its own
-        /// so parallel subagents each measure their own span
+        /// One subagent's label on this phase, addressing a mark of its own so
+        /// parallel subagents each measure their own span; also recorded as
+        /// `agent.label` in the entry's data
         #[arg(long)]
         agent: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`

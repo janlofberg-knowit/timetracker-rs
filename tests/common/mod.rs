@@ -368,6 +368,8 @@ pub struct Entry {
     pub end_time: Option<DateTime<Local>>,
     #[serde(default)]
     pub idle: Vec<Idle>,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
 }
 
 impl Entry {

@@ -448,6 +448,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         );
         std::process::exit(64);
     };
+    let data = stamp_label(data, mark.agent);
 
     let dir = mark_dir()?;
     if marks::is_closing_in(&dir, mark) {
@@ -540,6 +541,21 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         std::process::exit(74);
     }
     Ok(())
+}
+
+/// The close's data with the mark's label stamped in, or exit 64 on data whose
+/// `agent` key is not an object. Unlabelled data is passed through untouched.
+fn stamp_label(data: Option<serde_json::Value>, agent: Option<&str>) -> Option<serde_json::Value> {
+    let Some(label) = agent else {
+        return data;
+    };
+    match crate::entry_data::with_agent_label(data, label) {
+        Ok(data) => Some(data),
+        Err(message) => {
+            eprintln!("tt: {message}");
+            std::process::exit(64);
+        }
+    }
 }
 
 /// Refuse the close, naming the worst hole, and exit 65; both totals **unrounded**.
