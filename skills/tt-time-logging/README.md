@@ -36,7 +36,7 @@ node <wherever the skill landed>/scripts/install-hooks.mjs
 This writes to your **global** `~/.claude/settings.json`, not a project-local
 one — the hooks are meant to fire in every session, in every project, not just
 the one you happened to run the installer from. It also copies `SKILL.md` and
-the stop-check script into `~/.claude/hooks/tt-time-logging/`, so the hooks
+the hook scripts into `~/.claude/hooks/tt-time-logging/`, so the hooks
 keep working regardless of where the skill itself is installed. It requires
 Claude Code to have already been run at least once (so `~/.claude` exists) —
 if it hasn't, the script says so and exits without writing anything.
@@ -65,7 +65,8 @@ edits to the source file don't reach live sessions until you re-install.
 re-spends the full document on every prompt and trains a "seen it, skip it"
 response to the block. `tt-contract-hook.mjs` injects only the **operating
 card** on that event: everything in `SKILL.md` above the `<!-- card:end -->`
-marker — the trigger sentence, the three commands, and the phase table.
+marker — the trigger sentence alone, which names the command form, the project
+rule and the phase list. The command block and the phase table sit below it.
 
 The card is not a separate file to keep in sync; it's the head of `SKILL.md`,
 cut at the marker. Keep the document's opening actionable and the card stays

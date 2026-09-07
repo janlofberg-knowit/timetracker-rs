@@ -10,6 +10,11 @@
 // entry is filed under. Missing or unparseable payload: silently skipped —
 // a hook must never fail the harness event it's attached to. `prompt` files
 // nothing and only beats this project's open marks, so it needs no session id.
+//
+// `end` is the whole `Stop` event in one process: it closes the window, beats
+// this project's marks, then warns about open marks and an unaccounted window.
+// Two entries on one event cannot be ordered, and the beat must precede the
+// check.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -22,14 +27,12 @@ function readStdin() {
   }
 }
 
-// An unresolved project means no beat at all, so both the payload's own `cwd`
-// and the process's are tried. The payload comes **first**: the session's own
-// directory is the project being worked in, while the hook process may sit in a
-// worktree or an unrelated repo, and a wrong-but-resolvable answer would beat
-// the wrong project's marks.
+// `TT_PROJECT`, else the session's own directory. Never the hook process's own
+// cwd: it may sit in a worktree or an unrelated repo, and a wrong-but-resolvable
+// answer would beat the wrong project's marks. No project means no beat at all.
 function projectName(cwd) {
   if (process.env.TT_PROJECT) return process.env.TT_PROJECT;
-  const candidates = cwd ? [cwd, undefined] : [undefined];
+  const candidates = cwd ? [cwd] : [undefined];
   for (const dir of candidates) {
     try {
       const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -78,4 +81,61 @@ try {
   // never fail the harness event over `tt` being missing or erroring
 }
 
-process.stdout.write("{}");
+if (event !== "end") {
+  process.stdout.write("{}");
+  process.exit(0);
+}
+
+// Warnings, never a block. Both run after the call above, so the beat this
+// project's marks got is already on disk when the mark list is read.
+const messages = [];
+
+if (project) {
+  let list = "";
+  try {
+    list = execFileSync("tt", ["agent", "list"], { encoding: "utf8" });
+  } catch (e) {
+    list = e.stdout?.toString() ?? "";
+  }
+
+  const openLines = list.split("\n").filter((line) => line.includes(project));
+  if (openLines.length > 0) {
+    messages.push(
+      `tt-time-logging: open mark(s) for '${project}' are still unclosed. ` +
+        `Close with 'tt agent end <project> <issue> <phase> "<summary>"' ` +
+        `(or 'tt agent cancel' if it shouldn't be logged) before stopping.\n` +
+        openLines.join("\n"),
+    );
+  }
+}
+
+let checked = "";
+try {
+  checked = execFileSync(
+    "tt",
+    ["agent", "activity", "check", "--auto-log", sessionId],
+    { encoding: "utf8" },
+  );
+} catch {
+  checked = "";
+}
+const trimmed = checked.trim();
+if (trimmed) {
+  // `tt` only marks a line `(auto-logged)` when `agent.auto_log_on_stop`
+  // is configured and it actually wrote an entry for that line — see
+  // docs/decisions/0003-auto-log-on-stop.md.
+  const autoLogged = trimmed
+    .split("\n")
+    .some((line) => line.includes("(auto-logged)"));
+  messages.push(
+    autoLogged
+      ? `tt-time-logging: this session's activity was unaccounted for — ` +
+          `auto-logged under #auto (agent.auto_log_on_stop):\n${trimmed}`
+      : `tt-time-logging: this session's activity is unaccounted for — no open mark ` +
+          `or logged #agent entry covers it:\n${trimmed}`,
+  );
+}
+
+process.stdout.write(
+  messages.length > 0 ? JSON.stringify({ systemMessage: messages.join("\n\n") }) : "{}",
+);

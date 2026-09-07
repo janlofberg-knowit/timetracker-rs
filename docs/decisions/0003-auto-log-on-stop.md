@@ -21,7 +21,7 @@ revisiting it:
    confirmation gate.
 3. Idempotency (0002 guardrail: running it twice writes one entry) needs to
    hold under a hook's stricter latency/failure constraints — a hook must
-   never fail the harness event it's attached to (see `tt-stop-check.mjs`'s
+   never fail the harness event it's attached to (see `tt-activity-hook.mjs`'s
    header comment and `activity_command`'s doc comment in `src/agent.rs`).
 
 This doc proposes concrete answers to all three, and a shape to implement
@@ -178,7 +178,7 @@ not a silent downgrade to no-op, so a misconfigured operator finds out from
 - Idempotent by construction — same `#auto`-covers-window mechanism as
   `--auto-log`, not a parallel implementation.
 - Hook never fails the harness event — errors swallowed exactly as
-  `tt-stop-check.mjs` and `activity_command` already do today.
+  `tt-activity-hook.mjs` and `activity_command` already do today.
 - Still never a phase guess — `write_auto_log` is unchanged.
 
 ## Consequences
