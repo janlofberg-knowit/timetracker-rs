@@ -6,6 +6,10 @@ use crate::config;
 /// Not user-configurable: used only for the week-view day-separator rows.
 pub const DAY_HEADER_BG: Color = Color::Rgb(38, 48, 68); // Dark blue for day separators
 
+/// Not user-configurable: used only for the entries table's group-header rows,
+/// and distinct from both [`DAY_HEADER_BG`] and the entry stripe.
+pub const GROUP_HEADER_BG: Color = Color::Rgb(48, 40, 62);
+
 /// Not user-configurable: used only for the background of modal popups.
 pub const OVERLAY_BG: Color = Color::Rgb(28, 28, 28);
 

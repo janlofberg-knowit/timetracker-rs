@@ -4,7 +4,7 @@
 use super::App;
 use super::cache::RowKey;
 use super::types::ViewMode;
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, Local, NaiveDate};
 use std::collections::HashMap;
 
 /// One line of the entries table. `Entry` holds an index into `data.entries`,
@@ -23,7 +23,12 @@ pub(crate) struct GroupHeader {
     pub(crate) tag: String,
     /// Indices into `data.entries`, in the order `filtered_entries` gave them.
     pub(crate) members: Vec<usize>,
+    pub(crate) expanded: bool,
     pub(crate) total: Duration,
+    /// The earliest member's start, and the latest member's end — `None` while
+    /// any member is still running.
+    pub(crate) start: DateTime<Local>,
+    pub(crate) end: Option<DateTime<Local>>,
 }
 
 impl VisibleRow {
@@ -210,7 +215,17 @@ impl App {
         GroupHeader {
             tag: tag.to_string(),
             members: members.to_vec(),
+            expanded: self.expanded_issues.contains(tag),
             total: entries().fold(Duration::zero(), |acc, e| acc + e.duration()),
+            start: entries()
+                .map(|e| e.start_time)
+                .min()
+                .unwrap_or_else(Local::now),
+            end: if entries().any(|e| e.end_time.is_none()) {
+                None
+            } else {
+                entries().filter_map(|e| e.end_time).max()
+            },
         }
     }
 }

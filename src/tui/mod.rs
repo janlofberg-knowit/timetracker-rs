@@ -2397,6 +2397,30 @@ mod tests {
     }
 
     #[test]
+    fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
+        let _guard = env_guard();
+        sandbox("group-render");
+        let mut app = seed_grouped();
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("#tt/174"), "no issue tag:\n{screen}");
+        assert!(
+            screen.contains("▸ 3 entries"),
+            "no collapsed row:\n{screen}"
+        );
+        assert!(screen.contains("3h 0m"), "no summed duration:\n{screen}");
+        assert!(!screen.contains("round"), "a member leaked:\n{screen}");
+        assert!(screen.contains("hand written"), "no plain row:\n{screen}");
+
+        app.expanded_issues.insert("tt/174".to_string());
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("▾ 3 entries"), "no expanded row:\n{screen}");
+        for member in ["round one", "round two", "round three"] {
+            assert!(screen.contains(member), "{member} is missing:\n{screen}");
+        }
+    }
+
+    #[test]
     fn the_agents_panel_marks_a_stale_mark_and_leaves_a_fresh_one_alone() {
         let _guard = env_guard();
         sandbox("stale-render");

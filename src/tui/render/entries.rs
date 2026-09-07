@@ -1,14 +1,13 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
-use crate::tui::types::ViewMode;
+use crate::tui::rows::{GroupHeader, VisibleRow};
 use crate::tui::{App, theme};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
-use std::collections::HashMap;
 
 /// A GitHub-style yearly contribution heatmap: one column per week, one row
 /// per weekday, each cell shaded by `theme::heat_color` for that day's total.
@@ -232,6 +231,48 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
     .style(Style::default().bg(theme::DAY_HEADER_BG))
 }
 
+/// One issue's collapsed row: its span, its member count behind a chevron, and
+/// the members' summed duration.
+fn group_header_row(header: &GroupHeader) -> Row<'static> {
+    let dur_color = theme::duration_color(
+        header.total.num_hours(),
+        theme::theme().entry_duration_high_h,
+        theme::theme().entry_duration_med_h,
+    );
+    let chevron = if header.expanded {
+        "\u{25be}"
+    } else {
+        "\u{25b8}"
+    };
+    let end = header
+        .end
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_default();
+    let icon = if header.end.is_none() {
+        crate::icons::active()
+    } else {
+        ""
+    };
+
+    Row::new(vec![
+        Cell::from(header.start.format("%Y-%m-%d").to_string())
+            .style(Style::default().fg(theme::title())),
+        Cell::from(header.start.format("%H:%M").to_string())
+            .style(Style::default().fg(theme::accent())),
+        Cell::from(end).style(Style::default().fg(theme::inactive())),
+        Cell::from(format!("{chevron} {} entries", header.members.len()))
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+        // Stored tags carry no `#`; the display prefix comes from `format_tags`.
+        Cell::from(crate::tracker::format_tags(std::slice::from_ref(
+            &header.tag,
+        )))
+        .style(Style::default().fg(theme::highlight())),
+        Cell::from(crate::duration::format(header.total)).style(Style::default().fg(dur_color)),
+        Cell::from(icon).style(Style::default().fg(theme::active())),
+    ])
+    .style(Style::default().bg(theme::GROUP_HEADER_BG))
+}
+
 pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
         "Date",
@@ -254,49 +295,36 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         .height(1)
         .style(Style::default().bg(theme::header_bg()));
 
-    let entries = app.filtered_entries();
-
-    let (rows, visual_selected): (Vec<Row>, Option<usize>) = if app.view_mode == ViewMode::Week {
-        let mut day_totals: HashMap<NaiveDate, Duration> = HashMap::new();
-        for entry in &entries {
-            let date = entry.start_time.date_naive();
-            *day_totals.entry(date).or_insert_with(Duration::zero) += entry.duration();
-        }
-
-        let mut rows: Vec<Row> = Vec::new();
-        let mut visual_idx_map: Vec<usize> = Vec::with_capacity(entries.len());
-        let mut current_date: Option<NaiveDate> = None;
-        let mut stripe = false;
-
-        for entry in entries.iter() {
-            let entry_date = entry.start_time.date_naive();
-            if current_date != Some(entry_date) {
-                current_date = Some(entry_date);
+    // One walk over the row model builds the visual rows and, beside them, the
+    // map from the cursor's selectable index to the visual index it draws at.
+    let model = app.rows();
+    let mut rows: Vec<Row> = Vec::with_capacity(model.len());
+    let mut visual_of_selectable: Vec<usize> = Vec::with_capacity(model.len());
+    let mut stripe = false;
+    for row in &model {
+        match row {
+            VisibleRow::DayHeader { date, total } => {
+                // The stripe alternation restarts inside each day partition.
                 stripe = false;
-                let total = day_totals
-                    .get(&entry_date)
-                    .copied()
-                    .unwrap_or_else(Duration::zero);
-                rows.push(day_header_row(entry_date, total));
+                rows.push(day_header_row(*date, *total));
             }
-            visual_idx_map.push(rows.len());
-            rows.push(entry_row(entry, stripe));
-            stripe = !stripe;
+            VisibleRow::GroupHeader(header) => {
+                visual_of_selectable.push(rows.len());
+                rows.push(group_header_row(header));
+            }
+            VisibleRow::Entry(index) => {
+                if let Some(entry) = app.data.entries.get(*index) {
+                    visual_of_selectable.push(rows.len());
+                    rows.push(entry_row(entry, stripe));
+                    stripe = !stripe;
+                }
+            }
         }
-
-        let visual_sel = app
-            .table_state
-            .selected()
-            .and_then(|idx| visual_idx_map.get(idx).copied());
-        (rows, visual_sel)
-    } else {
-        let rows = entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| entry_row(entry, i % 2 != 0))
-            .collect();
-        (rows, app.table_state.selected())
-    };
+    }
+    let visual_selected = app
+        .table_state
+        .selected()
+        .and_then(|idx| visual_of_selectable.get(idx).copied());
 
     // `(tt)` and `#impl`, the CLI's own sigils, so the title needs no legend;
     // an excluded value carries a `-` prefix.
