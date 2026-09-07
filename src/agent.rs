@@ -42,12 +42,14 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             phase,
             summary,
             minutes,
+            data,
         } => item(
             project,
             issue,
             phase,
             summary.as_deref(),
             minutes.as_deref(),
+            data.clone(),
         ),
         AgentCommands::End {
             project,
@@ -57,14 +59,18 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             minutes,
             full,
             trim,
+            data,
         } => end(
             project,
             issue,
             phase,
-            summary.as_deref(),
-            minutes.as_deref(),
-            *full,
-            *trim,
+            Close {
+                summary: summary.as_deref(),
+                minutes: minutes.as_deref(),
+                full: *full,
+                trim: *trim,
+                data: data.clone(),
+            },
         ),
         AgentCommands::Activity(command) => activity_command(command),
         AgentCommands::Audit { auto_log } => run_audit(*auto_log),
@@ -309,6 +315,7 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
         // The row is one contiguous active stretch; nothing here may cut it again.
         trim: false,
         ended_at: Some(item.end),
+        data: None,
     })
 }
 
@@ -320,13 +327,22 @@ fn item(
     phase: &str,
     summary: Option<&str>,
     minutes: Option<&str>,
+    data: Option<serde_json::Value>,
 ) -> Result<()> {
     let (Some(summary), Some(minutes)) = (summary, minutes) else {
         eprintln!("tt: usage: tt agent item <project> <issue|-> <phase> <summary> <minutes>");
         std::process::exit(64);
     };
     let minutes = whole_minutes(minutes);
-    log_entry(project, issue, phase, summary, minutes, Span::unmarked())
+    log_entry(
+        project,
+        issue,
+        phase,
+        summary,
+        minutes,
+        Span::unmarked(),
+        data,
+    )
 }
 
 /// A minutes argument, or exit 64 with `minutes must be a whole number, got '<x>'`.
@@ -368,6 +384,7 @@ fn log_entry(
     summary: &str,
     minutes: i64,
     span: Span,
+    data: Option<serde_json::Value>,
 ) -> Result<()> {
     commands::log(commands::LogRequest {
         description: description(project, issue, phase, summary),
@@ -377,7 +394,18 @@ fn log_entry(
         idle: span.idle,
         trim: span.trim,
         ended_at: span.ended_at,
+        data,
     })
+}
+
+/// Everything `tt agent end` closes a phase with apart from the phase itself, so the
+/// phase stays three plain arguments.
+struct Close<'a> {
+    summary: Option<&'a str>,
+    minutes: Option<&'a str>,
+    full: bool,
+    trim: bool,
+    data: Option<serde_json::Value>,
 }
 
 /// `tt agent end <project> <issue|-> <phase> <summary> [minutes|--full|--trim]`: close a
@@ -385,15 +413,14 @@ fn log_entry(
 /// file; only a phase with no bare beat measures to now. A flagged silence with nothing
 /// said about it **refuses** the close. Explicit minutes win over both flags and skip the
 /// mark's timestamps; `--full` logs the measured span, `--trim` it minus every gap.
-fn end(
-    project: &str,
-    issue: &str,
-    phase: &str,
-    summary: Option<&str>,
-    minutes: Option<&str>,
-    full: bool,
-    trim: bool,
-) -> Result<()> {
+fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
+    let Close {
+        summary,
+        minutes,
+        full,
+        trim,
+        data,
+    } = close;
     let Some(summary) = summary else {
         // Hand-checked: a required positional would exit 2, not 64.
         eprintln!(
@@ -478,6 +505,7 @@ fn end(
             trim: split_at_idle,
             ended_at: anchor,
         },
+        data,
     )?;
     // Cleared only once the entry is recorded; a refusal leaves the mark and its beats.
     if let Err(err) = marks::cancel_in(&dir, project, issue, phase) {

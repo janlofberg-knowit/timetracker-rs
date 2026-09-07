@@ -1,7 +1,7 @@
 //! The clap surface: what `tt`'s arguments are. The command implementations
 //! they dispatch to live in `src/commands.rs`.
 
-use chrono::{Duration, Local, NaiveDate, TimeZone};
+use chrono::{Duration, Local, NaiveDate, NaiveTime, TimeZone};
 use clap::builder::PossibleValuesParser;
 use clap::{Parser, Subcommand};
 use clap_complete::ArgValueCandidates;
@@ -24,8 +24,15 @@ pub enum Commands {
         #[arg(required = true)]
         description: Vec<String>,
         /// Project this entry belongs to
-        #[arg(long, add = ArgValueCandidates::new(completions::projects))]
+        #[arg(short = 'p', long, add = ArgValueCandidates::new(completions::projects))]
         project: Option<String>,
+        /// Back-date the start to a time of day today, like "9.30", "9:30",
+        /// "0930" or "9". A time still to come today is a usage error.
+        #[arg(short = 's', long = "start", value_name = "TIME", value_parser = parse_clock)]
+        started_at: Option<NaiveTime>,
+        /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
+        #[arg(long, value_parser = parse_data)]
+        data: Option<serde_json::Value>,
     },
     /// Stop the current active task
     Stop,
@@ -54,6 +61,9 @@ pub enum Commands {
         /// silent no-op.
         #[arg(long, requires = "idle")]
         trim: bool,
+        /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
+        #[arg(long, value_parser = parse_data)]
+        data: Option<serde_json::Value>,
     },
     /// Show all entries for today
     Today,
@@ -190,6 +200,9 @@ pub enum AgentCommands {
         summary: Option<String>,
         /// Whole minutes, rounded up to the nearest 5 minutes
         minutes: Option<String>,
+        /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
+        #[arg(long, value_parser = parse_data)]
+        data: Option<serde_json::Value>,
     },
     /// Close a marked phase, measuring it to its last heartbeat
     End {
@@ -213,6 +226,9 @@ pub enum AgentCommands {
         /// each one
         #[arg(long)]
         trim: bool,
+        /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
+        #[arg(long, value_parser = parse_data)]
+        data: Option<serde_json::Value>,
     },
     /// Hook-only activity ledger, hidden from `--help` — never called by the
     /// model. See docs/decisions/0001-agent-activity-tracking.md.
@@ -303,6 +319,40 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
     crate::duration::parse(value).ok_or_else(|| {
         format!(
             "expected a duration like `1h30m`, `45m`, `2h` or bare minutes `90`, got `{}`",
+            value
+        )
+    })
+}
+
+/// Parse one `--data` value into the entry's custom data. Invalid JSON — or JSON
+/// that isn't an object — is a usage error, never an entry that silently dropped
+/// the field. Passing the flag means meaning it, so an empty value is refused too.
+fn parse_data(value: &str) -> Result<serde_json::Value, String> {
+    crate::entry_data::parse(value)?
+        .ok_or_else(|| "expected a JSON object, got an empty value".to_string())
+}
+
+/// Parse one `-s/--start` value: a time of day today, written the way a person
+/// says it — `9.30`, `9:30`, `0930` or a bare `9`. The date is not part of it;
+/// `commands::start` resolves it against today and rejects a future time.
+fn parse_clock(value: &str) -> Result<NaiveTime, String> {
+    let malformed = || {
+        format!(
+            "expected a time of day like `9.30`, `9:30`, `0930` or `9`, got `{}`",
+            value
+        )
+    };
+    let raw = value.trim();
+    let (hour, minute) = match raw.split_once([':', '.']) {
+        Some((hour, minute)) => (hour, minute),
+        // No separator: `HMM`/`HHMM` is a clock, anything shorter is a bare hour.
+        None if raw.len() > 2 => raw.split_at(raw.len() - 2),
+        None => (raw, "0"),
+    };
+    let field = |raw: &str| raw.parse::<u32>().map_err(|_| malformed());
+    NaiveTime::from_hms_opt(field(hour)?, field(minute)?, 0).ok_or_else(|| {
+        format!(
+            "`{}` is not a time on the clock — hours are 0-23, minutes 0-59",
             value
         )
     })
@@ -434,11 +484,101 @@ mod tests {
         );
     }
 
+    /// #72: a `--data` value that is not a JSON object is a usage error, so no
+    /// command can record an entry whose custom data was silently dropped.
+    #[test]
+    fn a_malformed_data_value_is_a_usage_error() {
+        for bad in [r#"{"a": }"#, "{", "not json", "[1,2]", "42", ""] {
+            let parsed = Cli::try_parse_from(["tt", "log", "-d", "x", "-t", "5m", "--data", bad]);
+            assert!(parsed.is_err(), "`{bad}` parsed instead of failing");
+        }
+    }
+
+    #[test]
+    fn a_json_object_parses_on_every_command_that_takes_data() {
+        let object = r#"{"pr": 42, "nested": {"ok": true}}"#;
+        let expected: serde_json::Value = serde_json::from_str(object).unwrap();
+
+        for args in [
+            vec!["tt", "start", "x", "--data", object],
+            vec!["tt", "log", "-d", "x", "-t", "5m", "--data", object],
+            vec![
+                "tt", "agent", "item", "p", "-", "impl", "s", "5", "--data", object,
+            ],
+            vec![
+                "tt", "agent", "end", "p", "-", "impl", "s", "--data", object,
+            ],
+        ] {
+            let cli = Cli::try_parse_from(&args)
+                .unwrap_or_else(|e| panic!("{args:?} failed to parse: {e}"));
+            let data = match cli.command {
+                Commands::Start { data, .. } | Commands::Log { data, .. } => data,
+                Commands::Agent { command } => match command {
+                    AgentCommands::Item { data, .. } | AgentCommands::End { data, .. } => data,
+                    _ => panic!("not a data-carrying agent command"),
+                },
+                _ => panic!("not a data-carrying command"),
+            };
+            assert_eq!(data, Some(expected.clone()), "{args:?}");
+        }
+    }
+
+    /// Omitting the flag leaves the field unset, so nothing is written to it.
+    #[test]
+    fn data_is_none_when_the_flag_is_absent() {
+        let cli = Cli::try_parse_from(["tt", "log", "-d", "x", "-t", "5m"]).unwrap();
+        match cli.command {
+            Commands::Log { data, .. } => assert_eq!(data, None),
+            _ => panic!("not a log command"),
+        }
+    }
+
     #[test]
     fn a_well_formed_idle_value_parses_to_the_epoch_seconds_given() {
         let interval = parse_idle("1700000000-1700000600").unwrap();
         assert_eq!(interval.start.timestamp(), 1_700_000_000);
         assert_eq!(interval.end.timestamp(), 1_700_000_600);
         assert_eq!(interval.duration(), chrono::Duration::minutes(10));
+    }
+    /// The short forms are the point of the flags: `-p` and `-s` mean the same
+    /// as `--project` and `--start`.
+    #[test]
+    fn start_takes_short_forms_for_project_and_start_time() {
+        let parsed = Cli::try_parse_from(["tt", "start", "-p", "tt", "-s", "9.30", "writing"])
+            .expect("short flags")
+            .command;
+        match parsed {
+            Commands::Start {
+                description,
+                project,
+                started_at,
+                data,
+            } => {
+                assert_eq!(description, vec!["writing".to_string()]);
+                assert_eq!(project.as_deref(), Some("tt"));
+                assert_eq!(started_at, NaiveTime::from_hms_opt(9, 30, 0));
+                assert_eq!(data, None, "no --data was passed");
+            }
+            _ => panic!("not a start command"),
+        }
+    }
+
+    #[test]
+    fn a_clock_time_is_read_the_way_a_person_writes_one() {
+        let at = |h, m| Ok(NaiveTime::from_hms_opt(h, m, 0).unwrap());
+        assert_eq!(parse_clock("9.30"), at(9, 30));
+        assert_eq!(parse_clock("9:30"), at(9, 30));
+        assert_eq!(parse_clock("930"), at(9, 30));
+        assert_eq!(parse_clock("0930"), at(9, 30));
+        assert_eq!(parse_clock("9"), at(9, 0));
+        assert_eq!(parse_clock("13:05"), at(13, 5));
+    }
+
+    #[test]
+    fn a_time_that_is_not_on_the_clock_is_a_usage_error() {
+        assert!(parse_clock("25:00").is_err(), "no 25th hour");
+        assert!(parse_clock("9:70").is_err(), "no 70th minute");
+        assert!(parse_clock("half nine").is_err());
+        assert!(parse_clock("").is_err());
     }
 }

@@ -8,6 +8,7 @@ mod commands;
 mod completions;
 mod config;
 mod duration;
+mod entry_data;
 mod icons;
 mod marks;
 mod paths;
@@ -65,7 +66,9 @@ fn main() -> Result<()> {
         Commands::Start {
             description,
             project,
-        } => commands::start(description, project),
+            started_at,
+            data,
+        } => commands::start(description, project, started_at, data),
         Commands::Stop => commands::stop(),
         Commands::Log {
             description,
@@ -74,6 +77,7 @@ fn main() -> Result<()> {
             project,
             idle,
             trim,
+            data,
         } => commands::log(commands::LogRequest {
             description,
             time,
@@ -82,6 +86,7 @@ fn main() -> Result<()> {
             idle,
             trim,
             ended_at: None,
+            data,
         }),
         Commands::Today => commands::today(),
         Commands::Report {
