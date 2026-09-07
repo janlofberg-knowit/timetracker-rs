@@ -250,6 +250,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         // Detail goes first; this zone clips from the right at 80 columns.
         Span::styled("Enter", Style::default().fg(theme::accent())),
         Span::styled(": detail | ", Style::default().fg(theme::inactive())),
+        Span::styled("g", Style::default().fg(theme::accent())),
+        Span::styled(": group | ", Style::default().fg(theme::inactive())),
         Span::styled("t", Style::default().fg(theme::accent())),
         Span::styled(": today | ", Style::default().fg(theme::inactive())),
         Span::styled("/", Style::default().fg(theme::accent())),

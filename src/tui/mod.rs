@@ -2421,6 +2421,25 @@ mod tests {
     }
 
     #[test]
+    fn the_group_key_is_listed_in_the_footer_and_in_the_help_overlay() {
+        let _guard = env_guard();
+        sandbox("group-key-hints");
+        let mut app = seed_grouped();
+
+        let footer = frame_lines(&mut app, 200, 30).join("\n");
+        assert!(footer.contains("g: group"), "footer legend:\n{footer}");
+        assert!(footer.contains("Total: "), "footer total:\n{footer}");
+        assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
+
+        app.input_mode = InputMode::Help;
+        let help = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(
+            help.contains("expand / collapse the issue group"),
+            "help popup:\n{help}"
+        );
+    }
+
+    #[test]
     fn the_agents_panel_marks_a_stale_mark_and_leaves_a_fresh_one_alone() {
         let _guard = env_guard();
         sandbox("stale-render");

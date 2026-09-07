@@ -70,6 +70,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => app.reload()?,
         KeyCode::Char('a') => app.start_adding(),
         KeyCode::Char('e') => app.start_editing(),
+        KeyCode::Char('g') => app.toggle_group_at_cursor(),
         KeyCode::Char('/') => app.start_search(),
         KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
         KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
@@ -585,6 +586,24 @@ mod tests {
         press(&mut app, KeyCode::Char('h'));
         press(&mut app, KeyCode::Char('t'));
         assert_eq!(app.selected_date, Local::now().date_naive());
+
+        // `g` needs a group under the cursor to have anything to toggle.
+        seed(
+            vec![
+                tagged(0, "round one", &["tt/174"], 4),
+                tagged(1, "round two", &["tt/174"], 3),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+        press(&mut app, KeyCode::Char('g'));
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "`g` should reach the group toggle"
+        );
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.expanded_issues.is_empty(), "`g` should collapse again");
 
         // `s` stops the running entry through the same key path.
         let mut open = entry(1, "running");
