@@ -254,8 +254,8 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
     .style(Style::default().bg(theme::DAY_HEADER_BG))
 }
 
-/// One issue's collapsed row: its span, its member count behind a chevron, and
-/// the members' summed duration.
+/// One issue's collapsed row: its span, its id and member count behind a
+/// chevron, and the members' summed duration.
 fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry]) -> Row<'static> {
     let total = members_total(entries, &header.members);
     let dur_color = theme::duration_color(
@@ -284,8 +284,14 @@ fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry])
         Cell::from(header.start.format("%H:%M").to_string())
             .style(Style::default().fg(theme::accent())),
         Cell::from(end).style(Style::default().fg(theme::inactive())),
-        Cell::from(format!("{chevron} {} entries", header.members.len()))
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+        // The issue id reads in the Description column too, so a header still
+        // says what it is once the Tags column has clipped.
+        Cell::from(format!(
+            "{chevron} {} - {} entries",
+            header.tag,
+            header.members.len()
+        ))
+        .style(Style::default().add_modifier(Modifier::BOLD)),
         // Stored tags carry no `#`; the display prefix comes from `format_tags`.
         Cell::from(crate::tracker::format_tags(std::slice::from_ref(
             &header.tag,
