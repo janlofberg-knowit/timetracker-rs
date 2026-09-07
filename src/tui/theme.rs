@@ -10,6 +10,10 @@ pub const DAY_HEADER_BG: Color = Color::Rgb(38, 48, 68); // Dark blue for day se
 /// and distinct from both [`DAY_HEADER_BG`] and the entry stripe.
 pub const GROUP_HEADER_BG: Color = Color::Rgb(48, 40, 62);
 
+/// Not user-configurable: the faint tint on an expanded group's member rows,
+/// a darker shade of [`GROUP_HEADER_BG`] and distinct from the entry stripe.
+pub const MEMBER_BG: Color = Color::Rgb(32, 28, 44);
+
 /// Not user-configurable: used only for the background of modal popups.
 pub const OVERLAY_BG: Color = Color::Rgb(28, 28, 28);
 

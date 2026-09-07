@@ -173,7 +173,9 @@ pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
+/// One entry's row. A `member` row is a group's, and carries both the indent
+/// and the tint rather than the stripe.
+fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool, member: bool) -> Row<'_> {
     let hours = entry.duration().num_hours();
     let dur_color = theme::duration_color(
         hours,
@@ -187,17 +189,22 @@ fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
         Style::default().fg(theme::inactive())
     };
 
-    let row_style = if stripe {
-        Style::default().bg(Color::Rgb(35, 35, 35))
+    let row_style = match (member, stripe) {
+        (true, _) => Style::default().bg(theme::MEMBER_BG),
+        (false, true) => Style::default().bg(Color::Rgb(35, 35, 35)),
+        (false, false) => Style::default(),
+    };
+    let description = if member {
+        format!("  {}", entry.description)
     } else {
-        Style::default()
+        entry.description.clone()
     };
 
     Row::new(vec![
         Cell::from(entry.format_date()).style(Style::default().fg(theme::title())),
         Cell::from(entry.format_start_time()).style(Style::default().fg(theme::accent())),
         Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive())),
-        Cell::from(entry.description.clone()),
+        Cell::from(description),
         Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight())),
         Cell::from(entry.format_duration()).style(Style::default().fg(dur_color)),
         Cell::from(entry.status_icon()).style(status_style),
@@ -312,11 +319,16 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
                 visual_of_selectable.push(rows.len());
                 rows.push(group_header_row(header));
             }
-            VisibleRow::Entry(index) => {
+            VisibleRow::Entry { index, group } => {
                 if let Some(entry) = app.data.entries.get(*index) {
                     visual_of_selectable.push(rows.len());
-                    rows.push(entry_row(entry, stripe));
-                    stripe = !stripe;
+                    let member = group.is_some();
+                    rows.push(entry_row(entry, stripe, member));
+                    // A member carries no stripe, so an expansion leaves the
+                    // top-level alternation around it as it was.
+                    if !member {
+                        stripe = !stripe;
+                    }
                 }
             }
         }

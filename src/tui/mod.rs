@@ -2188,6 +2188,24 @@ mod tests {
             .collect()
     }
 
+    /// The background colour of the drawn row carrying `needle`.
+    fn row_bg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        let width = 120;
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = (0..30)
+            .find(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no drawn row carries {needle}"));
+        // Column 3 is inside the table and left of every cursor marker.
+        buffer[(3, row)].bg
+    }
+
     /// One rendered frame plus the cursor it asked for.
     fn frame_cursor(app: &mut App, width: u16, height: u16) -> (u16, u16) {
         let mut terminal =
@@ -2418,6 +2436,36 @@ mod tests {
         for member in ["round one", "round two", "round three"] {
             assert!(screen.contains(member), "{member} is missing:\n{screen}");
         }
+    }
+
+    /// A member is told apart from a top-level row two ways at once, so neither
+    /// a narrow terminal nor a colour-blind palette leaves it ambiguous.
+    #[test]
+    fn an_expanded_member_row_is_indented_and_tinted() {
+        let _guard = env_guard();
+        sandbox("group-member-style");
+        let mut app = seed_grouped();
+        app.expanded_issues.insert("tt/174".to_string());
+        // Off the group header, whose own colour the cursor would override.
+        app.select_by_id(3);
+
+        let screen = frame_lines(&mut app, 120, 30).join("\n");
+        assert!(
+            screen.contains("10:00   round one"),
+            "the member is not indented:\n{screen}"
+        );
+        assert!(
+            screen.contains("10:00 hand written"),
+            "a top-level row moved:\n{screen}"
+        );
+
+        assert_eq!(row_bg(&mut app, "round one"), theme::MEMBER_BG);
+        assert_eq!(row_bg(&mut app, "▾ 3 entries"), theme::GROUP_HEADER_BG);
+        assert_ne!(
+            row_bg(&mut app, "hand written"),
+            theme::MEMBER_BG,
+            "a top-level row was tinted"
+        );
     }
 
     #[test]

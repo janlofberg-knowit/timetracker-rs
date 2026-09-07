@@ -163,7 +163,7 @@ impl App {
     /// The entry under the cursor, or `None` on a group header — which is what
     /// makes `e`, `d` and `t` inert there, with no guard of their own.
     pub(crate) fn selected_entry(&self) -> Option<&crate::tracker::TimeEntry> {
-        let super::rows::VisibleRow::Entry(index) = self.selected_row()? else {
+        let super::rows::VisibleRow::Entry { index, .. } = self.selected_row()? else {
             return None;
         };
         self.data.entries.get(index)

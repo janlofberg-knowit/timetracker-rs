@@ -11,9 +11,17 @@ use std::collections::HashMap;
 /// never a reference, so the row cache does not borrow `data`.
 #[derive(Clone, PartialEq)]
 pub(crate) enum VisibleRow {
-    DayHeader { date: NaiveDate, total: Duration },
+    DayHeader {
+        date: NaiveDate,
+        total: Duration,
+    },
     GroupHeader(GroupHeader),
-    Entry(usize),
+    Entry {
+        index: usize,
+        /// The item tag of the expanded group this row sits under; `None` for a
+        /// top-level row.
+        group: Option<String>,
+    },
 }
 
 /// One issue's entries, summarised for the collapsed row.
@@ -70,7 +78,7 @@ impl App {
         self.with_rows(|rows| {
             let selectable = || rows.iter().filter(|row| row.is_selectable());
             selectable()
-                .position(|row| matches!(row, VisibleRow::Entry(index) if is_id(index)))
+                .position(|row| matches!(row, VisibleRow::Entry { index, .. } if is_id(index)))
                 .or_else(|| {
                     selectable().position(|row| {
                         matches!(row, VisibleRow::GroupHeader(header)
@@ -84,7 +92,7 @@ impl App {
     /// selected group header, so an anchor survives a collapse.
     pub(crate) fn cursor_anchor_id(&self) -> Option<u64> {
         let index = match self.selected_row()? {
-            VisibleRow::Entry(index) => index,
+            VisibleRow::Entry { index, .. } => index,
             VisibleRow::GroupHeader(header) => *header.members.first()?,
             VisibleRow::DayHeader { .. } => return None,
         };
@@ -181,6 +189,7 @@ impl App {
                 slots.push(Slot::Entry(*index));
                 continue;
             };
+
             match seen.get(tag) {
                 Some(group) => groups[*group].1.push(*index),
                 None => {
@@ -191,18 +200,22 @@ impl App {
             }
         }
 
+        let top_level = |index: usize| VisibleRow::Entry { index, group: None };
         for slot in slots {
             match slot {
-                Slot::Entry(index) => rows.push(VisibleRow::Entry(index)),
+                Slot::Entry(index) => rows.push(top_level(index)),
                 Slot::Group(group) => {
                     let (tag, members) = &groups[group];
                     if members.len() < 2 {
-                        rows.push(VisibleRow::Entry(members[0]));
+                        rows.push(top_level(members[0]));
                         continue;
                     }
                     rows.push(VisibleRow::GroupHeader(self.summarise(tag, members)));
                     if self.expanded_issues.contains(*tag) {
-                        rows.extend(members.iter().map(|index| VisibleRow::Entry(*index)));
+                        rows.extend(members.iter().map(|index| VisibleRow::Entry {
+                            index: *index,
+                            group: Some(tag.to_string()),
+                        }));
                     }
                 }
             }
@@ -271,7 +284,7 @@ mod tests {
     }
 
     /// Each row as one line: `day <date> <total>`, `group <tag> <members>
-    /// <total>`, or `entry <description>`.
+    /// <total>`, or `entry <description>`, a member's indented as it draws.
     fn shape(app: &App) -> Vec<String> {
         app.rows()
             .iter()
@@ -285,9 +298,11 @@ mod tests {
                     header.members.len(),
                     crate::duration::format(header.total)
                 ),
-                VisibleRow::Entry(index) => {
-                    format!("entry {}", app.data.entries[*index].description)
-                }
+                VisibleRow::Entry { index, group } => format!(
+                    "entry {}{}",
+                    if group.is_some() { "  " } else { "" },
+                    app.data.entries[*index].description
+                ),
             })
             .collect()
     }
@@ -348,9 +363,9 @@ mod tests {
             shape(&app),
             vec![
                 "group tt/8 3 1h 30m",
-                "entry round three",
-                "entry round two",
-                "entry round one",
+                "entry   round three",
+                "entry   round two",
+                "entry   round one",
             ]
         );
     }
@@ -451,7 +466,11 @@ mod tests {
         app.expanded_issues.insert("tt/8".to_string());
         assert_eq!(
             shape(&app),
-            vec!["group tt/8 2 1h 0m", "entry round two", "entry round one"]
+            vec![
+                "group tt/8 2 1h 0m",
+                "entry   round two",
+                "entry   round one"
+            ]
         );
         app.expanded_issues.remove("tt/8");
         assert_eq!(shape(&app), vec!["group tt/8 2 1h 0m"]);
