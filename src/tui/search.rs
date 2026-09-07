@@ -22,6 +22,11 @@ impl App {
         self.with_filtered_indices(<[usize]>::len)
     }
 
+    /// The cached indices into `data.entries`, copied out for the row model.
+    pub(super) fn filtered_indices(&self) -> Vec<usize> {
+        self.with_filtered_indices(<[usize]>::to_vec)
+    }
+
     /// Run `f` over the cached row indices, recomputing them first if any input
     /// the [`FilterKey`] covers has moved since they were built.
     fn with_filtered_indices<T>(&self, f: impl FnOnce(&[usize]) -> T) -> T {

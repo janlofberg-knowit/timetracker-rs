@@ -4,7 +4,7 @@ use crate::marks::Mark;
 use crate::storage::{PathStamp, load_data};
 use crate::tracker::TimeData;
 use anyhow::Result;
-use cache::{FilterKey, ScopeKey};
+use cache::{FilterKey, RowKey, ScopeKey};
 use chrono::{Local, NaiveDate};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
@@ -24,6 +24,7 @@ mod navigation;
 mod onboarding;
 mod panes;
 mod render;
+mod rows;
 mod search;
 mod summary;
 mod text_input;
@@ -48,6 +49,11 @@ pub(crate) struct App {
     filtered_cache: RefCell<Option<(FilterKey, Vec<usize>)>>,
     /// `pane_values` for `[Projects, Tags]`, with the key they hold for.
     pane_cache: RefCell<Option<(ScopeKey, panes::PaneValues)>>,
+    /// `rows` — the grouped row model — with the key it holds for.
+    rows_cache: RefCell<Option<(RowKey, Vec<rows::VisibleRow>)>>,
+    /// The item tags whose group header is expanded. Keyed on the tag alone, so
+    /// in Week view an issue expands in every day it appears in.
+    pub(crate) expanded_issues: std::collections::HashSet<String>,
     pub(crate) table_state: TableState,
     pub(crate) should_quit: bool,
     pub(crate) view_mode: ViewMode,
@@ -155,6 +161,8 @@ impl App {
             data_revision: 0,
             filtered_cache: RefCell::new(None),
             pane_cache: RefCell::new(None),
+            rows_cache: RefCell::new(None),
+            expanded_issues: std::collections::HashSet::new(),
             store_stamp,
             marks: Vec::new(),
             marks_stamp: None,
