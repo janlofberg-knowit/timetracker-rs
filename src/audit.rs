@@ -14,22 +14,17 @@ use chrono::{DateTime, Local};
 use crate::activity::Session;
 use crate::marks::{self, Lease, Thresholds};
 use crate::time::instant;
-use crate::tracker::{IdleInterval, TimeEntry};
+use crate::tracker::TimeEntry;
 
-/// One activity window with no evidence it was tracked.
+/// One contiguous **active** stretch with no evidence it was tracked: a
+/// window's idle holes are cut out before it becomes a row, so nothing here
+/// reports a hole and an entry covering a row covers it whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unaccounted {
     pub project: String,
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
     pub subagents: usize,
-    /// Idle stretches between subagent-dispatch heartbeats, over
-    /// [`max_gap_minutes`] — see [`write_auto_log`](crate::agent) and
-    /// docs/decisions/0003-auto-log-on-stop.md ("3b. Idle time must be
-    /// subtracted before a window is auto-logged"). `describe()` still
-    /// reports the raw wall-clock span; only an auto-logged entry's
-    /// duration is adjusted by this.
-    pub idle: Vec<IdleInterval>,
 }
 
 impl Unaccounted {
@@ -154,30 +149,43 @@ pub fn unaccounted(
                 thresholds,
             );
             let fragments = uncovered_by_entries(project, stretches, entries, now_epoch);
-            // The floor applies to the session's total uncovered time, not to
-            // each fragment.
-            let uncovered: i64 = fragments.iter().map(|(from, to)| (to - from) / 60).sum();
+            // Every row is one contiguous active stretch: no dispatches is not
+            // evidence of silence, so such a session's fragments pass through
+            // whole, and otherwise each fragment is cut at its own idle holes.
+            let active: Vec<(i64, i64)> = if session.subagent_at.is_empty() {
+                fragments
+            } else {
+                fragments
+                    .into_iter()
+                    .flat_map(|fragment| {
+                        marks::gaps_over(
+                            fragment.0,
+                            fragment.1,
+                            &session.subagent_at,
+                            thresholds.gap,
+                        )
+                        .into_iter()
+                        .fold(vec![fragment], |pieces, hole| {
+                            pieces
+                                .into_iter()
+                                .flat_map(|piece| subtract(piece, hole))
+                                .collect()
+                        })
+                    })
+                    .collect()
+            };
+
+            // The floor applies to the session's total active time, not to each
+            // row.
+            let uncovered: i64 = active.iter().map(|(from, to)| (to - from) / 60).sum();
             if uncovered < floor_minutes {
                 return Vec::new();
             }
 
-            fragments
+            active
                 .into_iter()
                 .filter_map(|(from, to)| {
-                    // No dispatches is not evidence of silence, so a session
-                    // with none carries no idle. Computed over the *uncovered*
-                    // stretch, or an auto-logged entry would subtract idle time
-                    // from outside what it reports.
-                    let idle = if session.subagent_at.is_empty() {
-                        Vec::new()
-                    } else {
-                        marks::gaps_over(from, to, &session.subagent_at, thresholds.gap)
-                            .into_iter()
-                            .filter_map(|(a, b)| Some(IdleInterval::new(instant(a)?, instant(b)?)))
-                            .collect()
-                    };
-
-                    // Per fragment, so the rows sum to the session's. With no
+                    // Per row, so the rows sum to the session's. With no
                     // timestamps to split by, the session's own count stands.
                     let subagents = if session.subagent_at.is_empty() {
                         session.subagents
@@ -194,7 +202,6 @@ pub fn unaccounted(
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
-                        idle,
                     })
                 })
                 .collect()
@@ -714,33 +721,62 @@ mod tests {
     }
 
     #[test]
-    fn a_window_with_no_subagent_dispatches_carries_no_idle() {
+    fn a_window_with_no_subagent_dispatches_is_reported_whole() {
         let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
         let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
         assert_eq!(flagged.len(), 1);
-        assert!(flagged[0].idle.is_empty());
+        assert_eq!((flagged[0].start, flagged[0].end), (at(0), at(3 * HOUR)));
     }
 
+    /// Only the stretch up to the last dispatch is active, so a window whose
+    /// dispatches stop early reports the minutes before them and no more.
     #[test]
-    fn a_long_silence_between_dispatches_is_recorded_as_idle() {
-        let _guard = env_guard();
-        crate::storage::env_sandbox("audit-idle-gap");
-        unset("TT_MAX_GAP_MINUTES"); // default: 45
-
-        // A dispatch 10 minutes in, then nothing until the window's tail.
+    fn a_window_active_for_ten_minutes_is_under_the_floor() {
         let sessions = vec![session_with_subagents(
             "tt",
             0,
             Some(3 * HOUR),
             vec![10 * 60],
         )];
-        let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
-        assert_eq!(flagged.len(), 1);
-        // The lead-in before the dispatch is under the 45m threshold and
-        // does not count; the long silence after it does.
-        assert_eq!(flagged[0].idle.len(), 1);
-        assert_eq!(flagged[0].idle[0].start, at(10 * 60));
-        assert_eq!(flagged[0].idle[0].end, at(3 * HOUR));
+        assert!(unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    /// Every row is one contiguous active stretch, so an idle hole is neither
+    /// reported nor billed.
+    #[test]
+    fn a_fragment_is_split_at_its_idle_holes() {
+        let minute = 60;
+        let dispatches: Vec<i64> = [30, 60, 90, 120, 180, 210, 240, 270, 330, 360, 390, 420, 450]
+            .iter()
+            .map(|m| m * minute)
+            .collect();
+        let sessions = vec![session_with_subagents("tt", 0, Some(8 * HOUR), dispatches)];
+        let flagged = unaccounted(&sessions, &[], &[], at(8 * HOUR), FLOOR);
+        assert_eq!(
+            flagged.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
+            vec![
+                (at(330 * minute), at(480 * minute)),
+                (at(180 * minute), at(270 * minute)),
+                (at(0), at(120 * minute)),
+            ]
+        );
+    }
+
+    /// The two holes of the split above, once entries cover the active rows.
+    #[test]
+    fn a_hole_left_by_a_covering_entry_is_never_reported() {
+        let minute = 60;
+        let dispatches: Vec<i64> = [30, 60, 90, 120, 180, 210, 240, 270, 330, 360, 390, 420, 450]
+            .iter()
+            .map(|m| m * minute)
+            .collect();
+        let sessions = vec![session_with_subagents("tt", 0, Some(8 * HOUR), dispatches)];
+        let entries = vec![
+            entry("tt", 0, Some(120 * minute), &["tt", "auto"]),
+            entry("tt", 180 * minute, Some(270 * minute), &["tt", "auto"]),
+            entry("tt", 330 * minute, Some(480 * minute), &["tt", "auto"]),
+        ];
+        assert!(unaccounted(&sessions, &[], &entries, at(8 * HOUR), 60).is_empty());
     }
 
     #[test]

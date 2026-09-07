@@ -75,6 +75,12 @@ entry as covering a window. It must also treat a `#auto`-tagged entry as
 covering, or the very entry `--auto-log` just wrote would still show up as
 unaccounted on the next run — the mechanism would fight itself.
 
+### 4. A row is one contiguous active stretch
+
+`unaccounted()` splits each uncovered fragment at its idle gaps over
+`agent.max_gap_minutes`, so an idle hole is never reported. An `#auto` entry
+therefore spans its row whole and covers it on the next run.
+
 ## Guardrails
 
 - **Off by default.** Writing to the store without a human or an agent's

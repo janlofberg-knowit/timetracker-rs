@@ -163,6 +163,24 @@ impl Case {
         fs::write(self.activity.join(session_id), body).unwrap();
     }
 
+    /// The same, with one `subagent=` line per dispatch epoch.
+    pub fn write_session_with_dispatches(
+        &self,
+        session_id: &str,
+        project: &str,
+        start: i64,
+        end: Option<i64>,
+        dispatches: &[i64],
+    ) {
+        self.write_session(session_id, project, start, end);
+        let path = self.activity.join(session_id);
+        let mut body = fs::read_to_string(&path).unwrap();
+        for at in dispatches {
+            body.push_str(&format!("subagent={at}\n"));
+        }
+        fs::write(path, body).unwrap();
+    }
+
     /// Run `tt <args>` with **no** `agent` prefix, for the store-reading commands.
     pub fn run_bare(&self, args: &[&str]) -> Run {
         self.run_with(args, true)

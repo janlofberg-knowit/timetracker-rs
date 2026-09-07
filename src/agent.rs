@@ -303,8 +303,8 @@ fn run_audit(auto_log: bool) -> Result<()> {
         }
     }
 
-    // Re-read: the entries just written now cover their own windows, so the
-    // report below must not still call them unaccounted.
+    // Re-read: the entries just written cover their own rows, so the report
+    // below must not still call them unaccounted.
     let remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
@@ -337,8 +337,10 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
         time: Duration::minutes(round_five(minutes)),
         extra_tags: Vec::new(),
         project: Some(item.project.clone()),
-        idle: item.idle.clone(),
-        trim: true,
+        idle: Vec::new(),
+        // The row is already one contiguous active stretch, so the entry spans
+        // it whole; nothing here may cut it a second time.
+        trim: false,
         ended_at: Some(item.end),
     })
 }

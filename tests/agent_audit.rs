@@ -4,7 +4,7 @@
 //! docs/decisions/0002-auto-logging-unaccounted-activity.md.
 
 mod common;
-use common::{Case, now};
+use common::{Case, clock, now};
 
 const HOUR: i64 = 3600;
 
@@ -134,9 +134,24 @@ fn running_auto_log_twice_logs_the_window_once() {
     );
 }
 
-/// Item 10's regression: `Lease::close_command` prints the mark's sanitised
-/// project, so the entry an operator logs by following a `[stale]` row has to
-/// be one the audit's entry join accepts.
+/// The minutes an 8h session with two 60-minute idle holes reports, as three
+/// contiguous active stretches. Counted against the dispatches below it: a
+/// removed dispatch leaves a 60m hole between its neighbours.
+const ROWS: [(i64, i64); 3] = [(0, 120), (180, 270), (330, 480)];
+
+/// Every 30 minutes over the 8h window, minus the one at 150m and the one at
+/// 300m.
+fn dispatches(start: i64) -> Vec<i64> {
+    (1..16)
+        .map(|i| i * 30)
+        .filter(|m| ![150, 300].contains(m))
+        .map(|m| start + m * 60)
+        .collect()
+}
+
+/// `Lease::close_command` prints the mark's sanitised project, so the entry an
+/// operator logs by following a `[stale]` row has to be one the audit's entry
+/// join accepts.
 #[test]
 fn an_entry_logged_with_the_printed_project_silences_the_next_check() {
     let case = Case::new("audit-close-line-covers");
@@ -187,5 +202,74 @@ fn fragments_under_the_floor_are_reported_but_never_auto_logged() {
     assert!(
         case.store().entries.is_empty(),
         "a fragment under auto_log_after_minutes must never be written"
+    );
+}
+
+/// An idle hole is never reported: the rows are the active stretches around
+/// it, and an `#auto` entry spans exactly the row it was written for, so no
+/// later audit can flag the hole.
+#[test]
+fn a_session_with_two_idle_holes_reports_three_active_rows() {
+    let case = Case::new("audit-idle-holes");
+    // The floor and the auto-log threshold both under the shortest row, so
+    // every row clears them.
+    case.write_config("[agent]\nmax_unvouched_minutes = 60\nauto_log_after_minutes = 61\n");
+    let start = now() - 8 * HOUR;
+    case.write_session_with_dispatches(
+        "sess-1",
+        "repro",
+        start,
+        Some(start + 8 * HOUR),
+        &dispatches(start),
+    );
+
+    let run = case.run(&["audit"]);
+    run.assert_status(0);
+    let rows: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.contains("repro"))
+        .collect();
+    assert_eq!(rows.len(), 3, "{:?}", run.stdout);
+    for (row, (from, to)) in rows.iter().rev().zip(ROWS) {
+        assert!(
+            row.contains(&format!("since {}", clock(start + from * 60))),
+            "{row} is not the row starting at {from}m"
+        );
+        let minutes = to - from;
+        assert!(
+            row.contains(&format!("({}h {}m", minutes / 60, minutes % 60)),
+            "{row} is not {minutes}m long"
+        );
+    }
+
+    let logged = case.run(&["audit", "--auto-log"]);
+    logged.assert_status(0);
+    logged.assert_stdout_has("No unaccounted agent activity.");
+    let mut spans: Vec<(i64, i64)> = case
+        .store()
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.start_time.timestamp() - start,
+                entry.end_time.unwrap().timestamp() - start,
+            )
+        })
+        .collect();
+    spans.sort();
+    assert_eq!(
+        spans,
+        ROWS.map(|(from, to)| (from * 60, to * 60)).to_vec(),
+        "each entry spans exactly the row it was written for"
+    );
+
+    let again = case.run(&["audit", "--auto-log"]);
+    again.assert_status(0);
+    again.assert_stdout_has("No unaccounted agent activity.");
+    assert_eq!(
+        case.store().entries.len(),
+        3,
+        "a hole left between the rows must never be re-reported or re-logged"
     );
 }

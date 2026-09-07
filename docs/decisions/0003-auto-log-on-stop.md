@@ -123,11 +123,11 @@ under `#auto`.
 This matters more once `Stop`-triggered writes remove the human from the
 loop entirely: today, an operator running `--auto-log` by hand can eyeball
 `describe()`'s printed span before trusting it; a hook cannot. Before wiring
-`auto_log_on_stop`, `write_auto_log` (or `unaccounted` itself) should
-subtract idle intervals over `max_gap_minutes` from the logged span, the
-same way `split_at_idle` already does for mark-based closes — so an
-auto-logged entry reports only genuinely-active time, not wall-clock time
-including idle. This is really an `--auto-log` correctness fix, not
+`auto_log_on_stop`, the idle stretches over `max_gap_minutes` have to leave
+the logged span — which `unaccounted` now does by splitting each uncovered
+fragment at those stretches before it becomes a row, so an auto-logged entry
+reports only genuinely-active time, not wall-clock time including idle. This
+is really an `--auto-log` correctness fix, not
 specific to the `Stop`-hook wiring, but it becomes load-bearing once a human
 is no longer there to notice an inflated window before it lands. Tracked as
 its own issue (see below) since it can and should land independently,
