@@ -3,9 +3,9 @@
 //! This module owns *every* fact about the format: one file per phase at
 //! `<mark dir>/<project>.<issue>.<phase>` holding a unix-seconds start timestamp,
 //! where the mark directory is `$TT_MARK_DIR` if set, else `marks` inside this
-//! app's cache directory. The name is sanitised `[^A-Za-z0-9._-]` → `_`, so a
-//! segment may itself contain `.` or `_` and the name is **not** losslessly
-//! splittable. Heartbeats are one append-only file per mark in a `beats/`
+//! app's cache directory. Each segment is sanitised on its own — `.` → `-` and
+//! every other character outside `[A-Za-z0-9_-]` → `_` — so a name holds exactly
+//! the two dots that join it. Heartbeats are one append-only file per mark in a `beats/`
 //! subdirectory, and an unfinished close leaves a `closing/` entry beside them.
 //!
 //! A beat line has two provenances: `<epoch>` is the model's own `tt agent
@@ -300,14 +300,13 @@ fn read_mark(dir: &Path, name: &OsString) -> Option<Mark> {
     })
 }
 
-/// Split a mark filename back into `<project>.<issue>.<phase>`. Lossy: any
-/// segment may contain a `.`, so the split takes the **first** and **last** one
-/// and a pathological name degrades to an imperfect label.
+/// Split a mark filename back into `<project>.<issue>.<phase>`. Every key
+/// [`mark_key`] wrote holds exactly two dots; a name with more is not one of
+/// ours, and its extra dots land in the middle field.
 fn split_key(name: &str) -> (String, Option<String>, String) {
     let issue = |raw: &str| (raw != "-").then(|| raw.to_string());
 
     match name.split_once('.') {
-        // Extra dots land in the middle field.
         Some((project, rest)) => match rest.rsplit_once('.') {
             Some((mid, phase)) => (project.to_string(), issue(mid), phase.to_string()),
             // One `.`: an issue-less `<project>.<phase>`, as `-` produces.
@@ -343,12 +342,15 @@ pub enum Touch {
     NoMark,
 }
 
-/// The sanitised filename for one phase: `<project>.<issue>.<phase>` with every
-/// character outside `[A-Za-z0-9._-]` replaced by `_`, and the `-` sentinel
-/// written literally. Build every mark and beats path from this one key, or a
-/// phase can end up with beats it cannot find again.
+/// The sanitised filename for one phase: `<project>.<issue>.<phase>`, each
+/// segment sanitised on its own and the `-` sentinel written literally. Sanitise
+/// the segments, never the joined string — [`crate::paths::sanitise_key`] maps
+/// `.` to `-`, so joining first would take the separators with it. Build every
+/// mark and beats path from this one key, or a phase can end up with beats it
+/// cannot find again.
 pub fn mark_key(project: &str, issue: &str, phase: &str) -> String {
-    crate::paths::sanitise_key(&format!("{project}.{issue}.{phase}"))
+    let segment = crate::paths::sanitise_key;
+    format!("{}.{}.{}", segment(project), segment(issue), segment(phase))
 }
 
 pub fn mark_path(dir: &Path, key: &str) -> PathBuf {
@@ -356,7 +358,7 @@ pub fn mark_path(dir: &Path, key: &str) -> PathBuf {
 }
 
 /// The heartbeat file for `key` inside `dir`: a `beats/` **subdirectory**, never
-/// a `<mark>.<suffix>` sibling. Every [`mark_key`] holds at least two dots, so no
+/// a `<mark>.<suffix>` sibling. Every [`mark_key`] holds exactly two dots, so no
 /// mark can be named `beats`.
 pub fn beats_path(dir: &Path, key: &str) -> PathBuf {
     dir.join("beats").join(key)
@@ -447,29 +449,15 @@ pub fn touch_project_in(dir: &Path, project: &str) {
     }
 }
 
-/// Whether `project` owns `mark`. Compare the sanitised filename, never the
-/// parsed display string: the name is not losslessly splittable. The boundary is
-/// a whole **segment**, never a character prefix — `app` does not own
-/// `app.web`'s mark, nor `app.web` an `app` mark.
+/// Whether `project` owns `mark`, comparing sanitised names case-insensitively.
+/// Sanitise both sides, never one: the mark's project comes back off a filename
+/// and `project` is what the caller typed.
 ///
 /// Sanitisation is not injective: `my proj` and a real `my_proj` share one name
 /// and cannot be told apart here.
 pub fn owned_by(mark: &Mark, project: &str) -> bool {
-    let key = mark_key(
-        &mark.project,
-        mark.issue.as_deref().unwrap_or("-"),
-        &mark.phase,
-    );
-    key_project(&key)
-        .is_some_and(|owner| owner.eq_ignore_ascii_case(&crate::paths::sanitise_key(project)))
-}
-
-/// A mark key's project: everything before its issue and phase segments, which
-/// [`mark_key`] always appends. `None` when the name holds no two dots.
-fn key_project(key: &str) -> Option<&str> {
-    let (head, _phase) = key.rsplit_once('.')?;
-    let (project, _issue) = head.rsplit_once('.')?;
-    Some(project)
+    crate::paths::sanitise_key(&mark.project)
+        .eq_ignore_ascii_case(&crate::paths::sanitise_key(project))
 }
 
 /// Record that a close for one phase is under way, holding the mark's start
@@ -707,14 +695,14 @@ mod tests {
     fn a_beat_matches_the_mark_by_its_sanitised_key() {
         let dir = sandbox("touch-project-lossy");
         write(&dir, "my_proj.7.impl", "1000100\n");
-        write(&dir, "app.web.7.impl", "1000200\n");
+        write(&dir, "app-web.7.impl", "1000200\n");
 
         touch_project_in(&dir, "my proj");
         assert!(beats_path(&dir, "my_proj.7.impl").is_file());
-        assert!(!beats_path(&dir, "app.web.7.impl").exists());
+        assert!(!beats_path(&dir, "app-web.7.impl").exists());
 
         touch_project_in(&dir, "app.web");
-        assert!(beats_path(&dir, "app.web.7.impl").is_file());
+        assert!(beats_path(&dir, "app-web.7.impl").is_file());
     }
 
     /// The boundary is a segment, so neither name reaches the other's mark.
@@ -722,22 +710,35 @@ mod tests {
     fn a_dot_related_project_does_not_cross_beat() {
         let dir = sandbox("touch-project-segment");
         write(&dir, "app.7.impl", "1000100\n");
-        write(&dir, "app.web.7.impl", "1000200\n");
+        write(&dir, "app-web.7.impl", "1000200\n");
 
         touch_project_in(&dir, "app");
         assert!(beats_path(&dir, "app.7.impl").is_file());
         assert!(
-            !beats_path(&dir, "app.web.7.impl").exists(),
+            !beats_path(&dir, "app-web.7.impl").exists(),
             "app beat app.web's mark"
         );
 
         let _ = fs::remove_file(beats_path(&dir, "app.7.impl"));
         touch_project_in(&dir, "app.web");
-        assert!(beats_path(&dir, "app.web.7.impl").is_file());
+        assert!(beats_path(&dir, "app-web.7.impl").is_file());
         assert!(
             !beats_path(&dir, "app.7.impl").exists(),
             "app.web beat app's mark"
         );
+    }
+
+    /// A dotted issue is sanitised into its own segment, so the mark the hooks
+    /// beat is the one `begin` wrote.
+    #[test]
+    fn a_dotted_issue_stays_inside_its_own_segment() {
+        let dir = sandbox("touch-project-dotted-issue");
+        begin_in(&dir, "app", "1.2", "impl").unwrap();
+        assert!(mark_path(&dir, "app.1-2.impl").is_file());
+
+        touch_project_in(&dir, "app");
+        assert!(beats_path(&dir, "app.1-2.impl").is_file());
+        assert!(owned_by(&open_marks_in(&dir)[0], "app"));
     }
 
     fn at(seconds: i64) -> DateTime<Local> {
@@ -1150,6 +1151,8 @@ mod tests {
             mark_key("my proj", "7", "code/review"),
             "my_proj.7.code_review"
         );
+        assert_eq!(mark_key("app", "1.2", "impl"), "app.1-2.impl");
+        assert_eq!(mark_key("app.web", "7", "impl"), "app-web.7.impl");
         let dir = Path::new("/marks");
         assert_eq!(
             mark_path(dir, &mark_key("my proj", "7", "impl")),

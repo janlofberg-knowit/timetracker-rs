@@ -445,21 +445,15 @@ mod tests {
 
     #[test]
     fn a_mark_of_a_dot_related_project_does_not_cover() {
-        let sessions = vec![session(Some("app"), 0, Some(3 * HOUR), 0)];
-        let leases = vec![Lease {
-            mark: crate::marks::Mark {
-                project: "app".to_string(),
-                issue: Some("web.7".to_string()),
-                phase: "impl".to_string(),
-                start: at(0),
-            },
-            last_seen: Some(at(3 * HOUR)),
-        }];
-        assert_eq!(
-            unaccounted(&sessions, &leases, &[], at(3 * HOUR), FLOOR).len(),
-            1,
-            "an app.web mark covered an app session"
-        );
+        for (session_project, mark_project) in [("app", "app.web"), ("app.web", "app")] {
+            let sessions = vec![session(Some(session_project), 0, Some(3 * HOUR), 0)];
+            let leases = vec![beaten(mark_project, 0, 3 * HOUR)];
+            assert_eq!(
+                unaccounted(&sessions, &leases, &[], at(3 * HOUR), FLOOR).len(),
+                1,
+                "a {mark_project} mark covered a {session_project} session"
+            );
+        }
     }
 
     #[test]
