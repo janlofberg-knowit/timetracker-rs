@@ -4,7 +4,7 @@
 use super::App;
 use super::cache::RowKey;
 use super::types::ViewMode;
-use chrono::{DateTime, Duration, Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate};
 use std::collections::HashMap;
 
 /// One line of the entries table. `Entry` holds an index into `data.entries`,
@@ -13,7 +13,6 @@ use std::collections::HashMap;
 pub(crate) enum VisibleRow {
     DayHeader {
         date: NaiveDate,
-        total: Duration,
     },
     GroupHeader(GroupHeader),
     Entry {
@@ -40,7 +39,6 @@ pub(crate) struct GroupHeader {
     /// Indices into `data.entries`, in the order `filtered_entries` gave them.
     pub(crate) members: Vec<usize>,
     pub(crate) expanded: bool,
-    pub(crate) total: Duration,
     /// The earliest member's start, and the latest member's end — `None` while
     /// any member is still running.
     pub(crate) start: DateTime<Local>,
@@ -164,13 +162,6 @@ impl App {
             return rows;
         }
 
-        let mut day_totals: HashMap<NaiveDate, Duration> = HashMap::new();
-        for entry in indices.iter().filter_map(|i| self.data.entries.get(*i)) {
-            *day_totals
-                .entry(entry.start_time.date_naive())
-                .or_insert_with(Duration::zero) += entry.duration();
-        }
-
         // Sorting is by start time, so a date's entries are one contiguous run.
         let mut segment: Vec<usize> = Vec::new();
         let mut current: Option<NaiveDate> = None;
@@ -183,11 +174,7 @@ impl App {
                 self.push_segment(&segment, &mut rows);
                 segment.clear();
                 current = Some(date);
-                let total = day_totals
-                    .get(&date)
-                    .copied()
-                    .unwrap_or_else(Duration::zero);
-                rows.push(VisibleRow::DayHeader { date, total });
+                rows.push(VisibleRow::DayHeader { date });
             }
             segment.push(index);
         }
@@ -256,14 +243,15 @@ impl App {
         }
     }
 
-    /// The collapsed row's figures for `members`, which are never empty.
+    /// The collapsed row's clock-free figures for `members`, which are never
+    /// empty. **No duration here** — a running member's moves with the clock and
+    /// [`RowKey`] has no clock input, so the sums are the renderer's per frame.
     fn summarise(&self, tag: &str, members: &[usize]) -> GroupHeader {
         let entries = || members.iter().filter_map(|i| self.data.entries.get(*i));
         GroupHeader {
             tag: tag.to_string(),
             members: members.to_vec(),
             expanded: self.expanded_issues.contains(tag),
-            total: entries().fold(Duration::zero(), |acc, e| acc + e.duration()),
             start: entries()
                 .map(|e| e.start_time)
                 .min()
@@ -286,7 +274,7 @@ mod tests {
     use crate::tracker::{TimeData, TimeEntry};
     use crate::tui::App;
     use crate::tui::types::ViewMode;
-    use chrono::{Local, NaiveDate};
+    use chrono::{Duration, Local, NaiveDate};
 
     fn seed(entries: Vec<TimeEntry>) {
         let next_id = entries.len() as u64;
@@ -323,14 +311,18 @@ mod tests {
         app.rows()
             .iter()
             .map(|row| match row {
-                VisibleRow::DayHeader { date, total } => {
-                    format!("day {date} {}", crate::duration::format(*total))
-                }
+                VisibleRow::DayHeader { date } => format!("day {date}"),
                 VisibleRow::GroupHeader(header) => format!(
                     "group {} {} {}",
                     header.tag,
                     header.members.len(),
-                    crate::duration::format(header.total)
+                    crate::duration::format(
+                        header
+                            .members
+                            .iter()
+                            .filter_map(|i| app.data.entries.get(*i))
+                            .fold(Duration::zero(), |acc, e| acc + e.duration())
+                    )
                 ),
                 VisibleRow::Entry { index, member } => format!(
                     "entry {}{}",
@@ -428,9 +420,9 @@ mod tests {
         assert_eq!(
             shape(&app),
             vec![
-                format!("day {day_two} 1h 0m"),
+                format!("day {day_two}"),
                 "group tt/8 2 1h 0m".to_string(),
-                format!("day {week_start} 1h 0m"),
+                format!("day {week_start}"),
                 "group tt/8 2 1h 0m".to_string(),
             ]
         );

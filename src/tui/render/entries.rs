@@ -8,6 +8,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
+use std::collections::HashMap;
 
 /// A GitHub-style yearly contribution heatmap: one column per week, one row
 /// per weekday, each cell shaded by `theme::heat_color` for that day's total.
@@ -218,6 +219,15 @@ fn entry_row<'e>(
     .style(row_style)
 }
 
+/// The live sum of the entries at `members`. Summed per frame and never
+/// cached: a running member's duration moves with the clock.
+fn members_total(entries: &[crate::tracker::TimeEntry], members: &[usize]) -> Duration {
+    members
+        .iter()
+        .filter_map(|index| entries.get(*index))
+        .fold(Duration::zero(), |acc, entry| acc + entry.duration())
+}
+
 fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
     let weekday = format!("\n{}", date.format("%A"));
     let date_str = format!("\n{}", date.format("%B %d, %Y"));
@@ -246,9 +256,10 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
 
 /// One issue's collapsed row: its span, its member count behind a chevron, and
 /// the members' summed duration.
-fn group_header_row(header: &GroupHeader) -> Row<'static> {
+fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry]) -> Row<'static> {
+    let total = members_total(entries, &header.members);
     let dur_color = theme::duration_color(
-        header.total.num_hours(),
+        total.num_hours(),
         theme::theme().entry_duration_high_h,
         theme::theme().entry_duration_med_h,
     );
@@ -280,7 +291,7 @@ fn group_header_row(header: &GroupHeader) -> Row<'static> {
             &header.tag,
         )))
         .style(Style::default().fg(theme::highlight())),
-        Cell::from(crate::duration::format(header.total)).style(Style::default().fg(dur_color)),
+        Cell::from(crate::duration::format(total)).style(Style::default().fg(dur_color)),
         Cell::from(icon).style(Style::default().fg(theme::active())),
     ])
     .style(Style::default().bg(theme::GROUP_HEADER_BG))
@@ -308,6 +319,15 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         .height(1)
         .style(Style::default().bg(theme::header_bg()));
 
+    // Day totals are summed here rather than carried on the row, so a running
+    // entry's minutes keep moving under a cached row model.
+    let mut day_totals: HashMap<NaiveDate, Duration> = HashMap::new();
+    for entry in app.filtered_entries() {
+        *day_totals
+            .entry(entry.start_time.date_naive())
+            .or_insert_with(Duration::zero) += entry.duration();
+    }
+
     // One walk over the row model builds the visual rows and, beside them, the
     // map from the cursor's selectable index to the visual index it draws at.
     let model = app.rows();
@@ -316,14 +336,15 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
     let mut stripe = false;
     for row in &model {
         match row {
-            VisibleRow::DayHeader { date, total } => {
+            VisibleRow::DayHeader { date } => {
                 // The stripe alternation restarts inside each day partition.
                 stripe = false;
-                rows.push(day_header_row(*date, *total));
+                let total = day_totals.get(date).copied().unwrap_or_else(Duration::zero);
+                rows.push(day_header_row(*date, total));
             }
             VisibleRow::GroupHeader(header) => {
                 visual_of_selectable.push(rows.len());
-                rows.push(group_header_row(header));
+                rows.push(group_header_row(header, &app.data.entries));
             }
             VisibleRow::Entry { index, member } => {
                 if let Some(entry) = app.data.entries.get(*index) {

@@ -2415,6 +2415,68 @@ mod tests {
     }
 
     #[test]
+    fn a_running_member_keeps_the_group_and_day_totals_moving() {
+        let _guard = env_guard();
+        sandbox("group-live-total");
+        let today = Local::now().date_naive();
+
+        // The running member is placed so its whole-minute count ticks over
+        // 500 ms from now, and the two reads below straddle that tick rather
+        // than an arbitrary one. Slipping past it early fails the first read,
+        // which is the safe direction.
+        let mut running = logged(0, "still going", "tt", &["tt/174"], today, 60);
+        running.start_time =
+            Local::now() - chrono::Duration::minutes(30) + chrono::Duration::milliseconds(500);
+        running.end_time = None;
+        seed(
+            vec![
+                running,
+                logged(1, "done", "tt", &["tt/174"], today, 60),
+                logged(2, "loose", "tt", &[], today, 10),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Week;
+
+        let line = |lines: &[String], needle: &str| {
+            lines
+                .iter()
+                .find(|l| l.contains(needle))
+                .cloned()
+                .unwrap_or_else(|| panic!("no line carries {needle}"))
+        };
+        let weekday = today.format("%A").to_string();
+
+        let before = frame_lines(&mut app, 120, 30);
+        assert!(
+            line(&before, "entries").contains("1h 29m"),
+            "group total at rest:\n{}",
+            line(&before, "entries")
+        );
+        assert!(
+            line(&before, &weekday).contains("1h 39m"),
+            "day total at rest:\n{}",
+            line(&before, &weekday)
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        let after = frame_lines(&mut app, 120, 30);
+        assert!(
+            line(&after, "entries").contains("1h 30m"),
+            "the group total froze with the row cache:\n{}",
+            line(&after, "entries")
+        );
+        assert!(
+            line(&after, &weekday).contains("1h 40m"),
+            "the day total froze with the row cache:\n{}",
+            line(&after, &weekday)
+        );
+    }
+
+    #[test]
     fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
         let _guard = env_guard();
         sandbox("group-render");
