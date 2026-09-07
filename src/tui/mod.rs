@@ -2547,6 +2547,45 @@ mod tests {
         );
     }
 
+    /// 80 columns is the width the hint zone clips at, and the total and the
+    /// label are both variable-width, so the widest of each is what to test.
+    #[test]
+    fn the_footer_keeps_the_scope_hints_at_80_columns() {
+        let _guard = env_guard();
+        sandbox("footer-80-cols");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "long one", "tt", &["tt/174"], today, 12 * 60),
+                logged(1, "long two", "tt", &["tt/174"], today, 30),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+
+        // By position, not by content: a clipped legend may carry neither the
+        // label nor the hint the assertions are looking for.
+        let footer = |app: &mut App| {
+            let lines = frame_lines(app, 80, 30);
+            lines[lines.len() - 2].clone()
+        };
+
+        let widest_total = footer(&mut app);
+        assert!(widest_total.contains("12h 30m"), "{widest_total}");
+        assert!(widest_total.contains("t: today"), "{widest_total}");
+        assert!(widest_total.contains("g: toggle"), "{widest_total}");
+        assert!(widest_total.ends_with("?: help│"), "{widest_total}");
+
+        // `Filtered: ` is three cells wider than `Total: `.
+        app.tag_filter.cycle("tt/174", true);
+        let filtered = footer(&mut app);
+        assert!(filtered.contains("Filtered: "), "{filtered}");
+        assert!(filtered.contains("t: today"), "{filtered}");
+        assert!(filtered.contains("g: toggle"), "{filtered}");
+        assert!(filtered.ends_with("?: help│"), "{filtered}");
+    }
+
     #[test]
     fn the_group_key_is_listed_in_the_footer_and_in_the_help_overlay() {
         let _guard = env_guard();
