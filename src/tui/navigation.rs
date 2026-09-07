@@ -169,7 +169,17 @@ impl App {
         self.data.entries.get(index)
     }
 
-    /// `Enter` on the table: show the entry in full, or nothing when none is selected.
+    /// `Enter` on the table: the selected entry in full, or the group under the
+    /// cursor toggled — a group header has no detail to show.
+    pub(crate) fn activate_row(&mut self) {
+        if self.selected_entry().is_some() {
+            self.open_detail();
+        } else {
+            self.toggle_group_at_cursor();
+        }
+    }
+
+    /// Show the selected entry in full, or nothing when none is selected.
     pub(crate) fn open_detail(&mut self) {
         if self.selected_entry().is_some() {
             self.input_mode = InputMode::Detail;

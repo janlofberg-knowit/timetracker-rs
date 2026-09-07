@@ -540,6 +540,44 @@ mod tests {
         assert_eq!(on_disk().entries.len(), 4, "the store was touched");
     }
 
+    /// `Enter` is the second way in and out of a group, so the header need not
+    /// be learnt as the one row where `Enter` does nothing.
+    #[test]
+    fn enter_toggles_a_group_header_and_still_opens_an_entry() {
+        let _guard = env_guard();
+        sandbox("group-enter-toggle");
+        let mut app = seed_grouped();
+
+        // This is exactly what the Normal-mode Enter arm does.
+        let enter = |app: &mut App| {
+            if !app.cycle_pane_value(true) {
+                app.activate_row();
+            }
+        };
+
+        enter(&mut app);
+        assert_eq!(app.input_mode, InputMode::Normal, "a header has no detail");
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "Enter did not expand the group"
+        );
+        assert_eq!(app.table_state.selected(), Some(0), "the cursor moved");
+
+        enter(&mut app);
+        assert!(
+            app.expanded_issues.is_empty(),
+            "Enter did not collapse the group"
+        );
+
+        app.select_by_id(3);
+        enter(&mut app);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Detail,
+            "Enter stopped opening an entry"
+        );
+    }
+
     #[test]
     fn select_by_id_lands_on_the_header_of_the_group_holding_the_id() {
         let _guard = env_guard();

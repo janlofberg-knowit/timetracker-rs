@@ -50,7 +50,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         // reporting false *is* the focus check.
         KeyCode::Enter => {
             if !app.cycle_pane_value(true) {
-                app.open_detail();
+                app.activate_row();
             }
         }
         // Reverse cycle; without pane focus it does nothing.
@@ -604,6 +604,14 @@ mod tests {
         );
         press(&mut app, KeyCode::Char('g'));
         assert!(app.expanded_issues.is_empty(), "`g` should collapse again");
+
+        // `Enter` reaches the same toggle while the cursor is on a header.
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "Enter should toggle the group under the cursor"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal, "a header has no detail");
 
         // `s` stops the running entry through the same key path.
         let mut open = entry(1, "running");
