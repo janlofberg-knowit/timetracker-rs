@@ -1,4 +1,4 @@
-# 0005 — The `agent` namespace in an entry's custom data
+# 0005 — Well-known keys in an entry's custom data: `task` and the `agent` namespace
 
 ## Status
 
@@ -12,10 +12,12 @@ which model did the work, at what reasoning effort, for how many tokens.
 
 ## Decision
 
-Every agent fact lives under one top-level `agent` object. The schema is:
+An optional top-level `task` string names the unit of work inside the issue —
+a Task sub-issue, say — that the tags cannot carry. Every agent fact lives under one
+top-level `agent` object. The schema is:
 
 ```json
-{"agent": {"label": "code", "model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}
+{"task": "#175", "agent": {"label": "code", "model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}
 ```
 
 `tt` writes exactly one of those keys: `tt agent end --agent <label>` merges

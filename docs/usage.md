@@ -251,10 +251,12 @@ Trimming an entry copies its data onto every piece.
 Unknown keys are always kept, whoever wrote them, so a tool that wants fields of
 its own takes its own top-level namespace rather than adding to another's.
 
+`task` names the unit of work inside the issue that the tags cannot carry, and
 `agent` is the namespace for agent work:
 
 | Key | Written by | Value |
 |---|---|---|
+| `task` | the caller, via `--data` | a free string naming the unit of work inside the issue, e.g. `"#175"`; optional |
 | `agent.label` | `tt` | the `--agent <label>` the close was made under |
 | `agent.model` | the caller, via `--data` | the model that did the work, e.g. `opus` |
 | `agent.effort` | the caller, via `--data` | the reasoning effort it ran at, e.g. `high` |
@@ -263,7 +265,7 @@ its own takes its own top-level namespace rather than adding to another's.
 
 ```sh
 tt agent end tt 163 review "read the diff" --agent code \
-  --data '{"agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
+  --data '{"task": "#175", "agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
 ```
 
 `tt agent end --agent <label>` merges `agent.label` into whatever `--data`

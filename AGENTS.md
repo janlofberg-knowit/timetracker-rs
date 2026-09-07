@@ -219,11 +219,12 @@ is measured rather than summed from what the tooling reported.
 
    ```sh
    tt agent end <project> <issue> <phase> --agent <label> "<summary>" \
-     --data '{"agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
+     --data '{"task": "#175", "agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
    ```
 
-   Omit any of `model`, `effort` and `tokens` the report does not give you
-   rather than guessing a value. `tt` writes `agent.label` itself from
+   `task` names the unit of work inside the issue, such as the Task sub-issue
+   the subagent worked on. Omit it, and any of `model`, `effort` and `tokens`,
+   that the report does not give you rather than guessing a value. `tt` writes `agent.label` itself from
    `--agent`, so never pass that. The full schema is the "Well-known keys"
    table in `docs/usage.md`.
 3. **Bill your own time under `--agent orchestrator`.** Dispatching, relaying
