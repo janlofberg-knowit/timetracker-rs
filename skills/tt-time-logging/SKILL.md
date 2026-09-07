@@ -65,7 +65,7 @@ in [README.md](README.md), not here.
   environment manager such as `mise` or `direnv`, `$TT_PROJECT` is a natural thing
   for them to declare there, so the value travels with the repo.)
 - **issue** — the tracked issue number, or `-` if untracked
-- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `ops`; see the
+- **phase** — one of `plan` `impl` `qa` `review` `docs` `spike` `explore` `ops`; see the
   phase table at the top of this file
 
 **project is a real field** on the entry, not a tag: the agent commands pass it as
