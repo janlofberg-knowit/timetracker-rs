@@ -572,6 +572,18 @@ mod tests {
             app.selected_row(),
             Some(rows::VisibleRow::GroupHeader(_))
         ));
+
+        // Expanded, the header's members each have a row of their own, and the
+        // cursor must still land on the header rather than on the first member.
+        app.expanded_issues.insert("tt/174".to_string());
+        agent_write("second probe");
+        app.sync_from_store().unwrap();
+
+        assert_eq!(app.table_state.selected(), Some(2));
+        assert!(
+            matches!(app.selected_row(), Some(rows::VisibleRow::GroupHeader(_))),
+            "the anchor slid onto a member"
+        );
     }
 
     #[test]

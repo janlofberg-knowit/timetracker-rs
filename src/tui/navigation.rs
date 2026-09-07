@@ -104,13 +104,13 @@ impl App {
             return Ok(());
         }
 
-        // The index means nothing once the data changes, so anchor on the id.
+        // The index means nothing once the data changes, so anchor on the row.
         let previous_idx = self.table_state.selected();
-        let anchor_id = self.cursor_anchor_id();
+        let anchor = self.cursor_anchor();
 
         self.reload()?;
 
-        let anchored_idx = anchor_id.and_then(|id| self.selectable_index_of(id));
+        let anchored_idx = anchor.and_then(|anchor| self.selectable_index_for(&anchor));
         let len = self.selectable_len();
         self.table_state.select(match (anchored_idx, previous_idx) {
             (Some(idx), _) => Some(idx),

@@ -432,13 +432,16 @@ impl App {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// The date `a` pre-fills from: the selected entry's, or the first member's
-    /// on a group header.
+    /// The date `a` pre-fills from: the selected entry's, or the group's on a
+    /// group header.
     fn date_under_cursor(&self) -> Option<chrono::NaiveDate> {
-        let id = self.cursor_anchor_id()?;
-        self.data
-            .get_entry(id)
-            .map(|entry| entry.start_time.date_naive())
+        match self.cursor_anchor()? {
+            super::rows::CursorAnchor::Header { date, .. } => Some(date),
+            super::rows::CursorAnchor::Entry(id) => self
+                .data
+                .get_entry(id)
+                .map(|entry| entry.start_time.date_naive()),
+        }
     }
 
     /// The project as typed, trimmed; an empty field means "no project".

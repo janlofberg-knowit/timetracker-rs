@@ -22,6 +22,14 @@ pub(crate) enum VisibleRow {
     },
 }
 
+/// What the table cursor is anchored to while the store is reloaded. A header
+/// anchors by tag, never by a member's id: resolving an id would prefer that
+/// member's own row and slide the cursor off the header it was on.
+pub(crate) enum CursorAnchor {
+    Header { tag: String, date: NaiveDate },
+    Entry(u64),
+}
+
 /// A member row's place under its group header.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Member {
@@ -94,15 +102,41 @@ impl App {
         })
     }
 
-    /// The id the cursor is over: the selected entry, or the first member of the
-    /// selected group header, so an anchor survives a collapse.
-    pub(crate) fn cursor_anchor_id(&self) -> Option<u64> {
-        let index = match self.selected_row()? {
-            VisibleRow::Entry { index, .. } => index,
-            VisibleRow::GroupHeader(header) => *header.members.first()?,
-            VisibleRow::DayHeader { .. } => return None,
+    /// What the cursor is on, in terms that survive a reload.
+    pub(crate) fn cursor_anchor(&self) -> Option<CursorAnchor> {
+        match self.selected_row()? {
+            VisibleRow::Entry { index, .. } => self
+                .data
+                .entries
+                .get(index)
+                .map(|entry| CursorAnchor::Entry(entry.id)),
+            VisibleRow::GroupHeader(header) => Some(CursorAnchor::Header {
+                tag: header.tag,
+                date: header.start.date_naive(),
+            }),
+            VisibleRow::DayHeader { .. } => None,
+        }
+    }
+
+    /// Where `anchor` sits now. A header anchor prefers the header in the day
+    /// segment it was in, then any header for the tag.
+    pub(crate) fn selectable_index_for(&self, anchor: &CursorAnchor) -> Option<usize> {
+        let (tag, date) = match anchor {
+            CursorAnchor::Entry(id) => return self.selectable_index_of(*id),
+            CursorAnchor::Header { tag, date } => (tag, date),
         };
-        self.data.entries.get(index).map(|entry| entry.id)
+        let is_header = |row: &VisibleRow, same_day: bool| match row {
+            VisibleRow::GroupHeader(header) => {
+                header.tag == *tag && (!same_day || header.start.date_naive() == *date)
+            }
+            _ => false,
+        };
+        self.with_rows(|rows| {
+            let selectable = || rows.iter().filter(|row| row.is_selectable());
+            selectable()
+                .position(|row| is_header(row, true))
+                .or_else(|| selectable().position(|row| is_header(row, false)))
+        })
     }
 
     /// Flip the expanded state of the group the cursor is in; a no-op on a
