@@ -99,15 +99,32 @@ impl App {
         self.data.entries.get(index).map(|entry| entry.id)
     }
 
-    /// Flip the expanded state of the group under the cursor; a no-op on an
-    /// entry row and on an empty list. **Leaves the selected index alone** —
-    /// expanding inserts rows after the header, so the cursor stays on it.
+    /// Flip the expanded state of the group the cursor is in; a no-op on a
+    /// top-level entry row and on an empty list.
+    ///
+    /// On a header the selected index is **left alone** — expanding inserts
+    /// rows after the header, so the cursor stays on it. On a member the group
+    /// collapses and the cursor follows onto the header that replaces it.
     pub(crate) fn toggle_group_at_cursor(&mut self) {
-        let Some(VisibleRow::GroupHeader(header)) = self.selected_row() else {
-            return;
-        };
-        if !self.expanded_issues.remove(&header.tag) {
-            self.expanded_issues.insert(header.tag);
+        match self.selected_row() {
+            Some(VisibleRow::GroupHeader(header)) => {
+                if !self.expanded_issues.remove(&header.tag) {
+                    self.expanded_issues.insert(header.tag);
+                }
+            }
+            Some(VisibleRow::Entry {
+                index,
+                group: Some(tag),
+            }) => {
+                let id = self.data.entries.get(index).map(|entry| entry.id);
+                self.expanded_issues.remove(&tag);
+                // Collapsed, the id has no row of its own, so this resolves to
+                // the header holding it — in Week view, the right day's.
+                if let Some(id) = id {
+                    self.select_by_id(id);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -427,6 +444,38 @@ mod tests {
         app.toggle_group_at_cursor();
         assert_eq!(app.table_state.selected(), Some(1));
         assert_eq!(app.selectable_len(), 2);
+    }
+
+    /// `g` from inside a group is the way back out of it, so it collapses the
+    /// group and follows the cursor onto the header that replaces the members.
+    #[test]
+    fn toggling_on_a_member_collapses_its_group_and_lands_on_the_header() {
+        let _guard = env_guard();
+        sandbox("rows-toggle-member");
+        seed(vec![
+            at(0, "round one", &["tt/8"], today(), 9),
+            at(1, "round two", &["tt/8"], today(), 10),
+            at(2, "round three", &["tt/8"], today(), 11),
+            at(3, "loose", &[], today(), 12),
+        ]);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.expanded_issues.insert("tt/8".to_string());
+        // Rows: loose, the header, then the three members newest first.
+        app.table_state.select(Some(3));
+        assert_eq!(
+            app.selected_entry().map(|e| e.description.clone()),
+            Some("round two".to_string())
+        );
+
+        app.toggle_group_at_cursor();
+
+        assert!(app.expanded_issues.is_empty(), "the group stayed open");
+        assert_eq!(app.table_state.selected(), Some(1));
+        assert!(matches!(
+            app.selected_row(),
+            Some(VisibleRow::GroupHeader(_))
+        ));
     }
 
     #[test]
