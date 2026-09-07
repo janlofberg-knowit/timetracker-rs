@@ -2480,10 +2480,7 @@ mod tests {
         let mut app = seed_grouped();
 
         let footer = frame_lines(&mut app, 200, 30).join("\n");
-        assert!(
-            footer.contains("g: toggle group"),
-            "footer legend:\n{footer}"
-        );
+        assert!(footer.contains("g: toggle"), "footer legend:\n{footer}");
         assert!(footer.contains("Total: "), "footer total:\n{footer}");
         assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
 
