@@ -307,6 +307,7 @@ mod tests {
                 project: project.to_string(),
                 issue: None,
                 phase: "impl".to_string(),
+                agent: None,
                 start: at(start),
             },
             last_seen: None,

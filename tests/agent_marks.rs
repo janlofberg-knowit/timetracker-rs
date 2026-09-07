@@ -294,14 +294,14 @@ fn list_renders_an_age_in_the_house_duration_format() {
 }
 
 #[test]
-fn list_still_shows_a_mark_whose_phase_contains_a_dot() {
+fn list_still_shows_a_mark_with_more_segments_than_a_key_has() {
     let case = Case::new("list-dotted-phase");
-    case.write_mark("proj.23.impl.v2", now());
+    case.write_mark("proj.23.impl.v2.x", now());
 
     let run = case.run(&["list"]);
     run.assert_status(0);
     // The dot split is lossy by design; an imperfect label beats hiding an open mark.
-    run.assert_stdout_has("proj/23.impl v2");
+    run.assert_stdout_has("proj/23.impl.v2 x");
 }
 
 #[test]
@@ -449,19 +449,19 @@ fn list_for_a_project_with_no_open_marks_reports_the_bare_line() {
     assert_eq!(run.stdout, "No open marks.\n");
 }
 
-/// A mark file written before `.` mapped to `-` names a triple `end` and
+/// A mark file written before `.` mapped to `-` names segments `end` and
 /// `cancel` cannot address, so its row offers no runnable close line.
 #[test]
 fn a_legacy_dotted_mark_is_listed_with_no_close_line() {
     let case = Case::new("list-legacy-dotted");
     let start = now() - 5 * 3600;
-    case.write_mark("app.web.7.impl", start);
+    case.write_mark("app.web.7.impl.v2", start);
 
     let run = case.run(&["list"]);
     run.assert_status(0);
     run.assert_stdout_has(&format!("since {}", clock(start)));
-    run.assert_stdout_has("app.web.7.impl cannot be closed");
-    run.assert_stdout_has("tt agent item app web.7 impl");
+    run.assert_stdout_has("app.web.7.impl.v2 cannot be closed");
+    run.assert_stdout_has("tt agent item app web.7.impl v2");
     assert!(
         !run.stdout.contains("tt agent end"),
         "following this row must not log an entry that leaves the mark open: {:?}",
