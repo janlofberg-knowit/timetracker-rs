@@ -24,17 +24,20 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             project,
             issue,
             phase,
-        } => begin(mark_ref(project, issue, phase)),
+            agent,
+        } => begin(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::Touch {
             project,
             issue,
             phase,
-        } => touch(mark_ref(project, issue, phase)),
+            agent,
+        } => touch(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::Cancel {
             project,
             issue,
             phase,
-        } => cancel(mark_ref(project, issue, phase)),
+            agent,
+        } => cancel(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::List { project } => list(project.as_deref()),
         AgentCommands::Item {
             project,
@@ -59,9 +62,10 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             minutes,
             full,
             trim,
+            agent,
             data,
         } => end(
-            mark_ref(project, issue, phase),
+            mark_ref(project, issue, phase, agent.as_deref()),
             Close {
                 summary: summary.as_deref(),
                 minutes: minutes.as_deref(),
@@ -168,12 +172,17 @@ fn mark_dir() -> Result<std::path::PathBuf> {
 }
 
 /// The mark the clap fields address.
-fn mark_ref<'a>(project: &'a str, issue: &'a str, phase: &'a str) -> MarkRef<'a> {
+fn mark_ref<'a>(
+    project: &'a str,
+    issue: &'a str,
+    phase: &'a str,
+    agent: Option<&'a str>,
+) -> MarkRef<'a> {
     MarkRef {
         project,
         issue,
         phase,
-        agent: None,
+        agent,
     }
 }
 

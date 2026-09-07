@@ -968,3 +968,57 @@ fn an_unvouched_refusal_names_no_trim_figure() {
         run.stderr
     );
 }
+
+// --- the agent label -------------------------------------------------------
+
+/// One labelled close bills its own span and leaves its sibling open; the label is
+/// no tag axis, so the entry reads exactly as an unlabelled one.
+#[test]
+fn a_labelled_end_bills_and_clears_only_its_own_mark() {
+    let case = Case::new("end-agent-label");
+    let elapsed = 1800;
+    case.write_mark("proj.7.review.code", now() - elapsed);
+    case.write_mark("proj.7.review.style", now() - elapsed);
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "--agent",
+        "code",
+        "read the diff",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&format!(
+        "\"read the diff\" (proj) [#proj/7 #review #agent] {}",
+        logged_duration(elapsed / 60)
+    ));
+    assert!(!case.mark_file("proj.7.review.code").exists());
+    assert!(
+        case.mark_file("proj.7.review.style").is_file(),
+        "the other label's mark was cleared"
+    );
+}
+
+#[test]
+fn a_labelled_refusal_names_the_mark_its_recovery_clears() {
+    let case = Case::new("end-agent-unfinished");
+    let start = now() - 1800;
+    case.write_mark("proj.7.review.code", start);
+    case.write_closing("proj.7.review.code", start);
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "--agent",
+        "code",
+        "read the diff",
+    ]);
+    run.assert_status(75);
+    run.assert_stderr_has("proj/7 review:code has an unfinished close");
+    run.assert_stderr_has("tt agent cancel proj 7 review --agent code");
+    assert!(case.store().entries.is_empty(), "nothing was logged");
+}
