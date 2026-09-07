@@ -90,21 +90,23 @@ if (event !== "end") {
 // project's marks got is already on disk when the mark list is read.
 const messages = [];
 
+// `tt` does the filtering: it owns the sanitise rule that decides which marks
+// a project name owns, and this script must not parse its output.
 if (project) {
   let list = "";
   try {
-    list = execFileSync("tt", ["agent", "list"], { encoding: "utf8" });
+    list = execFileSync("tt", ["agent", "list", project], { encoding: "utf8" });
   } catch (e) {
     list = e.stdout?.toString() ?? "";
   }
 
-  const openLines = list.split("\n").filter((line) => line.includes(project));
-  if (openLines.length > 0) {
+  const open = list.trim();
+  if (open && open !== "No open marks.") {
     messages.push(
       `tt-time-logging: open mark(s) for '${project}' are still unclosed. ` +
         `Close with 'tt agent end <project> <issue> <phase> "<summary>"' ` +
         `(or 'tt agent cancel' if it shouldn't be logged) before stopping.\n` +
-        openLines.join("\n"),
+        open,
     );
   }
 }

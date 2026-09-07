@@ -41,7 +41,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             issue,
             phase,
         } => cancel(project, issue, phase),
-        AgentCommands::List => list(),
+        AgentCommands::List { project } => list(project.as_deref()),
         AgentCommands::Item {
             project,
             issue,
@@ -251,11 +251,15 @@ fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent list`: every open mark, newest first, in `commands::list`'s shape —
-/// header, blank line, rows at the status-glyph indent, or a bare
-/// `No open marks.`
-fn list() -> Result<()> {
-    let leases = open_leases();
+/// `tt agent list [project]`: every open mark, newest first, in
+/// `commands::list`'s shape — header, blank line, rows at the status-glyph
+/// indent, or a bare `No open marks.` A project narrows the list to the marks
+/// it owns, so a caller needs no filter over this output.
+fn list(project: Option<&str>) -> Result<()> {
+    let mut leases = open_leases();
+    if let Some(project) = project {
+        leases.retain(|lease| marks::owned_by(&lease.mark, project));
+    }
     if leases.is_empty() {
         println!("No open marks.");
         return Ok(());

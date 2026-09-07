@@ -167,7 +167,12 @@ pub enum AgentCommands {
         phase: String,
     },
     /// List every open mark
-    List,
+    List {
+        /// Narrow the list to one project, matched on the whole sanitised
+        /// project segment of a mark's name
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
+        project: Option<String>,
+    },
     /// Log one finished piece of work for a **known** duration, with no mark
     /// involved. A fallback for when there was nothing to `begin`/`end`
     /// around (the duration is already known some other way) — prefer
@@ -282,7 +287,7 @@ impl AgentCommands {
             AgentCommands::Begin { .. }
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
-            | AgentCommands::List => false,
+            | AgentCommands::List { .. } => false,
             AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.
