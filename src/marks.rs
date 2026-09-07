@@ -666,16 +666,19 @@ mod tests {
         write(&dir, "a.7.impl", "1000100\n");
         // The `-` sentinel has to round-trip through the key to be beaten.
         write(&dir, "a.-.plan", "1000200\n");
+        // A labelled mark is beaten under its own four-segment key.
+        write(&dir, "a.7.review.code", "1000250\n");
         write(&dir, "b.9.impl", "1000300\n");
 
         touch_project_in(&dir, "A");
 
-        for key in ["a.7.impl", "a.-.plan"] {
+        for key in ["a.7.impl", "a.-.plan", "a.7.review.code"] {
             let body = fs::read_to_string(beats_path(&dir, key)).unwrap();
             assert_eq!(body.lines().count(), 1, "{key}");
         }
         assert!(!beats_path(&dir, "b.9.impl").exists());
-        assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 2);
+        assert!(!beats_path(&dir, "a.7.review").exists());
+        assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 3);
     }
 
     #[test]
