@@ -18,10 +18,18 @@ pub(crate) enum VisibleRow {
     GroupHeader(GroupHeader),
     Entry {
         index: usize,
-        /// The item tag of the expanded group this row sits under; `None` for a
-        /// top-level row.
-        group: Option<String>,
+        /// Where this row sits in its group; `None` for a top-level row.
+        member: Option<Member>,
     },
+}
+
+/// A member row's place under its group header.
+#[derive(Clone, PartialEq)]
+pub(crate) struct Member {
+    /// The item tag of the group whose header sits above this row.
+    pub(crate) tag: String,
+    /// The group's last member, which closes the tree with `\u{2514}`.
+    pub(crate) last: bool,
 }
 
 /// One issue's entries, summarised for the collapsed row.
@@ -114,10 +122,10 @@ impl App {
             }
             Some(VisibleRow::Entry {
                 index,
-                group: Some(tag),
+                member: Some(member),
             }) => {
                 let id = self.data.entries.get(index).map(|entry| entry.id);
-                self.expanded_issues.remove(&tag);
+                self.expanded_issues.remove(&member.tag);
                 // Collapsed, the id has no row of its own, so this resolves to
                 // the header holding it — in Week view, the right day's.
                 if let Some(id) = id {
@@ -217,7 +225,10 @@ impl App {
             }
         }
 
-        let top_level = |index: usize| VisibleRow::Entry { index, group: None };
+        let top_level = |index: usize| VisibleRow::Entry {
+            index,
+            member: None,
+        };
         for slot in slots {
             match slot {
                 Slot::Entry(index) => rows.push(top_level(index)),
@@ -229,9 +240,15 @@ impl App {
                     }
                     rows.push(VisibleRow::GroupHeader(self.summarise(tag, members)));
                     if self.expanded_issues.contains(*tag) {
-                        rows.extend(members.iter().map(|index| VisibleRow::Entry {
-                            index: *index,
-                            group: Some(tag.to_string()),
+                        let last = members.len() - 1;
+                        rows.extend(members.iter().enumerate().map(|(nth, index)| {
+                            VisibleRow::Entry {
+                                index: *index,
+                                member: Some(Member {
+                                    tag: tag.to_string(),
+                                    last: nth == last,
+                                }),
+                            }
                         }));
                     }
                 }
@@ -301,7 +318,7 @@ mod tests {
     }
 
     /// Each row as one line: `day <date> <total>`, `group <tag> <members>
-    /// <total>`, or `entry <description>`, a member's indented as it draws.
+    /// <total>`, or `entry <description>`, a member's behind its connector.
     fn shape(app: &App) -> Vec<String> {
         app.rows()
             .iter()
@@ -315,9 +332,13 @@ mod tests {
                     header.members.len(),
                     crate::duration::format(header.total)
                 ),
-                VisibleRow::Entry { index, group } => format!(
+                VisibleRow::Entry { index, member } => format!(
                     "entry {}{}",
-                    if group.is_some() { "  " } else { "" },
+                    match member {
+                        Some(m) if m.last => "\u{2514} ",
+                        Some(_) => "\u{251c} ",
+                        None => "",
+                    },
                     app.data.entries[*index].description
                 ),
             })
@@ -380,9 +401,9 @@ mod tests {
             shape(&app),
             vec![
                 "group tt/8 3 1h 30m",
-                "entry   round three",
-                "entry   round two",
-                "entry   round one",
+                "entry \u{251c} round three",
+                "entry \u{251c} round two",
+                "entry \u{2514} round one",
             ]
         );
     }
@@ -517,8 +538,8 @@ mod tests {
             shape(&app),
             vec![
                 "group tt/8 2 1h 0m",
-                "entry   round two",
-                "entry   round one"
+                "entry \u{251c} round two",
+                "entry \u{2514} round one"
             ]
         );
         app.expanded_issues.remove("tt/8");

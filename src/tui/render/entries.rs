@@ -1,7 +1,7 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
-use crate::tui::rows::{GroupHeader, VisibleRow};
+use crate::tui::rows::{GroupHeader, Member, VisibleRow};
 use crate::tui::{App, theme};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use ratatui::{
@@ -173,9 +173,13 @@ pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-/// One entry's row. A `member` row is a group's, and carries both the indent
-/// and the tint rather than the stripe.
-fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool, member: bool) -> Row<'_> {
+/// One entry's row. A member row hangs off its group header's tree connector
+/// and carries the tint rather than the stripe.
+fn entry_row<'e>(
+    entry: &'e crate::tracker::TimeEntry,
+    stripe: bool,
+    member: Option<&Member>,
+) -> Row<'e> {
     let hours = entry.duration().num_hours();
     let dur_color = theme::duration_color(
         hours,
@@ -190,14 +194,16 @@ fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool, member: bool) -> R
     };
 
     let row_style = match (member, stripe) {
-        (true, _) => Style::default().bg(theme::MEMBER_BG),
-        (false, true) => Style::default().bg(Color::Rgb(35, 35, 35)),
-        (false, false) => Style::default(),
+        (Some(_), _) => Style::default().bg(theme::MEMBER_BG),
+        (None, true) => Style::default().bg(Color::Rgb(35, 35, 35)),
+        (None, false) => Style::default(),
     };
-    let description = if member {
-        format!("  {}", entry.description)
-    } else {
-        entry.description.clone()
+    // The connector opens in the column the group header's chevron sits in, so
+    // its stroke runs unbroken from the header down to the last member.
+    let description = match member {
+        Some(member) if member.last => format!("\u{2514}\u{2500}\u{2500} {}", entry.description),
+        Some(_) => format!("\u{251c}\u{2500}\u{2500} {}", entry.description),
+        None => entry.description.clone(),
     };
 
     Row::new(vec![
@@ -319,14 +325,13 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
                 visual_of_selectable.push(rows.len());
                 rows.push(group_header_row(header));
             }
-            VisibleRow::Entry { index, group } => {
+            VisibleRow::Entry { index, member } => {
                 if let Some(entry) = app.data.entries.get(*index) {
                     visual_of_selectable.push(rows.len());
-                    let member = group.is_some();
-                    rows.push(entry_row(entry, stripe, member));
+                    rows.push(entry_row(entry, stripe, member.as_ref()));
                     // A member carries no stripe, so an expansion leaves the
                     // top-level alternation around it as it was.
-                    if !member {
+                    if member.is_none() {
                         stripe = !stripe;
                     }
                 }

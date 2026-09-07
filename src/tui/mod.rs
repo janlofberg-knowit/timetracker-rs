@@ -2439,9 +2439,10 @@ mod tests {
     }
 
     /// A member is told apart from a top-level row two ways at once, so neither
-    /// a narrow terminal nor a colour-blind palette leaves it ambiguous.
+    /// a narrow terminal nor a colour-blind palette leaves it ambiguous. The
+    /// connector sits in the column the header's chevron sits in.
     #[test]
-    fn an_expanded_member_row_is_indented_and_tinted() {
+    fn an_expanded_member_row_is_tinted_and_hangs_off_a_tree_connector() {
         let _guard = env_guard();
         sandbox("group-member-style");
         let mut app = seed_grouped();
@@ -2451,8 +2452,12 @@ mod tests {
 
         let screen = frame_lines(&mut app, 120, 30).join("\n");
         assert!(
-            screen.contains("10:00   round one"),
-            "the member is not indented:\n{screen}"
+            screen.contains("10:00 \u{251c}\u{2500}\u{2500} round one"),
+            "no branch connector on a member:\n{screen}"
+        );
+        assert!(
+            screen.contains("10:00 \u{2514}\u{2500}\u{2500} round three"),
+            "the last member does not close the tree:\n{screen}"
         );
         assert!(
             screen.contains("10:00 hand written"),
@@ -2475,14 +2480,17 @@ mod tests {
         let mut app = seed_grouped();
 
         let footer = frame_lines(&mut app, 200, 30).join("\n");
-        assert!(footer.contains("g: group"), "footer legend:\n{footer}");
+        assert!(
+            footer.contains("g: toggle group"),
+            "footer legend:\n{footer}"
+        );
         assert!(footer.contains("Total: "), "footer total:\n{footer}");
         assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
 
         app.input_mode = InputMode::Help;
         let help = frame_lines(&mut app, 100, 40).join("\n");
         assert!(
-            help.contains("expand / collapse the issue group"),
+            help.contains("toggle the issue group"),
             "help popup:\n{help}"
         );
     }
