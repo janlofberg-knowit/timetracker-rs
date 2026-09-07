@@ -348,6 +348,13 @@ mod tests {
     const FLOOR: i64 = 120;
     const HOUR: i64 = 3600;
 
+    /// The house pair, stated here so no test below reads the developer's
+    /// config.
+    const HOUSE: Thresholds = Thresholds {
+        gap: 45,
+        unvouched: FLOOR,
+    };
+
     /// The thresholds are stated here, never read from the developer's config:
     /// this shadows [`super::unaccounted`] for every test below.
     fn unaccounted(
@@ -367,6 +374,25 @@ mod tests {
                 unvouched: floor_minutes,
             },
         )
+    }
+
+    /// One instant decides both surfaces: before it the lease covers the whole
+    /// window and its row is fresh; from it the row is `[stale]` and the
+    /// coverage stops there, so anything past it is uncovered.
+    #[test]
+    fn one_instant_decides_both_the_stale_row_and_the_coverage() {
+        let leases = vec![beaten("tt", 0, 3 * HOUR)];
+
+        let fresh = 3 * HOUR + 45 * 60 + 59;
+        assert!(uncovered_by_marks("tt", 0, fresh, &leases, fresh, HOUSE).is_empty());
+        assert!(!crate::marks::rows_at(&leases, at(fresh), HOUSE)[0].contains("[stale]"));
+
+        let expired = 3 * HOUR + 46 * 60;
+        assert!(crate::marks::rows_at(&leases, at(expired), HOUSE)[0].contains("[stale]"));
+        assert_eq!(
+            uncovered_by_marks("tt", 0, expired + 1, &leases, expired + 1, HOUSE),
+            vec![(expired, expired + 1)]
+        );
     }
 
     #[test]
@@ -421,7 +447,7 @@ mod tests {
         let abandoned = vec![mark("tt", 0)];
         let flagged = unaccounted(&sessions, &abandoned, &[], at(114 * HOUR), FLOOR);
         assert_eq!(flagged.len(), 1);
-        assert_eq!(flagged[0].start, at(2 * HOUR));
+        assert_eq!(flagged[0].start, at(2 * HOUR + 60));
         assert_eq!(flagged[0].end, at(114 * HOUR));
     }
 

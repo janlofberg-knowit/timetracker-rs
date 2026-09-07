@@ -1201,7 +1201,8 @@ mod tests {
         sandbox("liveness-throttle");
         seed(vec![entry(0, "first")], 1);
         let mark_dir = mark_sandbox();
-        begin_mark(&mark_dir, "smoke.-.impl", 4 * 60);
+        // Well clear of the expiry boundary: this test is about the throttle.
+        begin_mark(&mark_dir, "smoke.-.impl", 5 * 60);
         let dir = activity_sandbox();
 
         let mut app = App::new().unwrap();

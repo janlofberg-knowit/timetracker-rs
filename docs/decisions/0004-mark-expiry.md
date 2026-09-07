@@ -73,10 +73,13 @@ minutes.
 
 This is also what the printed close line keys on: `--trim` for a phase the model
 vouched for, the explicit-minutes form otherwise, since whole-span judgement
-would trim a hook-only mark to the 5-minute floor. `Lease::is_expired_at` judges
-by the same rule `gaps_over` does — integer-floor minutes, strictly greater —
-rather than comparing instants, which had a mark one second past its expiry
-printing a `--trim` that would trim nothing.
+would trim a hook-only mark to the 5-minute floor. The boundary follows the same
+rule `gaps_over` does — integer-floor minutes, strictly greater — rather than a
+bare instant comparison, which had a mark one second past its grace printing a
+`--trim` that would trim nothing. `Lease::expires_at` returns the first instant
+that rule trips, one minute past the grace, and `Lease::is_expired_at` is a
+comparison against it, so the coverage bound and the `[stale]` marker cannot
+drift apart.
 
 `audit::unaccounted` subtracts each same-project lease's covered interval
 (`mark.start → min(now, expiry)`) from the session window and flags whatever

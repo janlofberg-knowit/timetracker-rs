@@ -103,26 +103,25 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// The instant this mark stops vouching: `last_seen + gap`, or
-    /// `mark.start + unvouched` when it never beat at all — no
-    /// measurable evidence is treated as no evidence.
+    /// The **first** instant this mark no longer vouches. The grace is
+    /// `last_seen + gap`, or `mark.start + unvouched` when it never beat at all
+    /// — no measurable evidence is treated as no evidence.
+    ///
+    /// The extra minute is [`gaps_over`]'s rule, floor minutes and strictly
+    /// greater, so the first tripping instant is one whole minute past the
+    /// grace.
     pub fn expires_at(&self, thresholds: Thresholds) -> DateTime<Local> {
-        match self.last_seen {
-            Some(seen) => seen + TimeDelta::minutes(thresholds.gap),
-            None => self.mark.start + TimeDelta::minutes(thresholds.unvouched),
-        }
-    }
-
-    /// Whether the lease has run out by `now`, on [`gaps_over`]'s rule:
-    /// **integer-floor minutes, strictly greater**. Keep the two in step, or
-    /// the `--trim` [`close_command`](Lease::close_command) prints stops
-    /// matching what `end` would flag.
-    pub fn is_expired_at(&self, now: DateTime<Local>, thresholds: Thresholds) -> bool {
         let (since, allowed) = match self.last_seen {
             Some(seen) => (seen, thresholds.gap),
             None => (self.mark.start, thresholds.unvouched),
         };
-        (now - since).num_seconds() / 60 > allowed
+        since + TimeDelta::minutes(allowed + 1)
+    }
+
+    /// Whether the lease has run out by `now`. No arithmetic of its own: the
+    /// coverage bound and the `[stale]` marker read one boundary.
+    pub fn is_expired_at(&self, now: DateTime<Local>, thresholds: Thresholds) -> bool {
+        now >= self.expires_at(thresholds)
     }
 
     /// The mark's last heartbeat as `HH:MM`, or `never` when it has none.
@@ -718,24 +717,24 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_that_never_beat_expires_at_its_start_plus_the_unvouched_grace() {
+    fn a_mark_that_never_beat_expires_one_minute_past_the_unvouched_grace() {
         let dir = sandbox("lease-unvouched");
         write(&dir, "proj.7.impl", "1000000\n");
         let leases = open_leases_in(&dir);
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].last_seen, None);
-        assert_eq!(leases[0].expires_at(HOUSE), at(1_000_000 + 120 * 60));
+        assert_eq!(leases[0].expires_at(HOUSE), at(1_000_000 + 121 * 60));
     }
 
     #[test]
-    fn a_beaten_mark_expires_at_its_last_beat_plus_the_gap() {
+    fn a_beaten_mark_expires_one_minute_past_the_gap_after_its_last_beat() {
         let dir = sandbox("lease-beaten");
         write(&dir, "proj.-.plan", "1000000\n");
         fs::create_dir_all(dir.join("beats")).unwrap();
         fs::write(beats_path(&dir, "proj.-.plan"), "1000300\n1000600\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, Some(at(1_000_600)));
-        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 45 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 46 * 60));
     }
 
     #[test]
@@ -746,7 +745,7 @@ mod tests {
         fs::write(beats_path(&dir, "proj.7.impl"), "1000600 hook\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, Some(at(1_000_600)));
-        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 45 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_600 + 46 * 60));
     }
 
     #[test]
@@ -757,7 +756,7 @@ mod tests {
         fs::write(beats_path(&dir, "proj.7.impl"), "\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, None);
-        assert_eq!(lease.expires_at(HOUSE), at(1_000_000 + 120 * 60));
+        assert_eq!(lease.expires_at(HOUSE), at(1_000_000 + 121 * 60));
     }
 
     /// A hook beat keeps the mark alive without vouching for its time, so the
