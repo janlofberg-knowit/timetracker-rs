@@ -139,9 +139,8 @@ impl Lease {
     /// judged across its whole span, which `--trim` would cut to the 5m floor,
     /// so that case asks for the minutes outright.
     ///
-    /// The arguments are the mark's parsed pieces, so a lossy project name
-    /// prints differently from what the operator typed; they still round-trip
-    /// through [`mark_key`] back to this same file.
+    /// The project printed is the mark's own sanitised name, which is what
+    /// [`same_project`] — and so both of the audit's joins — accepts.
     pub fn close_command(&self) -> String {
         let tail = if self.vouched { "--trim" } else { "<minutes>" };
         format!(
@@ -449,15 +448,20 @@ pub fn touch_project_in(dir: &Path, project: &str) {
     }
 }
 
-/// Whether `project` owns `mark`, comparing sanitised names case-insensitively.
-/// Sanitise both sides, never one: the mark's project comes back off a filename
-/// and `project` is what the caller typed.
+/// Whether two project names name the same project, compared as whole
+/// sanitised segments, case-insensitively. Sanitise both sides, never one: one
+/// of them may have come back off a filename while the other is what a caller
+/// typed.
 ///
 /// Sanitisation is not injective: `my proj` and a real `my_proj` share one name
 /// and cannot be told apart here.
+pub fn same_project(a: &str, b: &str) -> bool {
+    crate::paths::sanitise_key(a).eq_ignore_ascii_case(&crate::paths::sanitise_key(b))
+}
+
+/// Whether `project` owns `mark`.
 pub fn owned_by(mark: &Mark, project: &str) -> bool {
-    crate::paths::sanitise_key(&mark.project)
-        .eq_ignore_ascii_case(&crate::paths::sanitise_key(project))
+    same_project(&mark.project, project)
 }
 
 /// Record that a close for one phase is under way, holding the mark's start

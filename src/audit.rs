@@ -153,11 +153,16 @@ pub fn unaccounted(
                 now_epoch,
                 thresholds,
             );
-            uncovered_by_entries(project, stretches, entries, now_epoch)
+            let fragments = uncovered_by_entries(project, stretches, entries, now_epoch);
+            // The floor applies to the session's total uncovered time, not to
+            // each fragment.
+            let uncovered: i64 = fragments.iter().map(|(from, to)| (to - from) / 60).sum();
+            if uncovered < floor_minutes {
+                return Vec::new();
+            }
+
+            fragments
                 .into_iter()
-                // The floor applies to what is left as much as to the window: the
-                // short head before a live mark was opened is not worth flagging.
-                .filter(|(from, to)| (to - from) / 60 >= floor_minutes)
                 .filter_map(|(from, to)| {
                     // No dispatches is not evidence of silence, so a session
                     // with none carries no idle. Computed over the *uncovered*
@@ -264,11 +269,13 @@ fn uncovered_by_entries(
     for entry in entries
         .iter()
         .filter(|entry| entry.has_tag("agent") || entry.has_tag("auto"))
+        // The same segment rule the lease join uses, so the project a
+        // `[stale]` row prints is one this join accepts.
         .filter(|entry| {
             entry
                 .project
                 .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(project))
+                .is_some_and(|p| marks::same_project(p, project))
         })
     {
         let from = entry.start_time.timestamp();
@@ -514,6 +521,57 @@ mod tests {
             flagged.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
             vec![(at(4 * HOUR), at(6 * HOUR)), (at(0), at(2 * HOUR))]
         );
+    }
+
+    /// The floor gates the session's total, so eleven hours with no evidence
+    /// cannot hide behind fragments that are each under it.
+    #[test]
+    fn six_uncovered_fragments_under_the_floor_are_all_reported() {
+        let sessions = vec![session(Some("tt"), 0, Some(12 * HOUR), 0)];
+        // A ten-minute covering entry every two hours, leaving six 110m holes.
+        let entries: Vec<TimeEntry> = (0..6)
+            .map(|i| {
+                let cut = i * 120 * 60 + 110 * 60;
+                entry("tt", cut, Some(cut + 10 * 60), &["tt", "agent"])
+            })
+            .collect();
+        let flagged = unaccounted(&sessions, &[], &entries, at(12 * HOUR), FLOOR);
+        assert_eq!(flagged.len(), 6);
+        for item in &flagged {
+            assert_eq!(
+                item.end.signed_duration_since(item.start).num_minutes(),
+                110
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_whose_coverage_leaves_three_minutes_reports_nothing() {
+        let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
+        let entries = vec![entry("tt", 0, Some(3 * HOUR - 180), &["tt", "agent"])];
+        assert!(unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    /// `Lease::close_command` prints the mark's sanitised project, so the entry
+    /// an operator logs by following a `[stale]` row has to join.
+    #[test]
+    fn an_entry_for_a_lossy_project_name_still_covers_its_session() {
+        let sessions = vec![session(Some("my proj"), 0, Some(3 * HOUR), 0)];
+        let entries = vec![entry("my_proj", 0, Some(3 * HOUR), &["tt", "agent"])];
+        assert!(unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    #[test]
+    fn an_entry_of_a_dot_related_project_does_not_cover() {
+        for (session_project, entry_project) in [("app", "app.web"), ("app.web", "app")] {
+            let sessions = vec![session(Some(session_project), 0, Some(3 * HOUR), 0)];
+            let entries = vec![entry(entry_project, 0, Some(3 * HOUR), &["tt", "agent"])];
+            assert_eq!(
+                unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).len(),
+                1,
+                "an {entry_project} entry covered an {session_project} session"
+            );
+        }
     }
 
     /// A session split into fragments reports each fragment's own dispatches.

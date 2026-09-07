@@ -133,3 +133,59 @@ fn running_auto_log_twice_logs_the_window_once() {
         "the second run must not log a duplicate"
     );
 }
+
+/// Item 10's regression: `Lease::close_command` prints the mark's sanitised
+/// project, so the entry an operator logs by following a `[stale]` row has to
+/// be one the audit's entry join accepts.
+#[test]
+fn an_entry_logged_with_the_printed_project_silences_the_next_check() {
+    let case = Case::new("audit-close-line-covers");
+    let start = now() - 5 * HOUR;
+    case.write_session("sess-1", "my proj", start, None);
+    case.write_mark("my_proj.-.impl", start);
+
+    let flagged = case.run(&["activity", "check", "sess-1"]);
+    flagged.assert_status(0);
+    flagged.assert_stdout_has("my proj");
+
+    // The close line the stale row prints, run verbatim.
+    let listed = case.run(&["list", "my_proj"]);
+    listed.assert_stdout_has("tt agent end my_proj - impl \"<summary>\" <minutes>");
+    case.run(&["end", "my_proj", "-", "impl", "did the thing", "300"])
+        .assert_status(0);
+
+    let silenced = case.run(&["activity", "check", "sess-1"]);
+    silenced.assert_status(0);
+    assert_eq!(
+        silenced.stdout, "",
+        "the entry the printed close line logs must cover the fragment it was printed for"
+    );
+}
+
+/// The floor gates the session's total, so fragments under it are reported —
+/// and `auto_log_after_minutes`, which must exceed the floor, still gates each
+/// fragment on its own.
+#[test]
+fn fragments_under_the_floor_are_reported_but_never_auto_logged() {
+    let case = Case::new("audit-fragment-floor");
+    case.write_config("[agent]\nauto_log_after_minutes = 180\n");
+    let start = now() - 6 * HOUR;
+    case.write_session("sess-1", "smoke", start, None);
+    // Two unvouched marks, each covering the two hours after it was opened,
+    // leaving a 50m head and an 80m middle.
+    case.write_mark("smoke.1.impl", start + 50 * 60);
+    case.write_mark("smoke.2.impl", start + 4 * HOUR + 10 * 60);
+
+    let run = case.run(&["audit", "--auto-log"]);
+    run.assert_status(0);
+    assert_eq!(
+        run.stdout.lines().filter(|l| l.contains("smoke")).count(),
+        2,
+        "both fragments are under the floor and both belong in the report: {:?}",
+        run.stdout
+    );
+    assert!(
+        case.store().entries.is_empty(),
+        "a fragment under auto_log_after_minutes must never be written"
+    );
+}
