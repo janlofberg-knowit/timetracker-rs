@@ -212,6 +212,14 @@ pub fn perform_update(check_only: bool, yes: bool) -> Result<()> {
         self_update::Status::UpToDate(v) => println!("tt {v} is already up to date."),
         self_update::Status::Updated(v) => println!("Updated to tt {v}."),
     }
+
+    // Only the marks no command can close, and only here: the throttled
+    // startup check prints nothing about marks.
+    if let Some(dir) = crate::marks::mark_dir() {
+        for note in crate::marks::unclosable_in(&dir) {
+            println!("{note}");
+        }
+    }
     Ok(())
 }
 

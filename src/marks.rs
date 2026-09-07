@@ -132,15 +132,18 @@ impl Lease {
         }
     }
 
-    /// The `tt agent end` line that logs this mark's work and clears it.
+    /// The `tt agent end` line that logs this mark's work and clears it, or
+    /// [`remove_by_hand`]'s note for a mark no command can address.
     ///
     /// `--trim` only for a phase the model vouched for; an unvouched one is
-    /// judged across its whole span, which `--trim` would cut to the 5m floor,
-    /// so that case asks for the minutes outright.
+    /// judged across its whole span, so that case asks for the minutes outright.
     ///
     /// The project printed is the mark's own sanitised name, which is what
     /// [`same_project`] — and so both of the audit's joins — accepts.
     pub fn close_command(&self) -> String {
+        if !closable(&self.mark) {
+            return remove_by_hand(&self.mark);
+        }
         let tail = if self.vouched { "--trim" } else { "<minutes>" };
         format!(
             "tt agent end {} {} {} \"<summary>\" {}",
@@ -463,6 +466,42 @@ pub fn owned_by(mark: &Mark, project: &str) -> bool {
     same_project(&mark.project, project)
 }
 
+/// Whether any command can address this mark: its triple has to survive
+/// [`mark_key`] and [`split_key`] unchanged. A file written before `.` mapped
+/// to `-` holds a dotted segment, so `end` and `cancel` build a key that names
+/// no file — such a mark logs work and clears nothing.
+pub fn closable(mark: &Mark) -> bool {
+    let issue = mark.issue.as_deref().unwrap_or("-");
+    let (project, parsed, phase) = split_key(&mark_key(&mark.project, issue, &mark.phase));
+    (project.as_str(), parsed.as_deref(), phase.as_str())
+        == (
+            mark.project.as_str(),
+            mark.issue.as_deref(),
+            mark.phase.as_str(),
+        )
+}
+
+/// The one line offered for a mark [`closable`] rejects: what to log and which
+/// file to delete. The name is the triple rejoined, which is the file's own
+/// name — [`split_key`] only cuts it. Carries the project token, as every line
+/// printed for a mark does.
+pub fn remove_by_hand(mark: &Mark) -> String {
+    let issue = mark.issue.as_deref().unwrap_or("-");
+    format!(
+        "{}.{}.{} cannot be closed — log it with tt agent item {} {} {} \"<summary>\" <minutes> and remove the file by hand",
+        mark.project, issue, mark.phase, mark.project, issue, mark.phase
+    )
+}
+
+/// Every mark in `dir` no command can close, as its own note.
+pub fn unclosable_in(dir: &Path) -> Vec<String> {
+    open_marks_in(dir)
+        .iter()
+        .filter(|mark| !closable(mark))
+        .map(remove_by_hand)
+        .collect()
+}
+
 /// Record that a close for one phase is under way, holding the mark's start
 /// timestamp so the file names its own phase's span. An existing sentinel is
 /// overwritten; [`is_closing_in`] is what refuses.
@@ -776,6 +815,45 @@ mod tests {
         let touched = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert!(touched.vouched, "a bare beat anywhere in the file vouches");
         assert!(touched.close_command().ends_with("--trim"));
+    }
+
+    /// A mark file written before `.` mapped to `-` names a triple no command
+    /// can address, so its row offers a hand-removal note instead of a close
+    /// line.
+    #[test]
+    fn a_mark_whose_triple_does_not_round_trip_prints_no_close_line() {
+        let dir = sandbox("legacy-dotted");
+        write(&dir, "app.web.7.impl", "1000000\n");
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+
+        assert!(!closable(&lease.mark));
+        let note = lease.close_command();
+        assert!(!note.contains("tt agent end"), "{note}");
+        assert!(note.contains("app.web.7.impl"), "{note}");
+        assert!(
+            note.contains("tt agent item app web.7 impl"),
+            "the note has to name the work to log and its project: {note}"
+        );
+    }
+
+    #[test]
+    fn a_healthy_mark_is_closable_in_both_forms() {
+        let dir = sandbox("legacy-healthy");
+        write(&dir, "app.7.impl", "1000000\n");
+        write(&dir, "app.-.plan", "1000000\n");
+        for mark in open_marks_in(&dir) {
+            assert!(closable(&mark), "{:?}", mark);
+        }
+    }
+
+    #[test]
+    fn only_the_marks_no_command_can_close_get_a_note() {
+        let dir = sandbox("legacy-notes");
+        write(&dir, "app.web.7.impl", "1000000\n");
+        write(&dir, "app.7.impl", "1000000\n");
+        let notes = unclosable_in(&dir);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("app.web.7.impl"), "{notes:?}");
     }
 
     #[test]

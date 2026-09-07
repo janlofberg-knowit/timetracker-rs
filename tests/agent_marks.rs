@@ -403,8 +403,8 @@ fn list_does_not_match_a_dot_related_project() {
     assert_eq!(wide.stdout, "No open marks.\n");
 }
 
-/// A `[stale]` row's close line starts `tt agent end …`, so a project sharing
-/// one of those words used to match every stale row of every project.
+/// The filter is `owned_by`, not a substring of the row: a project named after
+/// a word in a close line matches only its own marks.
 #[test]
 fn list_for_a_project_named_tt_lists_its_own_mark_only() {
     let case = Case::new("list-filter-tt");
@@ -447,4 +447,39 @@ fn list_for_a_project_with_no_open_marks_reports_the_bare_line() {
     let run = case.run(&["list", "quiet"]);
     run.assert_status(0);
     assert_eq!(run.stdout, "No open marks.\n");
+}
+
+/// A mark file written before `.` mapped to `-` names a triple `end` and
+/// `cancel` cannot address, so its row offers no runnable close line.
+#[test]
+fn a_legacy_dotted_mark_is_listed_with_no_close_line() {
+    let case = Case::new("list-legacy-dotted");
+    let start = now() - 5 * 3600;
+    case.write_mark("app.web.7.impl", start);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&format!("since {}", clock(start)));
+    run.assert_stdout_has("app.web.7.impl cannot be closed");
+    run.assert_stdout_has("tt agent item app web.7 impl");
+    assert!(
+        !run.stdout.contains("tt agent end"),
+        "following this row must not log an entry that leaves the mark open: {:?}",
+        run.stdout
+    );
+}
+
+/// The close line of a mark that does round-trip, in both of its forms.
+#[test]
+fn a_healthy_marks_close_line_is_unchanged() {
+    let case = Case::new("list-legacy-healthy");
+    let start = now() - 5 * 3600;
+    case.write_mark("app.7.impl", start);
+    case.write_mark("app.-.plan", start);
+    case.beats_at("app.7.impl", &[start + 60]);
+
+    let run = case.run(&["list"]);
+    run.assert_status(0);
+    run.assert_stdout_has("tt agent end app 7 impl \"<summary>\" --trim");
+    run.assert_stdout_has("tt agent end app - plan \"<summary>\" <minutes>");
 }
