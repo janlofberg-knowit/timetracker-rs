@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     /// A mark that never beat is flagged and followed by the explicit-minutes
-    /// close line: `--trim` there would log the 5m floor, not the real time.
+    /// close line: `--trim` there would bill the whole span, idle included.
     #[test]
     fn a_stale_beatless_mark_is_flagged_with_the_explicit_minutes_command() {
         let dir = sandbox("rows-stale-beatless");
@@ -1185,8 +1185,8 @@ mod tests {
         );
     }
 
-    /// A hook-beaten mark is judged whole-span, so `--trim` there would log the
-    /// 5m floor: the row asks for the minutes.
+    /// A hook-beaten mark is judged whole-span, so `--trim` there would bill
+    /// the whole span, idle included: the row asks for the minutes.
     #[test]
     fn a_stale_hook_beaten_mark_is_flagged_with_the_explicit_minutes_command() {
         let dir = sandbox("rows-stale-hook-beaten");

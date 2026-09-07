@@ -112,7 +112,7 @@ tt agent end   <project> <issue|-> <phase> "<summary>"
 # Never a substitute for measuring a span you could have marked instead.
 tt agent item  <project> <issue|-> <phase> "<summary>" <minutes>
 
-tt agent list                                  # what is still open
+tt agent list [PROJECT]                        # what is still open
 tt agent cancel <project> <issue|-> <phase>    # drop without logging
 tt agent audit [--auto-log]                    # unaccounted activity; see below
 
@@ -164,7 +164,7 @@ as unaccounted again, and `tt agent list` marks the row `[stale]` and prints
 under it the exact `tt agent end` line that logs the work and clears it —
 `--trim` when you touched the phase, explicit minutes when only the hooks beat it
 or nothing did, since `--trim` on an untouched phase reads the whole span as one
-gap and logs the 5-minute floor.
+gap and cuts nothing, logging all of it.
 
 **An existing install must re-run `install-hooks.mjs`.** The hook scripts are
 copied into Claude Code's own hooks directory, so a machine still holding the

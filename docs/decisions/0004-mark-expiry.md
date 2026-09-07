@@ -72,8 +72,10 @@ preferred to a silent guess; the model touches as the work runs, or passes the
 minutes.
 
 This is also what the printed close line keys on: `--trim` for a phase the model
-vouched for, the explicit-minutes form otherwise, since whole-span judgement
-would trim a hook-only mark to the 5-minute floor. The boundary follows the same
+vouched for, the explicit-minutes form otherwise: under whole-span judgement the
+holes cover the span, so `trim_spans` declines and `--trim` bills all of it, idle
+included. The refusal drops its `--trim` half in that same case, for the same
+reason. The boundary follows the same
 rule `gaps_over` does — integer-floor minutes, strictly greater — rather than a
 bare instant comparison, which had a mark one second past its grace printing a
 `--trim` that would trim nothing. `Lease::expires_at` returns the first instant

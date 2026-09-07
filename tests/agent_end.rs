@@ -948,3 +948,23 @@ fn an_entry_recorded_with_the_mark_left_behind_exits_74() {
     retry.assert_status(75);
     assert_eq!(case.store().entries.len() - fixture.before, 1);
 }
+
+/// An unvouched phase's holes cover its whole span, so `--trim` would store
+/// all of it: the refusal names only `--full` and the explicit minutes.
+#[test]
+fn an_unvouched_refusal_names_no_trim_figure() {
+    let case = Case::new("gaps-unvouched-no-trim");
+    let span = 150;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+
+    let run = case.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+    run.assert_status(65);
+    run.assert_stderr_has(&format!("tt: --full logs {span}m\n"));
+    run.assert_stderr_has("or pass the real minutes instead.");
+    assert!(
+        !run.stderr.contains("--trim"),
+        "the refusal named a --trim figure it will not honour: {:?}",
+        run.stderr
+    );
+}

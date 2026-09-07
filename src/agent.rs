@@ -572,7 +572,12 @@ fn refuse(
         clock(worst.1),
         clock(worst.2)
     );
-    eprintln!("tt: --full logs {measured}m, --trim logs {trimmed}m");
+    // A zero trim is exactly the case where the holes cover the span, so
+    // `--trim` stores all of it: offer the explicit minutes alone.
+    match trimmed {
+        0 => eprintln!("tt: --full logs {measured}m"),
+        trimmed => eprintln!("tt: --full logs {measured}m, --trim logs {trimmed}m"),
+    }
     eprintln!("tt: or pass the real minutes instead.");
     std::process::exit(65);
 }
