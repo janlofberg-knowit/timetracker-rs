@@ -36,45 +36,47 @@ all: no evidence is treated as no evidence.
 
 A beat line carries its provenance. `tt agent touch` — the model's own vouch —
 writes a bare `<epoch>`; the hooks write `<epoch> hook`. One file, two meanings,
-and the four readers of it differ deliberately:
+and two readers that differ deliberately:
 
-- **Measurement** (`Phase::ended`, what `end` bills) anchors on the last **bare**
-  line wherever it sits in the file: tagged lines are invisible to measurement
-  entirely, and `end` falls back to measuring to now only when the file holds no
-  bare line at all. Reading the anchor off the final line alone instead would
-  discard a model vouch the moment a hook beat followed it — a phase touched at
-  minute 20 and hook-beaten at 21 would bill 61 minutes at a close an hour later.
-- **Gap detection** (`Phase::beats`, `gaps_over`) counts every line: an
-  automatic beat is still evidence the session was there.
+- **Judgement** (`Phase`, and through it what `end` bills and refuses) reads
+  **bare lines only**. A hook beat is presence, not work, so it enters no part of
+  the measurement: `Phase.beats` drops tagged lines, `end` measures to the last
+  bare beat wherever it sits, and it falls back to measuring to now only when
+  there is no bare beat at all. Anchoring on the final line instead, tag and all,
+  would discard a model vouch the moment a hook beat followed it — a phase
+  touched at minute 20 and hook-beaten at 21 would bill 61 minutes at a close an
+  hour later.
 - **Liveness** (`Lease::last_seen`) takes the last line whatever tag follows it —
   an automatic beat is precisely the evidence staleness exists to see.
-- **The unvouched threshold** (`Phase::vouched`) asks whether any *bare* line
-  exists, so `max_unvouched_minutes` keeps meaning "the model never vouched"
-  rather than "the file is empty", and a hook-only phase is not dropped onto the
-  shorter gap threshold.
+  `Lease::vouched` says whether any bare line is present, which is what the
+  printed close line keys on.
 
-**Interior silence and trailing silence are judged separately.** A long
-autonomous turn and an idle operator look nearly identical in a sparse beats
-file, so each threshold is applied to the case it was designed for. A hole
-*between* two beats keeps today's switch — `max_gap_minutes` once the model has
-vouched, `max_unvouched_minutes` when it has not — so a long turn with only a
-boundary beat at its end is never refused. The **trailing** stretch, from the
-last beat to whatever `end` is measuring to, is always judged at
-`max_gap_minutes`, so 100 minutes of operator idle after the work stopped is
-refused rather than billed silently. Two boundaries hold that in place: a phase
-with **no beats at all** has no trailing stretch and stays wholly on the
-unvouched grace, or the ordinary `begin` → work 60m → `end` with no touches
-would start refusing; and the extra test only applies where the interior
-threshold is the larger of the two, since for a vouched phase `gaps_over` has
-already flagged the trailing stretch and it must not be counted twice.
+**An unvouched phase is judged exactly as if its beats file were empty**: one
+whole-span silence from `begin` to whatever `end` is measuring to, against
+`max_unvouched_minutes`. A vouched phase measures to its last bare beat and
+judges the holes between bare beats at `max_gap_minutes`. There is no split
+between interior and trailing silence.
 
-This is also what makes the printed close line honest. A stale mark with a beat
-is by definition one whose last beat is older than `max_gap_minutes`, so its
-trailing stretch is always flagged and the `--trim` the row prints always
-changes the bill. For that equivalence to be exact, `Lease::is_expired_at`
-judges by the same rule `gaps_over` does — integer-floor minutes, strictly
-greater — rather than comparing instants, which had a mark one second past its
-expiry printing a `--trim` that would trim nothing.
+Judging presence and work by different thresholds in one walk over one list was
+tried first and broke in both directions at once: two hook beats could bracket
+118 minutes of operator idle inside the unvouched grace and bill it at exit 0,
+while a 100-minute unvouched span with one hook beat at minute 5 was refused and
+its `--trim` logged the 5-minute floor — a span an *empty* beats file logs
+cleanly. Filtering the channel is smaller than tuning the judge, and has no
+direction left to break in.
+
+The accepted cost: a phase touched at minute 0 and again at minute 60 with hook
+beats in between is refused for that 60-minute hole, because the hook beats do
+not shorten it. Under-billing is as bad as over-billing, so a refusal is
+preferred to a silent guess; the model touches as the work runs, or passes the
+minutes.
+
+This is also what the printed close line keys on: `--trim` for a phase the model
+vouched for, the explicit-minutes form otherwise, since whole-span judgement
+would trim a hook-only mark to the 5-minute floor. `Lease::is_expired_at` judges
+by the same rule `gaps_over` does — integer-floor minutes, strictly greater —
+rather than comparing instants, which had a mark one second past its expiry
+printing a `--trim` that would trim nothing.
 
 `audit::unaccounted` subtracts each same-project lease's covered interval
 (`mark.start → min(now, expiry)`) from the session window and flags whatever
@@ -84,9 +86,7 @@ alone was not enough: the any-overlap predicate around it still answered
 "covered" for a still-open session whose mark expired at its head.
 `tt agent list` grows a last-seen column, a `[stale]`
 marker, and one indented line per stale mark holding the exact `tt agent end`
-line that logs the work and clears it — `--trim` for a mark with a heartbeat to
-measure to, the explicit-minutes form for one without, since `--trim` there
-reads the whole span as one gap and logs the 5-minute floor.
+line that logs the work and clears it.
 
 The thresholds are the two that already exist, and are the same pair `tt agent
 end` judges a close by, so there is no new knob and no second vocabulary for
@@ -99,8 +99,12 @@ Together they renew a live session's marks at every turn boundary, and only the
 marks of the project the beating session resolved; no resolved project means no
 beat.
 
-`tt agent end`'s thresholds and `gaps_over` itself are unchanged; the beat
-line's optional tag is the only format change.
+`tt agent end`'s thresholds and `gaps_over` itself are unchanged. Two format
+changes carry all of this: the beat line's optional tag, and a mark key that
+sanitises its three segments before joining them, so a `.` in a project or issue
+becomes `-` and every key holds exactly two dots — the project is then the first
+segment by construction rather than by a second parser that disagreed with the
+first.
 
 ## Alternatives considered
 

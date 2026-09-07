@@ -415,79 +415,99 @@ fn a_hook_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
     run.assert_stdout_has(&logged_duration(20));
 }
 
-/// An abandoned mark whose only beats are automatic: refused, then `--trim`
-/// logs the span up to its last beat.
+/// An abandoned mark whose only beats are automatic is judged across its whole
+/// span, so the refusal names the mark's own start and `--trim` has nothing
+/// left to bill: the printed close line asks for the minutes instead.
 #[test]
-fn an_abandoned_hook_beaten_mark_is_refused_and_trims_to_its_last_beat() {
+fn an_abandoned_hook_beaten_mark_is_refused_across_its_whole_span() {
     let case = Case::new("gaps-hook-abandoned");
     let start = now() - 200 * 60;
-    // Half a minute of slack, so a second spent running the close does not
-    // round the trimmed remainder down to 39m.
-    let last_beat = start + 40 * 60 + 30;
     case.write_mark("proj.7.impl", start);
-    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, start + 40 * 60]);
 
     let refused = case.run(&["end", "proj", "7", "impl", "left open over the weekend"]);
     refused.assert_status(65);
-    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
-
-    let trimmed = case.run(&[
-        "end",
-        "proj",
-        "7",
-        "impl",
-        "left open over the weekend",
-        "--trim",
-    ]);
-    trimmed.assert_status(0);
-    trimmed.assert_stdout_has(&logged_duration((last_beat - start) / 60));
+    refused.assert_stderr_has(&format!("gap ({}-", clock(start)));
+    assert!(case.store().entries.is_empty(), "nothing was logged");
 }
 
-// --- interior versus trailing silence --------------------------------------
+// --- an unvouched phase is judged as if its beats file were empty ----------
 
-/// An unvouched phase's trailing stretch is judged at the gap threshold, so an
-/// operator wandering off after the work stopped is refused, and `--trim` bills
-/// only up to the last beat.
+/// Hook beats at either end of the span buy no interior allowance: 125 minutes
+/// is one silence over the unvouched grace.
 #[test]
-fn an_unvouched_phase_is_refused_for_a_wander_before_the_close() {
-    let case = Case::new("gaps-trailing-wander");
-    let start = now() - 130 * 60;
-    // Half a minute of slack against the second the close itself takes.
-    let last_beat = start + 30 * 60 + 30;
-    case.write_mark("proj.7.impl", start);
-    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, last_beat]);
-
-    let refused = case.run(&["end", "proj", "7", "impl", "wandered off after the work"]);
-    refused.assert_status(65);
-    refused.assert_stderr_has(&format!("gap ({}-", clock(last_beat)));
-
-    let trimmed = case.run(&[
-        "end",
-        "proj",
-        "7",
-        "impl",
-        "wandered off after the work",
-        "--trim",
-    ]);
-    trimmed.assert_status(0);
-    trimmed.assert_stdout_has(&logged_duration(30));
-}
-
-/// The same 100-minute hole *between* two beats keeps the unvouched grace.
-#[test]
-fn an_unvouched_phase_is_not_refused_for_an_interior_hole() {
-    let case = Case::new("gaps-interior-hole");
-    let span = 130;
+fn hook_beats_do_not_bracket_an_over_grace_unvouched_span() {
+    let case = Case::new("gaps-hook-bracketed");
+    let span = 125;
     let start = now() - span * 60;
     case.write_mark("proj.7.impl", start);
-    case.hook_beats_at(
-        "proj.7.impl",
-        &[start + 10 * 60, start + 110 * 60, start + span * 60 - 60],
-    );
+    case.hook_beats_at("proj.7.impl", &[start + 5 * 60, start + (span - 2) * 60]);
 
-    let run = case.run(&["end", "proj", "7", "impl", "one long autonomous turn"]);
+    let run = case.run(&["end", "proj", "7", "impl", "hooks bracketed the idle"]);
+    run.assert_status(65);
+    run.assert_stderr_has(&format!("gap ({}-", clock(start)));
+    assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+/// Nor does one cost the grace: 100 minutes still bills whole.
+#[test]
+fn a_hook_beat_does_not_shorten_an_under_grace_unvouched_span() {
+    let case = Case::new("gaps-hook-under-grace");
+    let span = 100;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 5 * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "one hook beat, then work"]);
     run.assert_status(0);
     run.assert_stdout_has(&logged_duration(span));
+}
+
+/// The rule itself: the beats file's hook lines change neither the bill nor the
+/// refusal, on either side of the grace.
+#[test]
+fn an_unvouched_phase_is_judged_the_same_with_hook_beats_as_with_none() {
+    for span in [90, 150] {
+        let start = now() - span * 60;
+
+        let empty = Case::new(&format!("gaps-unvouched-empty-{span}"));
+        empty.write_mark("proj.7.impl", start);
+        let without = empty.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+
+        let hooked = Case::new(&format!("gaps-unvouched-hooked-{span}"));
+        hooked.write_mark("proj.7.impl", start);
+        hooked.hook_beats_at("proj.7.impl", &[start + 5 * 60, start + (span - 2) * 60]);
+        let with = hooked.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+
+        assert_eq!(with.status, without.status, "{span}m: exit code");
+        assert_eq!(with.stdout, without.stdout, "{span}m: what was billed");
+    }
+}
+
+/// However many hook beats follow the model's last touch, the bill is the
+/// touch's.
+#[test]
+fn hook_beats_after_a_touch_never_move_the_bill() {
+    let case = Case::new("gaps-hook-after-touch-many");
+    let start = now() - 61 * 60;
+    case.write_mark("proj.7.impl", start);
+    let file = case.beats_file("proj.7.impl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut body = format!("{}\n", start + 20 * 60);
+    for minute in 21..=60 {
+        body.push_str(&format!("{} hook\n", start + minute * 60));
+    }
+    std::fs::write(&file, body).unwrap();
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "touched once, hooks all through",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(20));
 }
 
 /// Beating once does not buy the longer allowance: 46 minutes, one over.

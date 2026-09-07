@@ -219,25 +219,42 @@ fn list_flags_a_stale_mark_with_the_command_that_clears_it() {
     run.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" <minutes>");
 }
 
-/// A stale mark in the 45–120m band: the `--trim` the row prints has to remove
-/// the trailing silence rather than log the same span a bare close would.
+/// A stale mark the model vouched for gets `--trim`, and it has to remove the
+/// hole between the beats rather than log the span `--full` would.
 #[test]
-fn the_trim_a_stale_beaten_row_prints_changes_the_bill() {
+fn the_trim_a_stale_vouched_row_prints_changes_the_bill() {
     let case = Case::new("list-stale-trim");
-    let start = now() - 130 * 60;
-    // Half a minute of slack against the second the close itself takes.
-    let last_beat = start + 30 * 60 + 30;
+    let start = now() - 160 * 60;
     case.write_mark("proj.23.impl", start);
-    case.hook_beats_at("proj.23.impl", &[last_beat]);
+    case.beats_at("proj.23.impl", &[start + 5 * 60, start + 100 * 60]);
 
     let listed = case.run(&["list"]);
     listed.assert_status(0);
     listed.assert_stdout_has("[stale]");
     listed.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" --trim");
 
+    // A bare close is refused for the 95m hole, so the printed line is the one
+    // that both logs and clears.
+    case.run(&["end", "proj", "23", "impl", "<summary>"])
+        .assert_status(65);
     let trimmed = case.run(&["end", "proj", "23", "impl", "<summary>", "--trim"]);
     trimmed.assert_status(0);
-    trimmed.assert_stdout_has("- Duration: 0h 30m");
+    trimmed.assert_stdout_has("- Duration: 0h 5m");
+}
+
+/// A stale mark only the hooks beat is judged whole-span, so its row asks for
+/// the minutes.
+#[test]
+fn a_stale_hook_beaten_row_asks_for_the_minutes() {
+    let case = Case::new("list-stale-hooked");
+    let start = now() - 160 * 60;
+    case.write_mark("proj.23.impl", start);
+    case.hook_beats_at("proj.23.impl", &[start + 100 * 60]);
+
+    let listed = case.run(&["list"]);
+    listed.assert_status(0);
+    listed.assert_stdout_has("[stale]");
+    listed.assert_stdout_has("tt agent end proj 23 impl \"<summary>\" <minutes>");
 }
 
 #[test]

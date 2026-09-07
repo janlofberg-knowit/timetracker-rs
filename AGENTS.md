@@ -140,11 +140,12 @@ any `touch` — where a hole between heartbeats is positive evidence that work s
 so the unmeasured phase gets the longer allowance. Long enough is still refused: 120
 minutes with nothing to show for it wants a human.
 
-Those two thresholds apply to holes *between* beats. The **trailing** stretch, from
-the last beat to where `end` is measuring to, is always judged at the 45-minute
-standard whether or not you touched, so idling after the work stopped is refused
-rather than billed. A phase with no beats at all has no trailing stretch: it stays
-one span on the 120-minute allowance.
+A phase you never touched is judged **whole-span**: one silence from `begin` to
+where `end` measures, exactly as if the hooks had never beaten it. Once you have
+touched, only the holes between *your* touches are judged, at the 45-minute
+standard — so a phase touched at minute 0 and again at minute 60 is refused for
+that hour however many hook beats fill it. Touch as the work runs, or pass the
+real minutes.
 
 Two kinds of heartbeat share one file, and only one of them vouches for time. **Your
 `tt agent touch` is the vouch**: `end` measures to it, and it is what lifts a phase off
@@ -161,9 +162,9 @@ at all. An
 expired mark stops vouching for its project, so that project's activity shows up
 as unaccounted again, and `tt agent list` marks the row `[stale]` and prints
 under it the exact `tt agent end` line that logs the work and clears it —
-`--trim` when there is a heartbeat to measure to, explicit minutes when there is
-none, since `--trim` on a mark that never beat reads the whole span as one gap
-and logs the 5-minute floor.
+`--trim` when you touched the phase, explicit minutes when only the hooks beat it
+or nothing did, since `--trim` on an untouched phase reads the whole span as one
+gap and logs the 5-minute floor.
 
 **An existing install must re-run `install-hooks.mjs`.** The hook scripts are
 copied into Claude Code's own hooks directory, so a machine still holding the

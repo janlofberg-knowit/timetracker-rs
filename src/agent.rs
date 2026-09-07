@@ -460,9 +460,12 @@ fn end(
                 std::process::exit(64);
             };
 
-            // Clamped, so a heartbeat behind the mark is a zero-length phase.
+            // Measured to the last bare beat, clamped so a heartbeat behind the
+            // mark is a zero-length phase.
             let ended = marked
-                .ended
+                .beats
+                .last()
+                .copied()
                 .unwrap_or_else(|| Local::now().timestamp())
                 .max(marked.started);
             let measured = (ended - marked.started) / 60;
@@ -470,21 +473,14 @@ fn end(
             // end where the timeline does.
             anchor = Some(instant(ended)?);
 
-            // Keyed on `vouched`, never on the beats being empty: an automatic
-            // beat must not drop a hook-only phase onto the shorter threshold.
+            // An unvouched phase is judged as one whole-span silence against the
+            // longer grace. Its beats file may hold hook lines, which
+            // `read_phase_in` has already dropped — presence is not work.
             let Thresholds { gap, unvouched } = audit::thresholds();
-            let interior = if marked.vouched { gap } else { unvouched };
-            let mut gaps = marks::gaps_over(marked.started, ended, &marked.beats, interior);
-            // The trailing stretch is always judged at `gap`. Only where the
-            // interior threshold is the larger of the two, and never a stretch
-            // `gaps_over` already flagged — it must not be pushed twice.
-            if interior > gap
-                && let Some(tail) = marks::trailing_silence(marked.started, ended, &marked.beats)
-                && (tail.1 - tail.0) / 60 > gap
-                && gaps.last() != Some(&tail)
-            {
-                gaps.push(tail);
-            }
+            let gaps = match marked.beats.is_empty() {
+                true => marks::gaps_over(marked.started, ended, &[], unvouched),
+                false => marks::gaps_over(marked.started, ended, &marked.beats, gap),
+            };
             if gaps.is_empty() {
                 measured
             } else {

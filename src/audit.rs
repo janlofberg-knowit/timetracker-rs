@@ -309,6 +309,7 @@ mod tests {
                 start: at(start),
             },
             last_seen: None,
+            vouched: false,
         }
     }
 
@@ -316,6 +317,7 @@ mod tests {
     fn beaten(project: &str, start: i64, last_seen: i64) -> Lease {
         Lease {
             last_seen: Some(at(last_seen)),
+            vouched: true,
             ..mark(project, start)
         }
     }

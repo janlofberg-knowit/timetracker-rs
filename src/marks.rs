@@ -9,12 +9,11 @@
 //! subdirectory, and an unfinished close leaves a `closing/` entry beside them.
 //!
 //! A beat line has two provenances: `<epoch>` is the model's own `tt agent
-//! touch`, `<epoch> hook` is an automatic beat from the harness hooks. The four
-//! readers of that file differ deliberately — measurement ([`Phase::ended`])
-//! anchors on the last bare line wherever it sits, gap detection
-//! ([`Phase::beats`]) counts every line, liveness ([`lease_in`]) takes the last
-//! line whatever its tag, and the unvouched threshold ([`Phase::vouched`]) asks
-//! whether any bare line exists. See docs/decisions/0004-mark-expiry.md.
+//! touch`, `<epoch> hook` is an automatic beat from the harness hooks. The file
+//! has two readers, and they differ deliberately — judgement ([`Phase`]) reads
+//! bare lines only, so no automatic beat enters what `end` bills, while liveness
+//! ([`lease_in`]) reads the last line whatever its tag. See
+//! docs/decisions/0004-mark-expiry.md.
 //!
 //! Only the start timestamp is read; see [`open_marks_in`].
 
@@ -80,10 +79,10 @@ impl Mark {
 }
 
 /// The pair of silences `tt agent end` and the audit judge by, resolved once per
-/// entry point — see [`crate::audit::thresholds`]. `gap` bounds a silence
-/// between beats and the trailing stretch after the last one; `unvouched` is the
-/// longer grace a phase the model never vouched for gets, and doubles as the
-/// floor under which an activity window is not worth flagging.
+/// entry point — see [`crate::audit::thresholds`]. `gap` bounds a silence around
+/// a bare beat; `unvouched` is the longer grace a phase the model never vouched
+/// for gets, judged across its whole span, and doubles as the floor under which
+/// an activity window is not worth flagging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Thresholds {
     pub gap: i64,
@@ -98,6 +97,9 @@ pub struct Lease {
     /// The beats file's **last** line's timestamp whatever tag follows it, not
     /// its largest beat; `None` when the file holds no beat at all.
     pub last_seen: Option<DateTime<Local>>,
+    /// Whether the file holds any bare line, i.e. whether the model ever
+    /// vouched for this phase. An automatic beat is presence, not work.
+    pub vouched: bool,
 }
 
 impl Lease {
@@ -133,18 +135,15 @@ impl Lease {
 
     /// The `tt agent end` line that logs this mark's work and clears it.
     ///
-    /// `--trim` only for a mark with a heartbeat, including an automatic one;
-    /// on a mark with none it would log the 5m floor, so that case asks for the
-    /// minutes outright.
+    /// `--trim` only for a phase the model vouched for; an unvouched one is
+    /// judged across its whole span, which `--trim` would cut to the 5m floor,
+    /// so that case asks for the minutes outright.
     ///
     /// The arguments are the mark's parsed pieces, so a lossy project name
     /// prints differently from what the operator typed; they still round-trip
     /// through [`mark_key`] back to this same file.
     pub fn close_command(&self) -> String {
-        let tail = match self.last_seen {
-            Some(_) => "--trim",
-            None => "<minutes>",
-        };
+        let tail = if self.vouched { "--trim" } else { "<minutes>" };
         format!(
             "tt agent end {} {} {} \"<summary>\" {}",
             self.mark.project,
@@ -174,6 +173,7 @@ pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
     Lease {
         mark: mark.clone(),
         last_seen,
+        vouched: body.lines().any(all_digits),
     }
 }
 
@@ -514,19 +514,11 @@ pub fn cancel_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Res
 pub struct Phase {
     /// The instant the mark was opened.
     pub started: i64,
-    /// Every heartbeat, **in file order**, dropping lines whose first field is
-    /// not a bare timestamp. Never sort or dedup: [`gaps_over`] judges that.
+    /// Every **bare** heartbeat, **in file order**. Tagged lines are dropped, so
+    /// a hook-beaten phase reads back exactly as a beat-less one; no automatic
+    /// beat may move what `end` bills. Never sort or dedup: [`gaps_over`] judges
+    /// that.
     pub beats: Vec<i64>,
-    /// The instant the phase is measured to: the **last bare** beat line
-    /// wherever it sits, not the largest beat. Tagged lines are invisible here,
-    /// so `None` means the file holds no bare beat at all and the caller has
-    /// nothing better to measure to than now. Load-bearing: no automatic beat
-    /// may move what `end` bills.
-    pub ended: Option<i64>,
-    /// Whether the model ever vouched for this phase, i.e. whether any bare
-    /// timestamp is present. Automatic beats do not count: `max_unvouched_minutes`
-    /// means "the model never vouched", not "the file is empty".
-    pub vouched: bool,
 }
 
 /// A line's leading whitespace-delimited field as a bare timestamp, or `None`.
@@ -566,19 +558,14 @@ pub fn read_phase_in(
 
     // No beats file leaves the single start→end interval to judge.
     let body = fs::read_to_string(&source).unwrap_or_default();
-    // Gap detection counts every line, tagged or not: an automatic beat is
-    // still evidence the session was there.
-    let beats = body.lines().filter_map(beat_of).collect();
-    // The last **bare** line wherever it sits: a tagged beat never anchors.
-    let ended = body.lines().rfind(|line| all_digits(line));
-    let vouched = body.lines().any(all_digits);
+    // Bare lines only: a tagged beat is presence, not work.
+    let beats = body
+        .lines()
+        .filter(|line| all_digits(line))
+        .filter_map(|line| line.parse().ok())
+        .collect();
 
-    Ok(Some(Phase {
-        started,
-        beats,
-        ended: ended.and_then(|line| line.parse().ok()),
-        vouched,
-    }))
+    Ok(Some(Phase { started, beats }))
 }
 
 /// Every stretch of silence longer than `threshold_minutes`, as chronological
@@ -613,23 +600,6 @@ pub fn gaps_over(start: i64, end: i64, beats: &[i64], threshold_minutes: i64) ->
         gaps.push((prev, end));
     }
     gaps
-}
-
-/// The stretch from the last beat that advanced the sequence to `end`, or `None`
-/// when no beat did: a phase with no usable beat has **no trailing stretch**.
-/// The skip rule is [`gaps_over`]'s, so the two agree on which beats count. The
-/// length is unjudged; the caller applies the threshold.
-pub fn trailing_silence(start: i64, end: i64, beats: &[i64]) -> Option<(i64, i64)> {
-    let mut prev = start;
-    let mut beaten = false;
-    for &beat in beats {
-        if beat <= prev || beat >= end {
-            continue;
-        }
-        prev = beat;
-        beaten = true;
-    }
-    (beaten && end > prev).then_some((prev, end))
 }
 
 #[cfg(test)]
@@ -676,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn an_automatic_beat_is_tagged_so_it_never_anchors_a_close() {
+    fn an_automatic_beat_is_tagged_so_it_enters_no_judgement() {
         let dir = sandbox("touch-project-tag");
         write(&dir, "a.7.impl", "1000100\n");
 
@@ -685,9 +655,7 @@ mod tests {
         let body = fs::read_to_string(beats_path(&dir, "a.7.impl")).unwrap();
         assert!(body.trim_end().ends_with(" hook"), "{body}");
         let phase = read_phase_in(&dir, "a", "7", "impl").unwrap().unwrap();
-        assert_eq!(phase.ended, None, "a tagged last line anchors nothing");
-        assert!(!phase.vouched, "only the model's own touch vouches");
-        assert_eq!(phase.beats.len(), 1, "gaps still count it");
+        assert!(phase.beats.is_empty(), "a tagged beat is not a beat here");
     }
 
     /// The project the hook resolves is a display string; the mark file is not.
@@ -786,6 +754,25 @@ mod tests {
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, None);
         assert_eq!(lease.expires_at(HOUSE), at(1_000_000 + 120 * 60));
+    }
+
+    /// A hook beat keeps the mark alive without vouching for its time, so the
+    /// close line asks for the minutes rather than offering `--trim`.
+    #[test]
+    fn only_a_bare_beat_vouches_for_a_lease() {
+        let dir = sandbox("lease-vouch");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000600 hook\n").unwrap();
+        let hooked = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert!(!hooked.vouched);
+        assert!(hooked.close_command().ends_with("<minutes>"));
+
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000600\n1000900 hook\n").unwrap();
+        let touched = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert!(touched.vouched, "a bare beat anywhere in the file vouches");
+        assert!(touched.close_command().ends_with("--trim"));
     }
 
     #[test]
@@ -1117,6 +1104,28 @@ mod tests {
         );
     }
 
+    /// A hook-beaten mark is judged whole-span, so `--trim` there would log the
+    /// 5m floor: the row asks for the minutes.
+    #[test]
+    fn a_stale_hook_beaten_mark_is_flagged_with_the_explicit_minutes_command() {
+        let dir = sandbox("rows-stale-hook-beaten");
+        let now = 1_000_000_000;
+        write(&dir, "loremind.-.ops", &format!("{}\n", now - 6 * 3600));
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(
+            beats_path(&dir, "loremind.-.ops"),
+            format!("{} hook\n", now - 3 * 3600),
+        )
+        .unwrap();
+
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(
+            rows[1],
+            "  tt agent end loremind - ops \"<summary>\" <minutes>"
+        );
+    }
+
     #[test]
     fn no_marks_have_no_rows() {
         let dir = sandbox("rows-empty");
@@ -1348,7 +1357,6 @@ mod tests {
 
         let phase = read_phase_in(&dir, "tt", "8", "impl").unwrap().unwrap();
         assert_eq!(phase.beats, Vec::<i64>::new(), "the stale beats survived");
-        assert_eq!(phase.ended, None);
 
         touch_in(&dir, "tt", "8", "impl").unwrap();
         let beats = read(&dir, "beats/tt.8.impl");
@@ -1420,26 +1428,6 @@ mod tests {
         assert_eq!(gaps_over(start, end, &[], 45), vec![(start, end)]);
     }
 
-    #[test]
-    fn a_phase_with_no_beats_has_no_trailing_stretch() {
-        assert_eq!(trailing_silence(0, 100 * 60, &[]), None);
-        // Nor has one whose every beat is skipped by the sequence rule.
-        assert_eq!(trailing_silence(0, 100 * 60, &[0, 200 * 60]), None);
-    }
-
-    #[test]
-    fn the_trailing_stretch_runs_from_the_last_advancing_beat() {
-        let start = 1_000_000;
-        let beats = [start + 10 * 60, start + 20 * 60, start + 15 * 60];
-        let end = start + 200 * 60;
-        assert_eq!(
-            trailing_silence(start, end, &beats),
-            Some((start + 20 * 60, end))
-        );
-        // Nothing left after the last beat is no stretch at all.
-        assert_eq!(trailing_silence(start, start + 10 * 60, &beats), None);
-    }
-
     /// Between expiry and expiry plus 59s the trailing stretch still floors to
     /// the threshold, so the mark is not yet stale.
     #[test]
@@ -1482,7 +1470,6 @@ mod tests {
         let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
         assert_eq!(phase.started, 1_000_000);
         assert_eq!(phase.beats, vec![1_000_600, 1_002_000, 1_001_200]);
-        assert_eq!(phase.ended, Some(1_001_200));
     }
 
     /// A model vouch followed by automatic beats still anchors the close.
@@ -1499,22 +1486,27 @@ mod tests {
         );
 
         let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
-        assert_eq!(phase.ended, Some(start + 20 * 60));
-        assert!(phase.vouched);
-        assert_eq!(phase.beats.len(), 2, "gap detection still sees both");
-        assert_eq!((phase.ended.unwrap() - phase.started) / 60, 20);
+        assert_eq!(phase.beats, vec![start + 20 * 60]);
+        assert_eq!((phase.beats[0] - phase.started) / 60, 20);
     }
 
+    /// A hook-only file reads back exactly as an absent one, so `end` judges
+    /// the two the same.
     #[test]
-    fn a_phase_whose_only_beats_are_tagged_measures_to_now() {
+    fn a_phase_whose_only_beats_are_tagged_reads_back_as_beatless() {
         let dir = sandbox("phase-only-tagged");
         write(&dir, "proj.7.impl", "1000000\n");
         fs::create_dir_all(dir.join("beats")).unwrap();
         write(&dir, "beats/proj.7.impl", "1000600 hook\n1000900 hook\n");
 
         let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
-        assert_eq!(phase.ended, None);
-        assert!(!phase.vouched);
+        assert_eq!(
+            phase,
+            Phase {
+                started: 1_000_000,
+                beats: Vec::new()
+            }
+        );
     }
 
     #[test]
@@ -1529,9 +1521,7 @@ mod tests {
         );
 
         let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
-        // `1000600 note` counts as a beat, but is no instant to measure to.
-        assert_eq!(phase.beats, vec![1_000_600]);
-        assert_eq!(phase.ended, None);
+        assert!(phase.beats.is_empty(), "only a bare line is a beat");
     }
 
     #[test]
