@@ -215,7 +215,19 @@ is measured rather than summed from what the tooling reported.
 2. **Close each one as that subagent reports.** `tt agent end <project> <issue>
    <phase> --agent <label> "<summary>"` — its own summary, on its own measured
    span. A label addresses only its own mark, so a close never clears a
-   sibling's.
+   sibling's. Pass what the report says about the run as custom data, under the
+   `agent` namespace:
+
+   ```sh
+   tt agent end <project> <issue> <phase> --agent <label> "<summary>" \
+     --data '{"task": "#175", "agent": {"model": "opus", "effort": "high", "tokens": {"input": 1200, "output": 300}}}'
+   ```
+
+   `task` names the unit of work inside the issue, such as the Task sub-issue
+   the subagent worked on. Omit it, and any of `model`, `effort` and `tokens`,
+   that the report does not give you rather than guessing a value. `tt` writes `agent.label` itself from
+   `--agent`, so never pass that. The full schema is the "Well-known keys"
+   table in `docs/usage.md`.
 3. **Bill your own time under `--agent orchestrator`.** Dispatching, relaying
    and reading reports is real work on the same phase. Open it beside the
    others and close it with **explicit minutes** — never `--full` and never
@@ -230,8 +242,9 @@ No code reserves `orchestrator` or validates any label. It is a convention.
 
 The label is no tag axis: an entry carries the same `#<project>/<issue>`,
 `#<phase>` and `#agent` tags whatever label closed it, so `tt report` still sums
-a whole fan-out under its one issue and phase. Name the subagent in the summary
-prose when the row should say which one it was.
+a whole fan-out under its one issue and phase. It is recorded as `agent.label`
+in the entry's own data instead. Name the subagent in the summary prose too when
+the row itself should say which one it was.
 
 A different phase — even on the same issue, even dispatched in the same
 breath — is never folded into this. Give it its own marks; a mark is keyed

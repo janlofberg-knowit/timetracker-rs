@@ -1001,6 +1001,112 @@ fn a_labelled_end_bills_and_clears_only_its_own_mark() {
     );
 }
 
+/// The label is stamped into the entry's own data, which is where a reader gets
+/// it back: it is no tag axis.
+#[test]
+fn a_labelled_end_records_the_label_under_the_agent_namespace() {
+    let case = Case::new("end-agent-data");
+    case.write_mark("proj.7.review.code", now() - 1800);
+
+    case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "--agent",
+        "code",
+        "read the diff",
+    ])
+    .assert_status(0);
+
+    let entry = &case.store().entries[0];
+    assert_eq!(
+        entry.data,
+        Some(serde_json::json!({"agent": {"label": "code"}}))
+    );
+}
+
+#[test]
+fn a_labelled_end_merges_the_label_into_the_data_the_caller_passed() {
+    let case = Case::new("end-agent-data-merge");
+    case.write_mark("proj.7.review.code", now() - 1800);
+
+    case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "--agent",
+        "code",
+        "read the diff",
+        "--data",
+        r#"{"pr": 42, "agent": {"model": "opus", "tokens": {"input": 1200}}}"#,
+    ])
+    .assert_status(0);
+
+    let entry = &case.store().entries[0];
+    assert_eq!(
+        entry.data,
+        Some(serde_json::json!({
+            "pr": 42,
+            "agent": {"label": "code", "model": "opus", "tokens": {"input": 1200}},
+        }))
+    );
+}
+
+#[test]
+fn an_unlabelled_end_leaves_the_data_exactly_as_it_was_passed() {
+    let case = Case::new("end-no-agent-data");
+    case.write_mark("proj.7.review", now() - 1800);
+
+    case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "read the diff",
+        "--data",
+        r#"{"pr": 42}"#,
+    ])
+    .assert_status(0);
+
+    let entry = &case.store().entries[0];
+    assert_eq!(entry.data, Some(serde_json::json!({"pr": 42})));
+
+    let bare = Case::new("end-no-agent-no-data");
+    bare.write_mark("proj.7.review", now() - 1800);
+    bare.run(&["end", "proj", "7", "review", "read the diff"])
+        .assert_status(0);
+    assert_eq!(bare.store().entries[0].data, None);
+}
+
+/// Exit 64 and nothing recorded: the label has nowhere to go, and the mark is
+/// left for the retry.
+#[test]
+fn a_labelled_end_over_a_non_object_agent_key_exits_64() {
+    let case = Case::new("end-agent-data-clash");
+    case.write_mark("proj.7.review.code", now() - 1800);
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "review",
+        "--agent",
+        "code",
+        "read the diff",
+        "--data",
+        r#"{"agent": "code"}"#,
+    ]);
+    run.assert_status(64);
+    run.assert_stderr_has("expected \"agent\" to be a JSON object, got a string");
+    assert!(case.store().entries.is_empty(), "an entry was recorded");
+    assert!(
+        case.mark_file("proj.7.review.code").is_file(),
+        "the mark was cleared"
+    );
+}
+
 #[test]
 fn a_labelled_refusal_names_the_mark_its_recovery_clears() {
     let case = Case::new("end-agent-unfinished");
