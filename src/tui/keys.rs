@@ -450,6 +450,56 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 
+    /// An entry `hours_ago`, tagged, so it groups with its siblings.
+    fn tagged(id: u64, description: &str, tags: &[&str], hours_ago: i64) -> TimeEntry {
+        let start = Local::now() - chrono::Duration::hours(hours_ago);
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: Some("tt".to_string()),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            start_time: start,
+            end_time: Some(start + chrono::Duration::minutes(30)),
+            idle: Vec::new(),
+            data: None,
+        }
+    }
+
+    #[test]
+    fn j_and_k_step_over_a_collapsed_group_and_through_its_members() {
+        let _guard = env_guard();
+        sandbox("keys-group-steps");
+        seed(
+            vec![
+                tagged(0, "round one", &["tt/174"], 4),
+                tagged(1, "round two", &["tt/174"], 3),
+                tagged(2, "loose", &[], 5),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        // Collapsed: the header and the loose entry, and `j` wraps over two.
+        assert_eq!(app.selectable_len(), 2);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(1));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.expanded_issues.insert("tt/174".to_string());
+        assert_eq!(app.selectable_len(), 4);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            app.selected_entry().map(|e| e.description.clone()),
+            Some("round two".to_string()),
+            "`j` did not step onto the first member"
+        );
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert!(app.selected_entry().is_none(), "`k` left the header");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]

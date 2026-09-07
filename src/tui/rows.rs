@@ -26,11 +26,76 @@ pub(crate) struct GroupHeader {
     pub(crate) total: Duration,
 }
 
+impl VisibleRow {
+    /// Whether the table cursor can land on this row. `table_state.selected()`
+    /// counts these rows only, so a day header is never an index.
+    fn is_selectable(&self) -> bool {
+        !matches!(self, Self::DayHeader { .. })
+    }
+}
+
 impl App {
     /// The rows the entries table draws, in sort order. Cached against
     /// [`RowKey`], so the many calls a single frame makes cost one walk.
     pub(crate) fn rows(&self) -> Vec<VisibleRow> {
         self.with_rows(<[VisibleRow]>::to_vec)
+    }
+
+    /// How many rows the cursor can land on: entries and group headers.
+    pub(crate) fn selectable_len(&self) -> usize {
+        self.with_rows(|rows| rows.iter().filter(|row| row.is_selectable()).count())
+    }
+
+    /// The row under the cursor, counting selectable rows only.
+    pub(crate) fn selected_row(&self) -> Option<VisibleRow> {
+        let idx = self.table_state.selected()?;
+        self.with_rows(|rows| {
+            rows.iter()
+                .filter(|row| row.is_selectable())
+                .nth(idx)
+                .cloned()
+        })
+    }
+
+    /// The selectable index showing `id`: its own row where it has one, else the
+    /// header of the collapsed group that holds it. Its own row wins — an
+    /// expanded member is on screen twice over, once as itself.
+    pub(crate) fn selectable_index_of(&self, id: u64) -> Option<usize> {
+        let is_id = |index: &usize| self.data.entries.get(*index).is_some_and(|e| e.id == id);
+        self.with_rows(|rows| {
+            let selectable = || rows.iter().filter(|row| row.is_selectable());
+            selectable()
+                .position(|row| matches!(row, VisibleRow::Entry(index) if is_id(index)))
+                .or_else(|| {
+                    selectable().position(|row| {
+                        matches!(row, VisibleRow::GroupHeader(header)
+                            if header.members.iter().any(is_id))
+                    })
+                })
+        })
+    }
+
+    /// The id the cursor is over: the selected entry, or the first member of the
+    /// selected group header, so an anchor survives a collapse.
+    pub(crate) fn cursor_anchor_id(&self) -> Option<u64> {
+        let index = match self.selected_row()? {
+            VisibleRow::Entry(index) => index,
+            VisibleRow::GroupHeader(header) => *header.members.first()?,
+            VisibleRow::DayHeader { .. } => return None,
+        };
+        self.data.entries.get(index).map(|entry| entry.id)
+    }
+
+    /// Flip the expanded state of the group under the cursor; a no-op on an
+    /// entry row and on an empty list. **Leaves the selected index alone** —
+    /// expanding inserts rows after the header, so the cursor stays on it.
+    pub(crate) fn toggle_group_at_cursor(&mut self) {
+        let Some(VisibleRow::GroupHeader(header)) = self.selected_row() else {
+            return;
+        };
+        if !self.expanded_issues.remove(&header.tag) {
+            self.expanded_issues.insert(header.tag);
+        }
     }
 
     /// Run `f` over the cached rows, recomputing them first if any input the
@@ -232,7 +297,7 @@ mod tests {
             shape(&app),
             vec!["entry other issue", "entry only member", "entry loose"]
         );
-        assert_eq!(app.rows().len(), app.filtered_len());
+        assert_eq!(app.rows().len(), app.filtered_entries().len());
     }
 
     #[test]
@@ -301,6 +366,59 @@ mod tests {
                 "group tt/8 2 1h 0m".to_string(),
             ]
         );
+    }
+
+    /// Expanding inserts the members *after* the header, so the cursor keeps
+    /// its index by itself.
+    #[test]
+    fn toggling_the_group_under_the_cursor_leaves_the_cursor_where_it_is() {
+        let _guard = env_guard();
+        sandbox("rows-toggle");
+        seed(vec![
+            at(0, "round one", &["tt/8"], today(), 9),
+            at(1, "round two", &["tt/8"], today(), 10),
+            at(2, "round three", &["tt/8"], today(), 11),
+            at(3, "loose", &[], today(), 12),
+        ]);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        // Newest first puts `loose` above the group.
+        app.table_state.select(Some(1));
+        assert_eq!(app.selectable_len(), 2);
+
+        app.toggle_group_at_cursor();
+        assert_eq!(app.table_state.selected(), Some(1));
+        assert_eq!(app.selectable_len(), 5);
+        assert!(matches!(
+            app.selected_row(),
+            Some(VisibleRow::GroupHeader(_))
+        ));
+
+        app.toggle_group_at_cursor();
+        assert_eq!(app.table_state.selected(), Some(1));
+        assert_eq!(app.selectable_len(), 2);
+    }
+
+    #[test]
+    fn toggling_does_nothing_on_an_entry_row_or_an_empty_list() {
+        let _guard = env_guard();
+        sandbox("rows-toggle-inert");
+        seed(vec![
+            at(0, "round one", &["tt/8"], today(), 9),
+            at(1, "round two", &["tt/8"], today(), 10),
+            at(2, "loose", &[], today(), 12),
+        ]);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.table_state.select(Some(0));
+        app.toggle_group_at_cursor();
+        assert!(app.expanded_issues.is_empty(), "an entry row toggled");
+
+        seed(Vec::new());
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.toggle_group_at_cursor();
+        assert!(app.expanded_issues.is_empty());
     }
 
     #[test]

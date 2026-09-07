@@ -505,6 +505,75 @@ mod tests {
         app.table_state.select(Some(idx));
     }
 
+    /// Three rounds on one issue, plus one hand-written entry: two selectable
+    /// rows, the group header first.
+    fn seed_grouped() -> App {
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                dated(0, "round one", "tt", &["tt/174", "impl"], today),
+                dated(1, "round two", "tt", &["tt/174", "impl"], today),
+                dated(2, "round three", "tt", &["tt/174", "impl"], today),
+                dated(3, "hand written", "tt", &[], today),
+            ],
+            4,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.table_state.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn a_group_header_is_no_entry_so_e_d_and_t_do_nothing_on_it() {
+        let _guard = env_guard();
+        sandbox("group-header-inert");
+        let mut app = seed_grouped();
+
+        assert!(app.selected_entry().is_none(), "a header is not an entry");
+        app.start_editing();
+        assert_eq!(app.input_mode, InputMode::Normal, "`e` opened the form");
+        press_d_then(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal, "`d` raised a prompt");
+        press_t_then(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal, "`t` raised a prompt");
+        assert_eq!(on_disk().entries.len(), 4, "the store was touched");
+    }
+
+    #[test]
+    fn select_by_id_lands_on_the_header_of_the_group_holding_the_id() {
+        let _guard = env_guard();
+        sandbox("group-select-by-id");
+        let mut app = seed_grouped();
+
+        app.select_by_id(2);
+        assert_eq!(app.table_state.selected(), Some(0), "not on the header");
+        app.select_by_id(3);
+        assert_eq!(app.table_state.selected(), Some(1), "not on the entry");
+
+        // Expanded, the member has a row of its own: header, then the three.
+        app.expanded_issues.insert("tt/174".to_string());
+        app.select_by_id(2);
+        assert_eq!(app.table_state.selected(), Some(3));
+    }
+
+    #[test]
+    fn an_outside_write_keeps_the_cursor_on_the_group_header() {
+        let _guard = env_guard();
+        sandbox("group-sync-anchor");
+        let mut app = seed_grouped();
+        agent_write("probe");
+
+        app.sync_from_store().unwrap();
+
+        // `probe` starts now, so it sorts above the group and shifts it down.
+        assert_eq!(app.table_state.selected(), Some(1));
+        assert!(matches!(
+            app.selected_row(),
+            Some(rows::VisibleRow::GroupHeader(_))
+        ));
+    }
+
     #[test]
     fn delete_keeps_a_concurrent_agent_write() {
         let _guard = env_guard();

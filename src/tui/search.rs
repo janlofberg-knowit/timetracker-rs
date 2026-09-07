@@ -16,12 +16,6 @@ impl App {
         })
     }
 
-    /// How many rows [`filtered_entries`](Self::filtered_entries) would return,
-    /// without materialising them.
-    pub(crate) fn filtered_len(&self) -> usize {
-        self.with_filtered_indices(<[usize]>::len)
-    }
-
     /// The cached indices into `data.entries`, copied out for the row model.
     pub(super) fn filtered_indices(&self) -> Vec<usize> {
         self.with_filtered_indices(<[usize]>::to_vec)
