@@ -2497,7 +2497,7 @@ mod tests {
         let screen = frame_lines(&mut app, 100, 30).join("\n");
         assert!(screen.contains("#tt/174"), "no issue tag:\n{screen}");
         assert!(
-            screen.contains("▸ tt/174 - 3 entries"),
+            screen.contains("▸ 3 entries - tt/174"),
             "no collapsed row:\n{screen}"
         );
         assert!(screen.contains("3h 0m"), "no summed duration:\n{screen}");
@@ -2507,7 +2507,7 @@ mod tests {
         app.expanded_issues.insert("tt/174".to_string());
         let screen = frame_lines(&mut app, 100, 30).join("\n");
         assert!(
-            screen.contains("▾ tt/174 - 3 entries"),
+            screen.contains("▾ 3 entries - tt/174"),
             "no expanded row:\n{screen}"
         );
         for member in ["round one", "round two", "round three"] {
@@ -2543,7 +2543,7 @@ mod tests {
 
         assert_eq!(row_bg(&mut app, "round one"), theme::MEMBER_BG);
         assert_eq!(
-            row_bg(&mut app, "▾ tt/174 - 3 entries"),
+            row_bg(&mut app, "▾ 3 entries - tt/174"),
             theme::GROUP_HEADER_BG
         );
         assert_ne!(
