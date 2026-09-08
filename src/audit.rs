@@ -24,11 +24,15 @@ pub struct Unaccounted {
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
     pub subagents: usize,
+    /// True only for the trailing row of a session bounded at its own last
+    /// evidence of life, never for a session that closed with an `end=`.
+    pub abandoned: bool,
 }
 
 impl Unaccounted {
     /// `<project> - since HH:MM (Xh Ym)`, with a trailing subagent-dispatch
-    /// count when there were any. Shared by the CLI (`tt agent audit`,
+    /// count when there were any, and a trailing ` [abandoned]` for a bounded
+    /// session's last row. Shared by the CLI (`tt agent audit`,
     /// `tt agent activity check`) and the TUI's Agents panel, so the two
     /// cannot disagree on how this reads.
     pub fn describe(&self) -> String {
@@ -38,11 +42,12 @@ impl Unaccounted {
             n => format!(", {n} subagent dispatches"),
         };
         format!(
-            "{} - since {} ({}{})",
+            "{} - since {} ({}{}){}",
             self.project,
             self.start.format("%H:%M"),
             crate::duration::format(self.end.signed_duration_since(self.start)),
-            subagents
+            subagents,
+            if self.abandoned { " [abandoned]" } else { "" }
         )
     }
 }
@@ -131,7 +136,7 @@ pub fn unaccounted(
             let Some(project) = session.project.as_deref() else {
                 return Vec::new();
             };
-            let end = session_end(session, now_epoch, thresholds);
+            let (end, bounded) = session_end(session, now_epoch, thresholds);
             if (end - session.start) / 60 < floor_minutes {
                 return Vec::new();
             }
@@ -189,6 +194,7 @@ pub fn unaccounted(
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
+                        abandoned: bounded && to == end,
                     })
                 })
                 .collect()
@@ -201,11 +207,12 @@ pub fn unaccounted(
 
 /// Where a session is measured to: its own `end=`, else [`marks::grace_minutes`]
 /// past its last evidence of life — its last dispatch, or its start with none —
-/// clamped to `now`. Reads no file mtime and no lease: the mtime equals the last
-/// parsed line, and a lease's covered stretch is subtracted downstream.
-fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> i64 {
+/// clamped to `now`, plus whether that bound has fallen. Reads no file mtime and
+/// no lease: the mtime equals the last parsed line, and a lease's covered stretch
+/// is subtracted downstream.
+fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> (i64, bool) {
     if let Some(end) = session.end {
-        return end;
+        return (end, false);
     }
     let lively = !session.subagent_at.is_empty();
     let last = session
@@ -215,7 +222,8 @@ fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> i64 {
         .max()
         .unwrap_or(session.start)
         .max(session.start);
-    (last + marks::grace_minutes(lively, thresholds) * 60).min(now)
+    let bound = last + marks::grace_minutes(lively, thresholds) * 60;
+    (bound.min(now), bound <= now)
 }
 
 /// What is left of `start → end` after removing every same-project lease's covered
@@ -655,6 +663,7 @@ mod tests {
         let flagged = unaccounted(&sessions, &[], &[], at(100 * 60), 60);
         assert_eq!(flagged.len(), 1);
         assert_eq!(flagged[0].end, at(100 * 60));
+        assert!(!flagged[0].abandoned, "its grace has not run out yet");
     }
 
     #[test]
@@ -665,6 +674,33 @@ mod tests {
             unaccounted(&sessions, &marks, &[], at(121 * 60), FLOOR).is_empty(),
             "an hour of the 121-minute bound is left, under the 120-minute floor"
         );
+    }
+
+    #[test]
+    fn only_the_trailing_row_of_a_bounded_session_is_marked_abandoned() {
+        let sessions = vec![session(Some("smoke"), 0, None, 0)];
+        let entries = vec![entry("smoke", 30 * 60, Some(31 * 60), &["smoke", "agent"])];
+        let flagged = unaccounted(&sessions, &[], &entries, at(114 * HOUR), 60);
+        assert_eq!(
+            flagged
+                .iter()
+                .map(|u| (u.end, u.abandoned))
+                .collect::<Vec<_>>(),
+            vec![(at(61 * 60), true), (at(30 * 60), false)]
+        );
+        assert!(
+            flagged[0].describe().ends_with(" [abandoned]"),
+            "{}",
+            flagged[0].describe()
+        );
+    }
+
+    #[test]
+    fn a_closed_session_reports_no_abandoned_row() {
+        let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
+        let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
+        assert!(!flagged[0].abandoned);
+        assert!(!flagged[0].describe().contains("[abandoned]"));
     }
 
     #[test]
