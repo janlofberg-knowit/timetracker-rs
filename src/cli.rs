@@ -247,6 +247,24 @@ pub enum AgentCommands {
         #[arg(long, value_parser = parse_data)]
         data: Option<serde_json::Value>,
     },
+    /// Cover one unaccounted audit row with an entry spanning it exactly — the
+    /// row was real work. Address it by the session and start `audit --json`
+    /// prints; the project comes from the matched row.
+    Resolve {
+        /// The row's session: this session's id from the per-prompt card, or a
+        /// row's `session` from `audit --json`
+        #[arg(long)]
+        session: String,
+        /// The row's `start`, in epoch seconds
+        start: i64,
+        /// Issue number, or `-` for work with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
+        issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
+        phase: String,
+        /// 3-6 words of plain prose, with no issue number in them
+        summary: String,
+    },
     /// Record that a stretch of one session's clock time was **not** work, so
     /// the audit stops reporting it. Writes no entry, so it bills no time.
     Dismiss {
@@ -351,7 +369,9 @@ impl AgentCommands {
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.
             AgentCommands::Audit { auto_log, .. } => *auto_log,
-            AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
+            AgentCommands::Item { .. }
+            | AgentCommands::End { .. }
+            | AgentCommands::Resolve { .. } => true,
         }
     }
 }

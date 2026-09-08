@@ -345,6 +345,95 @@ fn a_dismissal_leaves_a_concurrent_session_s_row_alone() {
     assert_eq!(rows[0]["session"], "sess-2");
 }
 
+#[test]
+fn resolve_covers_the_row_it_was_given_exactly() {
+    let case = Case::new("audit-resolve");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "smoke", start, Some(end));
+
+    let run = case.run(&[
+        "resolve",
+        "--session",
+        "sess-1",
+        &start.to_string(),
+        "7",
+        "impl",
+        "reconstructed the reconcile",
+    ]);
+    run.assert_status(0);
+
+    let store = case.store();
+    assert_eq!(store.entries.len(), 1);
+    let entry = &store.entries[0];
+    assert_eq!(entry.start_time.timestamp(), start);
+    assert_eq!(entry.end_time.unwrap().timestamp(), end);
+    assert_eq!(entry.project.as_deref(), Some("smoke"));
+    assert_eq!(entry.description, "reconstructed the reconcile");
+    assert_eq!(entry.tags, ["smoke/7", "impl", "agent"]);
+
+    let after = case.run(&["audit"]);
+    after.assert_status(0);
+    after.assert_stdout_has("No unaccounted agent activity.");
+}
+
+/// A rounded-up duration would reach back past the row's start, the reason
+/// `--auto-log` bypasses rounding too.
+#[test]
+fn resolve_never_rounds_even_with_round_minutes_set() {
+    let case = Case::new("audit-resolve-unrounded");
+    case.write_config("[agent]\nmax_unvouched_minutes = 20\nround_minutes = 30\n");
+    let start = now() - 47 * 60;
+    let end = now();
+    case.write_session("sess-1", "smoke", start, Some(end));
+
+    case.run(&[
+        "resolve",
+        "--session",
+        "sess-1",
+        &start.to_string(),
+        "-",
+        "impl",
+        "measured, not rounded",
+    ])
+    .assert_status(0);
+
+    let store = case.store();
+    assert_eq!(store.entries[0].seconds(), 47 * 60);
+}
+
+#[test]
+fn resolve_on_a_pair_matching_no_row_exits_64_and_writes_nothing() {
+    let case = Case::new("audit-resolve-unmatched");
+    case.write_store(&[]);
+    let start = now() - 3 * HOUR;
+    case.write_session("sess-1", "smoke", start, Some(now()));
+
+    let run = case.run(&[
+        "resolve",
+        "--session",
+        "sess-2",
+        &start.to_string(),
+        "-",
+        "impl",
+        "not my row",
+    ]);
+    run.assert_status(64);
+    assert!(case.store().entries.is_empty());
+
+    let wrong_start = case.run(&[
+        "resolve",
+        "--session",
+        "sess-1",
+        &(start + 5).to_string(),
+        "-",
+        "impl",
+        "not my row",
+    ]);
+    wrong_start.assert_status(64);
+    assert!(case.store().entries.is_empty());
+}
+
 /// The minutes an 8h session with two 60-minute idle holes reports, as three
 /// contiguous active stretches. Counted against the dispatches below it: a
 /// removed dispatch leaves a 60m hole between its neighbours.

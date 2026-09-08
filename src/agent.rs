@@ -74,6 +74,13 @@ pub fn run(command: &AgentCommands) -> Result<()> {
                 data: data.clone(),
             },
         ),
+        AgentCommands::Resolve {
+            session,
+            start,
+            issue,
+            phase,
+            summary,
+        } => resolve(session, *start, issue, phase, summary),
         AgentCommands::Dismiss {
             session,
             project,
@@ -291,6 +298,57 @@ fn list(project: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Every unaccounted row at `now`, from the activity ledger, the open marks, the
+/// dismissal ledger and the store. Two calls that must agree take one `now`: a live
+/// session's row end tracks the clock.
+fn unaccounted_at(now: DateTime<Local>) -> Result<Vec<audit::Unaccounted>> {
+    let sessions = activity::activity_dir()
+        .map(|dir| activity::read_sessions_in(&dir))
+        .unwrap_or_default();
+    let leases = open_leases();
+    let dismissals = crate::dismissed::read_all();
+    let mut data = storage::load_data()?;
+    tracker::migrate(&mut data);
+    Ok(audit::unaccounted(
+        &sessions,
+        &leases,
+        &data.entries,
+        &dismissals,
+        now,
+        audit::thresholds(),
+    ))
+}
+
+/// `tt agent resolve --session <id> <start> <issue|-> <phase> "<summary>"`: cover the
+/// row with that session and start with one entry spanning it exactly. The project is
+/// the matched row's, never an argument, and the span is logged unrounded: a rounded
+/// duration reaches back past the row's start. A pair matching no row writes nothing.
+fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -> Result<()> {
+    let rows = unaccounted_at(Local::now())?;
+    let Some(row) = rows
+        .iter()
+        .find(|row| row.session == session && row.start.timestamp() == start)
+    else {
+        eprintln!("tt: no unaccounted row for session {session} starting at {start}");
+        eprintln!("tt: run tt agent audit --json to list the rows and the addresses they take.");
+        std::process::exit(64);
+    };
+
+    commands::log(commands::LogRequest {
+        description: description(&row.project, issue, phase, summary),
+        // The row's own span, never rounded: `ended_at` is pinned, so a longer
+        // duration would reach back past the row's start.
+        time: row.end.signed_duration_since(row.start),
+        extra_tags: Vec::new(),
+        project: Some(row.project.clone()),
+        idle: Vec::new(),
+        // The row is one contiguous active stretch; nothing here may cut it again.
+        trim: false,
+        ended_at: Some(row.end),
+        data: None,
+    })
+}
+
 /// `tt agent dismiss --session <id> <project> <start>-<end> ["<reason>"]`: record that
 /// one session's stretch of clock time was not work. Records the span as given and
 /// matches no row: it is a statement about clock time, not an operation on a row.
@@ -321,26 +379,8 @@ fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&st
 /// reporting activity with no evidence it was tracked. Missing directories read as empty.
 /// `--json` prints the same rows as an array, `[]` included, and never the prose.
 fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
-    let sessions = activity::activity_dir()
-        .map(|dir| activity::read_sessions_in(&dir))
-        .unwrap_or_default();
-    let leases = open_leases();
-    let dismissals = crate::dismissed::read_all();
-    let thresholds = audit::thresholds();
     let now = chrono::Local::now();
-
-    let flagged = {
-        let mut data = storage::load_data()?;
-        tracker::migrate(&mut data);
-        audit::unaccounted(
-            &sessions,
-            &leases,
-            &data.entries,
-            &dismissals,
-            now,
-            thresholds,
-        )
-    };
+    let flagged = unaccounted_at(now)?;
 
     // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
     let mut wrote_any = false;
@@ -356,16 +396,7 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
 
     // Re-read: the entries just written now cover their own rows.
     let mut remaining = if wrote_any {
-        let mut data = storage::load_data()?;
-        tracker::migrate(&mut data);
-        audit::unaccounted(
-            &sessions,
-            &leases,
-            &data.entries,
-            &dismissals,
-            now,
-            thresholds,
-        )
+        unaccounted_at(now)?
     } else {
         flagged
     };
