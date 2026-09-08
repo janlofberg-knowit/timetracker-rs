@@ -25,6 +25,9 @@ use crate::tracker::TimeEntry;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unaccounted {
     pub project: String,
+    /// The activity session this stretch came from — with `start`, the address
+    /// `tt agent resolve` and `tt agent dismiss` match a row on.
+    pub session: String,
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
     pub subagents: usize,
@@ -35,8 +38,10 @@ pub struct Unaccounted {
 
 impl Unaccounted {
     /// `<project> - since HH:MM (Xh Ym)`, with a trailing subagent-dispatch
-    /// count when there were any, and a trailing ` [abandoned]` for a bounded
-    /// session's last row. Shared by the CLI (`tt agent audit`,
+    /// count when there were any, then the session hint that tells two rows of
+    /// one project apart, and a trailing ` [abandoned]` for a bounded session's
+    /// last row. The hint is for the eye; the address is the full `session`.
+    /// Shared by the CLI (`tt agent audit`,
     /// `tt agent activity check`) and the TUI's Agents panel, so the two
     /// cannot disagree on how this reads.
     pub fn describe(&self) -> String {
@@ -46,13 +51,22 @@ impl Unaccounted {
             n => format!(", {n} subagent dispatches"),
         };
         format!(
-            "{} - since {} ({}{}){}",
+            "{} - since {} ({}{}) session {}{}",
             self.project,
             self.start.format("%H:%M"),
             crate::duration::format(self.end.signed_duration_since(self.start)),
             subagents,
+            self.session_hint(),
             if self.abandoned { " [abandoned]" } else { "" }
         )
+    }
+}
+
+impl Unaccounted {
+    /// The leading characters of the session id, enough to read two rows apart.
+    /// Never an address: the full id is what a command is given.
+    fn session_hint(&self) -> String {
+        self.session.chars().take(8).collect()
     }
 }
 
@@ -195,6 +209,7 @@ pub fn unaccounted(
 
                     Some(Unaccounted {
                         project: project.to_string(),
+                        session: session.id.clone(),
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
@@ -317,6 +332,7 @@ mod tests {
 
     fn session(project: Option<&str>, start: i64, end: Option<i64>, subagents: usize) -> Session {
         Session {
+            id: "sess-1".to_string(),
             project: project.map(str::to_string),
             start,
             end,
@@ -720,12 +736,28 @@ mod tests {
     fn two_overlapping_sessions_report_a_row_each() {
         let sessions = vec![
             session(Some("tt"), 0, Some(3 * HOUR), 0),
-            session(Some("tt"), 0, None, 0),
+            Session {
+                id: "sess-2".to_string(),
+                ..session(Some("tt"), 0, None, 0)
+            },
         ];
         let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
         assert_eq!(
             flagged.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
             vec![(at(0), at(3 * HOUR)), (at(0), at(121 * 60))]
+        );
+        assert_eq!(
+            flagged
+                .iter()
+                .map(|u| u.session.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sess-1", "sess-2"],
+            "each row names the session it came from"
+        );
+        assert_ne!(
+            flagged[0].describe(),
+            flagged[1].describe(),
+            "two rows of one project must read differently"
         );
     }
 
@@ -810,6 +842,7 @@ mod tests {
         subagent_at: Vec<i64>,
     ) -> Session {
         Session {
+            id: "sess-1".to_string(),
             project: Some(project.to_string()),
             start,
             end,
