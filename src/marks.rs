@@ -447,7 +447,13 @@ pub fn touch_project_in(dir: &Path, project: &str) {
 /// segments, case-insensitively. Sanitise both sides, never one. Sanitisation is
 /// not injective: `my proj` and a real `my_proj` cannot be told apart here.
 pub fn same_project(a: &str, b: &str) -> bool {
-    crate::paths::sanitise_key(a).eq_ignore_ascii_case(&crate::paths::sanitise_key(b))
+    project_key(a) == project_key(b)
+}
+
+/// The key [`same_project`] compares by, for grouping projects rather than
+/// pairing them.
+pub fn project_key(project: &str) -> String {
+    crate::paths::sanitise_key(project).to_ascii_lowercase()
 }
 
 /// Whether `project` owns `mark`.
