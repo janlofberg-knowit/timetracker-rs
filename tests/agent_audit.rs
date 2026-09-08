@@ -4,7 +4,7 @@
 //! docs/decisions/0002-auto-logging-unaccounted-activity.md.
 
 mod common;
-use common::{Case, clock, now};
+use common::{Case, StoreRow, clock, now};
 
 const HOUR: i64 = 3600;
 
@@ -294,7 +294,50 @@ fn project_keeps_that_project_s_rows_and_drops_the_rest() {
     assert_eq!(rows[0]["project"], "theirs");
 }
 
-/// `--project` bounds what a run may **write**, not only what it prints.
+/// The floor is a warning threshold, not a filter on the ledger: a sweep that
+/// logs most of a session leaves the rest addressable.
+#[test]
+fn a_session_under_the_floor_is_silent_in_text_but_listed_in_json() {
+    let case = Case::new("audit-floor-json");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "smoke", start, Some(end));
+    // Covers everything but the first 50 minutes, leaving a total under the floor.
+    case.write_store(&[StoreRow {
+        description: "swept the rest",
+        project: Some("smoke"),
+        tags: &["impl", "agent"],
+        start: start + 50 * 60,
+        end: Some(end),
+    }]);
+
+    let text = case.run(&["audit"]);
+    text.assert_status(0);
+    text.assert_stdout_has("No unaccounted agent activity.");
+
+    let listed = rows(&case.run(&["audit", "--json"]));
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["start"], start);
+    assert_eq!(listed[0]["end"], start + 50 * 60);
+
+    let resolved = case.run(&[
+        "resolve",
+        "--session",
+        "sess-1",
+        &start.to_string(),
+        "-",
+        "impl",
+        "the rest of it",
+    ]);
+    resolved.assert_status(0);
+
+    let entries = case.store().entries;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].seconds(), 50 * 60);
+    assert_eq!(rows(&case.run(&["audit", "--json"])).len(), 0);
+}
+
+/// `--project` bounds what a run may **write**, not only what it prints./// `--project` bounds what a run may **write**, not only what it prints.
 #[test]
 fn auto_log_with_a_project_never_writes_another_project_s_window() {
     let case = Case::new("audit-auto-log-project");

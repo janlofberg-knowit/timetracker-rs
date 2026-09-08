@@ -371,6 +371,10 @@ agent to resolve in turn and the two sum.
 `dismiss` writes no entry, so a dismissed stretch appears in no `tt report`
 total, and it records exactly the span you give it whether or not a row matches.
 
+The warning threshold does not narrow the sweep: `--json` lists every row of the
+project even when a session's remaining total is too small to be warned about, so
+sweeping a session down to its last few minutes still leaves them addressable.
+
 **A session id names an orchestrator; `--agent <label>` names a dispatch under
 it.** Two orchestrators working one project are two sessions with distinct ids,
 and their work sums. Subagents dispatched by one orchestrator share that

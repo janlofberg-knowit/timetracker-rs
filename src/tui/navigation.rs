@@ -81,7 +81,7 @@ impl App {
                 .collect(),
             _ => Vec::new(),
         };
-        self.unaccounted = crate::audit::unaccounted(
+        let rows = crate::audit::unaccounted(
             &self.activity_sessions,
             &self.leases,
             &self.data.entries,
@@ -89,6 +89,11 @@ impl App {
             Local::now(),
             self.liveness_thresholds,
         );
+        // The panel is a warning surface, so the floor applies to what it lists.
+        self.unaccounted = crate::audit::over_floor(&rows, self.liveness_thresholds)
+            .into_iter()
+            .cloned()
+            .collect();
     }
 
     /// Pick up writes made outside the TUI, once per event-loop tick.

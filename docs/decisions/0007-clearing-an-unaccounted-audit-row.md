@@ -24,7 +24,11 @@ carries the sanitised key its file is named with, `audit::Unaccounted` carries i
 through, and `tt agent audit --json` prints both with exact epochs. The
 human-readable row carries the id's leading characters as a hint, for the eye
 only; every command takes the full id. `--project <name>` narrows the list to one
-repo's rows so an orchestrator sweeps only its own.
+repo's rows so an orchestrator sweeps only its own. The floor
+(`max_unvouched_minutes`) gates only the warning surfaces — the text audit, the
+`Stop` hook and the Agents panel — while `--json`, `resolve` and `dismiss` read
+every row, or a session swept below the floor would hold work that is neither
+reported nor addressable.
 
 **2. A row that was real work is covered by an entry spanning it exactly.**
 `tt agent resolve --session <id> <start> <issue|-> <phase> "<summary>"` matches

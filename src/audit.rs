@@ -144,9 +144,10 @@ fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
-/// Every session below `thresholds.unvouched` is not flagged. A session with no
-/// project cannot be reconciled against anything, so it is skipped rather than
-/// assumed unaccounted.
+/// **Every** uncovered stretch, whatever it sums to: the floor is a warning
+/// threshold, applied by [`over_floor`] and by nothing else, or a swept session's
+/// remainder would stop being addressable. A session with no project cannot be
+/// reconciled against anything, so it is skipped rather than assumed unaccounted.
 pub fn unaccounted(
     sessions: &[Session],
     leases: &[Lease],
@@ -156,7 +157,6 @@ pub fn unaccounted(
     thresholds: Thresholds,
 ) -> Vec<Unaccounted> {
     let now_epoch = now.timestamp();
-    let floor_minutes = thresholds.unvouched;
 
     let mut found: Vec<Unaccounted> = sessions
         .iter()
@@ -165,9 +165,6 @@ pub fn unaccounted(
                 return Vec::new();
             };
             let (end, bounded) = session_end(session, now_epoch, thresholds);
-            if (end - session.start) / 60 < floor_minutes {
-                return Vec::new();
-            }
 
             let stretches =
                 uncovered_by_marks(project, session.start, end, leases, now_epoch, thresholds);
@@ -197,12 +194,6 @@ pub fn unaccounted(
                     })
                     .collect()
             };
-
-            // The floor applies to the session's total active time, not to each row.
-            let uncovered: i64 = active.iter().map(|(from, to)| (to - from) / 60).sum();
-            if uncovered < floor_minutes {
-                return Vec::new();
-            }
 
             active
                 .into_iter()
@@ -238,6 +229,24 @@ pub fn unaccounted(
 
     found.sort_by_key(|u| std::cmp::Reverse(u.start));
     found
+}
+
+/// The rows a warning surface shows: those of a session whose **own** uncovered
+/// total reaches `thresholds.unvouched`. The floor gates the total, never a row, and
+/// only here — `--json`, `resolve` and `dismiss` read every row.
+pub fn over_floor(rows: &[Unaccounted], thresholds: Thresholds) -> Vec<&Unaccounted> {
+    let mut totals: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for row in rows {
+        *totals.entry(row.session.as_str()).or_default() +=
+            row.end.signed_duration_since(row.start).num_minutes();
+    }
+    rows.iter()
+        .filter(|row| {
+            totals
+                .get(row.session.as_str())
+                .is_some_and(|total| *total >= thresholds.unvouched)
+        })
+        .collect()
 }
 
 /// Where a session is measured to: its own `end=`, else [`marks::grace_minutes`]
@@ -453,7 +462,9 @@ mod tests {
         unvouched: FLOOR,
     };
 
-    /// Shadows [`super::unaccounted`] for every test below, with stated thresholds.
+    /// Shadows [`super::unaccounted`] for every test below, with stated thresholds
+    /// and the floor applied — what a warning surface sees. [`all_rows`] is the
+    /// unfiltered view the addressing commands read.
     fn unaccounted(
         sessions: &[Session],
         leases: &[Lease],
@@ -462,6 +473,27 @@ mod tests {
         floor_minutes: i64,
     ) -> Vec<Unaccounted> {
         dismissing(&[], sessions, leases, entries, now, floor_minutes)
+    }
+
+    /// Every row, floor or no floor.
+    fn all_rows(
+        sessions: &[Session],
+        leases: &[Lease],
+        entries: &[TimeEntry],
+        now: DateTime<Local>,
+        floor_minutes: i64,
+    ) -> Vec<Unaccounted> {
+        super::unaccounted(
+            sessions,
+            leases,
+            entries,
+            &[],
+            now,
+            Thresholds {
+                gap: 45,
+                unvouched: floor_minutes,
+            },
+        )
     }
 
     /// The same with a dismissal ledger, for the cases that need one.
@@ -473,17 +505,12 @@ mod tests {
         now: DateTime<Local>,
         floor_minutes: i64,
     ) -> Vec<Unaccounted> {
-        super::unaccounted(
-            sessions,
-            leases,
-            entries,
-            dismissals,
-            now,
-            Thresholds {
-                gap: 45,
-                unvouched: floor_minutes,
-            },
-        )
+        let thresholds = Thresholds {
+            gap: 45,
+            unvouched: floor_minutes,
+        };
+        let rows = super::unaccounted(sessions, leases, entries, dismissals, now, thresholds);
+        over_floor(&rows, thresholds).into_iter().cloned().collect()
     }
 
     fn dismissal(project: &str, session: &str, start: i64, end: i64) -> Dismissal {
@@ -522,6 +549,23 @@ mod tests {
     fn a_session_under_the_floor_is_never_flagged() {
         let sessions = vec![session(Some("tt"), 0, Some(60 * 60), 0)]; // 1h, floor 2h
         assert!(unaccounted(&sessions, &[], &[], at(HOUR), FLOOR).is_empty());
+    }
+
+    /// The whole point of the split: a session swept down under the floor keeps
+    /// its remaining rows, so they can still be resolved or dismissed.
+    #[test]
+    fn a_session_under_the_floor_keeps_its_rows_for_the_addressing_commands() {
+        let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
+        let entries = vec![entry("tt", 50 * 60, Some(3 * HOUR), &["tt", "agent"])];
+        let rows = all_rows(&sessions, &[], &entries, at(3 * HOUR), FLOOR);
+        assert_eq!(
+            rows.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
+            vec![(at(0), at(50 * 60))]
+        );
+        assert!(
+            over_floor(&rows, HOUSE).is_empty(),
+            "50 minutes is under the 120-minute warning floor"
+        );
     }
 
     #[test]

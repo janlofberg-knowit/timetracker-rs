@@ -167,7 +167,8 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         .and_then(|enabled| enabled.then(audit::auto_log_after_minutes))
         .flatten();
 
-    for item in &flagged {
+    // A warning surface, so the floor applies here.
+    for item in audit::over_floor(&flagged, thresholds) {
         let minutes = item.end.signed_duration_since(item.start).num_minutes();
         if threshold.is_some_and(|threshold| minutes > threshold) {
             write_auto_log(item)?;
@@ -395,11 +396,13 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
         rows
     };
     let flagged = narrow(unaccounted_at(now)?);
+    let thresholds = audit::thresholds();
 
     // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
+    // Over the floor only: `--auto-log` writes what the warning names, nothing more.
     let mut wrote_any = false;
     if auto_log && let Some(threshold) = audit::auto_log_after_minutes() {
-        for item in &flagged {
+        for item in audit::over_floor(&flagged, thresholds) {
             let minutes = item.end.signed_duration_since(item.start).num_minutes();
             if minutes > threshold {
                 write_auto_log(item)?;
@@ -415,18 +418,20 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
         flagged
     };
 
+    // Every row, floor or no floor: this is the list the sweep addresses rows from.
     if json {
         println!("{}", serde_json::to_string(&remaining)?);
         return Ok(());
     }
 
-    if remaining.is_empty() {
+    let warned = audit::over_floor(&remaining, thresholds);
+    if warned.is_empty() {
         println!("No unaccounted agent activity.");
         return Ok(());
     }
 
     println!("{} Unaccounted agent activity:\n", icons::warning());
-    for item in &remaining {
+    for item in warned {
         println!("  {}", item.describe());
     }
     Ok(())
