@@ -198,7 +198,7 @@ pub enum AgentCommands {
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
-        /// Whole minutes, rounded up to the nearest 5 minutes
+        /// Whole minutes, rounded up only when `agent.round_minutes` is set
         minutes: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
         #[arg(long, value_parser = parse_data)]

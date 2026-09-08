@@ -80,6 +80,29 @@ fn auto_log_writes_a_fixed_phase_auto_entry_over_the_threshold() {
     );
 }
 
+/// An auto-logged entry pins `ended_at`, so rounding its span would push the
+/// start back into the idle gap the audit just judged.
+#[test]
+fn auto_log_never_rounds_even_with_round_minutes_set() {
+    let case = Case::new("audit-auto-log-unrounded");
+    case.write_config(
+        "[agent]\nmax_unvouched_minutes = 20\nauto_log_after_minutes = 21\nround_minutes = 5\n",
+    );
+    let start = now() - 47 * 60;
+    case.write_session("sess-1", "smoke", start, None);
+
+    let run = case.run(&["audit", "--auto-log"]);
+    run.assert_status(0);
+
+    let store = case.store();
+    assert_eq!(store.entries.len(), 1);
+    assert_eq!(
+        store.entries[0].seconds(),
+        47 * 60,
+        "the unaccounted window is logged as measured"
+    );
+}
+
 #[test]
 fn a_window_under_the_auto_log_threshold_is_reported_but_not_logged() {
     let case = Case::new("audit-auto-log-under-threshold");

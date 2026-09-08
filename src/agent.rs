@@ -308,7 +308,9 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
     let minutes = item.end.signed_duration_since(item.start).num_minutes();
     commands::log(commands::LogRequest {
         description: "unattended activity #auto".to_string(),
-        time: Duration::minutes(round_five(minutes)),
+        // Never rounded, whatever `agent.round_minutes` says: `ended_at` is pinned,
+        // so a longer span would reach back into the idle gap the audit just judged.
+        time: Duration::minutes(minutes),
         extra_tags: Vec::new(),
         project: Some(item.project.clone()),
         idle: Vec::new(),
@@ -388,7 +390,7 @@ fn log_entry(
 ) -> Result<()> {
     commands::log(commands::LogRequest {
         description: description(project, issue, phase, summary),
-        time: Duration::minutes(round_five(minutes)),
+        time: Duration::minutes(round_to(minutes, round_minutes())),
         extra_tags: Vec::new(),
         project: Some(project.to_string()),
         idle: span.idle,
@@ -521,7 +523,8 @@ fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
     Ok(())
 }
 
-/// Refuse the close, naming the worst hole, and exit 65; both totals **unrounded**.
+/// Refuse the close, naming the worst hole, and exit 65. Both totals are the
+/// measured minutes, before any `agent.round_minutes` step.
 fn refuse(
     project: &str,
     issue: &str,
@@ -583,9 +586,19 @@ fn clock(epoch: i64) -> String {
 //
 // `item` and `end` log the same way: the rounding, the stripping and the tags live here.
 
-/// Round minutes **up** to the next 5 minutes, never below 5: a ceiling, never nearest.
-fn round_five(minutes: i64) -> i64 {
-    (((minutes + 4) / 5) * 5).max(5)
+/// Round minutes **up** to the next `step` minutes, never below `step`: a ceiling,
+/// never nearest. A `step` of 0 or less rounds nothing.
+fn round_to(minutes: i64, step: i64) -> i64 {
+    if step <= 0 {
+        return minutes;
+    }
+    (((minutes + step - 1) / step) * step).max(step)
+}
+
+/// The `agent.round_minutes` step every logged agent duration is rounded up to.
+/// 0 (the default) logs the actual minutes.
+fn round_minutes() -> i64 {
+    crate::config::load().agent.round_minutes.unwrap_or(0)
 }
 
 /// Strip a `#` run that begins a word, so a summary mentioning "#12" does not become
@@ -639,20 +652,30 @@ mod tests {
     }
 
     #[test]
-    fn rounding_always_rounds_up_to_the_next_five_minutes() {
-        assert_eq!(round_five(36), 40);
-        assert_eq!(round_five(37), 40);
-        assert_eq!(round_five(40), 40, "already on a five-minute mark");
-        assert_eq!(round_five(41), 45);
-        assert_eq!(round_five(45), 45);
+    fn rounding_always_rounds_up_to_the_next_step() {
+        assert_eq!(round_to(36, 5), 40);
+        assert_eq!(round_to(37, 5), 40);
+        assert_eq!(round_to(40, 5), 40, "already on a five-minute mark");
+        assert_eq!(round_to(41, 5), 45);
+        assert_eq!(round_to(45, 5), 45);
+        assert_eq!(round_to(31, 15), 45);
+        assert_eq!(round_to(45, 15), 45);
     }
 
     #[test]
-    fn rounding_never_goes_below_five_minutes() {
-        assert_eq!(round_five(0), 5);
-        assert_eq!(round_five(1), 5);
-        assert_eq!(round_five(2), 5);
-        assert_eq!(round_five(4), 5);
+    fn rounding_never_goes_below_one_step() {
+        assert_eq!(round_to(0, 5), 5);
+        assert_eq!(round_to(1, 5), 5);
+        assert_eq!(round_to(4, 5), 5);
+        assert_eq!(round_to(1, 15), 15);
+    }
+
+    #[test]
+    fn a_step_of_zero_leaves_the_actual_minutes_alone() {
+        assert_eq!(round_to(0, 0), 0);
+        assert_eq!(round_to(1, 0), 1);
+        assert_eq!(round_to(47, 0), 47);
+        assert_eq!(round_to(47, -5), 47, "a negative step rounds nothing");
     }
 
     #[test]

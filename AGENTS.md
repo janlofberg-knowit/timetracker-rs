@@ -119,9 +119,9 @@ tt agent audit [--auto-log]                    # unaccounted activity; see below
 tt report [--week|--all|--since DATE [--until DATE]] [--project NAME] [--json]
 ```
 
-Durations are rounded **up** to the nearest 5 minutes, never below 5 — a
-ceiling, not nearest, so a logged span never reads shorter than what was
-actually spent.
+Durations are logged as the actual minutes. Set `agent.round_minutes = N` in
+the config file to round `end` and `item` up to the next N minutes instead,
+never below N; `audit --auto-log` stays unrounded either way.
 
 A mark's start time survives the agent's context being truncated or compacted, so do
 not hold start times in context. Marks live in the application's own cache directory;
