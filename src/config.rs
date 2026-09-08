@@ -81,6 +81,10 @@ pub struct AgentConfig {
     /// `auto_log_after_minutes` is a misconfiguration: [`load`] warns and
     /// disables it rather than silently no-op'ing.
     pub auto_log_on_stop: Option<bool>,
+    /// The step `tt agent end` and `tt agent item` round a logged duration up
+    /// to, never below the step itself. 0 (the default) logs the actual
+    /// minutes; `tt agent audit --auto-log` never rounds either way.
+    pub round_minutes: Option<i64>,
 }
 
 /// Which collapsible TUI surfaces start open, independent of whether
@@ -333,6 +337,7 @@ fn merge_agent(b: AgentConfig, o: AgentConfig) -> AgentConfig {
         max_unvouched_minutes: o.max_unvouched_minutes.or(b.max_unvouched_minutes),
         auto_log_after_minutes: o.auto_log_after_minutes.or(b.auto_log_after_minutes),
         auto_log_on_stop: o.auto_log_on_stop.or(b.auto_log_on_stop),
+        round_minutes: o.round_minutes.or(b.round_minutes),
     }
 }
 
