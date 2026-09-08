@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Installs the latest tt (timetracker-rs) release for Linux/macOS.
+# Installs the latest tt (timetracker-rs) release for Linux/macOS/Git Bash on Windows x86_64.
 #
 #   curl -fsSL https://raw.githubusercontent.com/linus-skold/timetracker-rs/main/install.sh | sh
 #
@@ -10,13 +10,19 @@ set -eu
 
 REPO="linus-skold/timetracker-rs"
 INSTALL_DIR="${TT_INSTALL_DIR:-$HOME/.local/bin}"
+windows_target="pc-windows-msvc"
 
 os="$(uname -s)"
 arch="$(uname -m)"
+bin_name="tt"
 
 case "$os" in
   Linux) os_part="unknown-linux-gnu" ;;
   Darwin) os_part="apple-darwin" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    os_part="$windows_target"
+    bin_name="tt.exe"
+    ;;
   *)
     echo "error: unsupported OS: $os" >&2
     exit 1
@@ -30,6 +36,10 @@ case "$arch" in
       echo "error: no prebuilt tt binary for Linux/$arch yet" >&2
       exit 1
     fi
+    if [ "$os_part" = "$windows_target" ]; then
+      echo "error: no prebuilt tt binary for Windows/$arch yet" >&2
+      exit 1
+    fi
     arch_part="aarch64"
     ;;
   *)
@@ -40,6 +50,9 @@ esac
 
 target="${arch_part}-${os_part}"
 asset="tt-${target}"
+if [ "$os_part" = "$windows_target" ]; then
+  asset="${asset}.exe"
+fi
 url="https://github.com/${REPO}/releases/latest/download/${asset}"
 
 mkdir -p "$INSTALL_DIR"
@@ -57,10 +70,44 @@ else
 fi
 
 chmod +x "$tmp"
-mv "$tmp" "$INSTALL_DIR/tt"
+mv "$tmp" "$INSTALL_DIR/$bin_name"
 trap - EXIT
 
-echo "Installed tt to $INSTALL_DIR/tt"
+echo "Installed tt to $INSTALL_DIR/$bin_name"
+
+if [ "$os_part" = "$windows_target" ]; then
+  bashrc="$HOME/.bashrc"
+  case "$INSTALL_DIR" in
+    "$HOME")
+      path_export='export PATH="$HOME:$PATH"'
+      ;;
+    "$HOME"/*)
+      install_dir_suffix="${INSTALL_DIR#"$HOME"/}"
+      path_export="export PATH=\"\$HOME/$install_dir_suffix:\$PATH\""
+      ;;
+    *)
+      path_export="export PATH=\"$INSTALL_DIR:\$PATH\""
+      ;;
+  esac
+  bashrc_updated=0
+
+  if [ -f "$bashrc" ]; then
+    if ! grep -F "$path_export" "$bashrc" >/dev/null 2>&1; then
+      if printf '\n%s\n' "$path_export" >> "$bashrc"; then
+        bashrc_updated=1
+      fi
+    fi
+  else
+    if printf '%s\n' "$path_export" > "$bashrc"; then
+      bashrc_updated=1
+    fi
+  fi
+
+  if [ "$bashrc_updated" -eq 1 ]; then
+    echo "Added $INSTALL_DIR to $bashrc."
+    echo "Run: source $bashrc"
+  fi
+fi
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
@@ -73,7 +120,7 @@ case ":$PATH:" in
 esac
 
 # Mirrors the per-shell hint table in src/commands.rs (`completions`).
-if "$INSTALL_DIR/tt" completions --help >/dev/null 2>&1; then
+if "$INSTALL_DIR/$bin_name" completions --help >/dev/null 2>&1; then
   echo
   echo "Shell completion is available. To enable it, run:"
   case "$(basename "${SHELL:-}")" in
@@ -86,4 +133,4 @@ if "$INSTALL_DIR/tt" completions --help >/dev/null 2>&1; then
   esac
 fi
 
-"$INSTALL_DIR/tt" --version || true
+"$INSTALL_DIR/$bin_name" --version || true
