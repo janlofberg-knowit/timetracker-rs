@@ -32,18 +32,22 @@ function readStdin() {
 // answer would beat the wrong project's marks. No project means no beat at all.
 function projectName(cwd) {
   if (process.env.TT_PROJECT) return process.env.TT_PROJECT;
-  const candidates = cwd ? [cwd] : [];
-  for (const dir of candidates) {
-    try {
-      const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-        encoding: "utf8",
-        cwd: dir,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      if (root) return root.split(/[\\/]/).pop();
-    } catch {
-      // try the next candidate
-    }
+  if (!cwd) {
+    // One line, so the silence is visible without failing the event.
+    process.stderr.write(
+      "tt: no cwd in the hook payload and TT_PROJECT unset; no mark beaten\n",
+    );
+    return null;
+  }
+  try {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (root) return root.split(/[\\/]/).pop();
+  } catch {
+    // not a repo: no project, no beat
   }
   return null;
 }

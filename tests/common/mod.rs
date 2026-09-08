@@ -395,17 +395,16 @@ impl Idle {
     }
 }
 
-/// The rounding `tt` applies to a logged duration: up to the next 5 minutes,
-/// never below 5.
-pub fn round_five(minutes: i64) -> i64 {
-    (((minutes + 4) / 5) * 5).max(5)
+/// The rounding `agent.round_minutes = step` applies to a logged duration: up
+/// to the next `step` minutes, never below `step`.
+pub fn round_to(minutes: i64, step: i64) -> i64 {
+    (((minutes + step - 1) / step) * step).max(step)
 }
 
 /// The `- Duration:` tail `commands::log` prints for `minutes` — the figure it was asked
-/// for, never the stored span.
+/// for, never the stored span. Unrounded, as the default config logs it.
 pub fn logged_duration(minutes: i64) -> String {
-    let rounded = round_five(minutes);
-    format!("- Duration: {}h {}m", rounded / 60, rounded % 60)
+    format!("- Duration: {}h {}m", minutes / 60, minutes % 60)
 }
 
 impl Run {

@@ -54,16 +54,44 @@ fn item_drops_the_item_tag_for_the_sentinel_issue() {
 }
 
 #[test]
-fn item_rounds_the_minutes_to_a_quarter_hour() {
-    let case = Case::new("item-rounding");
+fn item_logs_the_minutes_it_was_given() {
+    let case = Case::new("item-actual");
     let run = case.run(&["item", "proj", "7", "impl", "did the thing", "43"]);
     run.assert_status(0);
     run.assert_stdout_has(&logged_duration(43));
 
-    let floored = Case::new("item-rounding-floor");
-    let run = floored.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
+    let short = Case::new("item-actual-short");
+    let run = short.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
     run.assert_status(0);
     run.assert_stdout_has(&logged_duration(2));
+}
+
+#[test]
+fn round_minutes_rounds_an_item_up_to_the_next_step() {
+    let case = Case::new("item-rounding");
+    case.write_config("[agent]\nround_minutes = 5\n");
+    let run = case.run(&["item", "proj", "7", "impl", "did the thing", "43"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(common::round_to(43, 5)));
+
+    let floored = Case::new("item-rounding-floor");
+    floored.write_config("[agent]\nround_minutes = 5\n");
+    let run = floored.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(5));
+}
+
+#[test]
+fn round_minutes_rounds_a_measured_close_up_to_the_next_step() {
+    let case = Case::new("end-rounding");
+    case.write_config("[agent]\nround_minutes = 15\n");
+    let start = now() - 43 * 60;
+    case.write_mark("proj.7.impl", start);
+    case.beats_at("proj.7.impl", &[now()]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "did the thing"]);
+    run.assert_status(0);
+    assert_eq!(run.logged_minutes(), common::round_to(43, 15));
 }
 
 /// A summary that merely mentions an issue number does not become a tag.
@@ -209,19 +237,12 @@ fn steady_beats_log_the_full_span_however_long_it_ran() {
 /// A 110-minute phase with an 80-minute hole, shared so no case restates a number.
 struct GapFixture {
     hole: (i64, i64),
-    /// The measured span, unrounded.
+    /// The measured span.
     minutes: i64,
-    /// The hole, unrounded.
+    /// The hole.
     hole_minutes: i64,
     /// The last heartbeat, where `end` measures to and so where the entry must end.
     last_beat: i64,
-}
-
-impl GapFixture {
-    /// The measured span as logged, through the same rounding `end` applies.
-    fn minutes_rounded(&self) -> i64 {
-        common::round_five(self.minutes)
-    }
 }
 
 fn gap_fixture(case: &Case) -> GapFixture {
@@ -253,7 +274,7 @@ fn a_single_over_threshold_hole_is_refused_and_named() {
         clock(fixture.hole.0),
         clock(fixture.hole.1)
     ));
-    // Both figures unrounded, and `--trim`'s derived from the fixture, not restated.
+    // `--trim`'s figure is derived from the fixture, not restated.
     run.assert_stderr_has(&format!(
         "--full logs {}m, --trim logs {}m",
         fixture.minutes,
@@ -655,7 +676,7 @@ fn trim_adds_the_split_and_full_does_not() {
         vec![fixture.hole],
         "the silence is recorded, not removed"
     );
-    assert_eq!(entries[0].seconds(), fixture.minutes_rounded() * 60);
+    assert_eq!(entries[0].seconds(), fixture.minutes * 60);
 }
 
 /// A mark-derived entry is pinned to the mark's timeline, not to `now`: `end`
@@ -703,9 +724,9 @@ fn trim_subtracts_each_gap_exactly_once_and_reports_what_survived() {
     let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--trim"]);
     run.assert_status(0);
 
-    // `split_at_idle` does the subtraction, so what survives is the *rounded* span
+    // `split_at_idle` does the subtraction, so what survives is the measured span
     // minus the hole.
-    let survives = fixture.minutes_rounded() - fixture.hole_minutes;
+    let survives = fixture.minutes - fixture.hole_minutes;
     let entries = case.store().entries;
     let stored: i64 = entries.iter().map(|entry| entry.seconds()).sum();
     assert_eq!(
@@ -755,7 +776,7 @@ fn explicit_minutes_beat_trim_as_well_and_record_nothing() {
         "--trim",
     ]);
     run.assert_status(0);
-    assert_eq!(run.logged_minutes(), common::round_five(30));
+    assert_eq!(run.logged_minutes(), 30);
 
     let entries = case.store().entries;
     assert_eq!(entries.len(), 1, "nothing was split");
@@ -763,7 +784,7 @@ fn explicit_minutes_beat_trim_as_well_and_record_nothing() {
     assert!(entries[0].idle.is_empty(), "an idle interval was recorded");
 }
 
-/// Quarter-aligned, so `--full` and `--trim` differ by the hole, not by rounding.
+/// Quarter-aligned, so `--full` and `--trim` differ by the hole alone.
 struct AlignedGapFixture {
     hole_minutes: i64,
 }

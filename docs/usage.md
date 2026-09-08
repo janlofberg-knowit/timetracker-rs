@@ -329,6 +329,9 @@ max_gap_minutes = 45        # silence between the model's own heartbeats that
                             # beat a mark keeps vouching
 max_unvouched_minutes = 120 # how long a phase the model never touched may run in
                             # total, and how long a never-beaten mark keeps vouching
+round_minutes = 0           # 0 logs the actual minutes; N rounds `tt agent end` and
+                            # `tt agent item` up to the next N minutes, never below N.
+                            # `tt agent audit --auto-log` never rounds.
 
 [layout]
 show_projects = true   # whether the Projects, Agent, Summary, and Tags panels

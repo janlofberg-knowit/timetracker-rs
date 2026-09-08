@@ -167,11 +167,12 @@ impl Lease {
 pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
     let key = mark_key(mark.as_key());
     let body = fs::read_to_string(beats_path(dir, &key)).unwrap_or_default();
-    // The last line whatever tag follows its timestamp.
+    // The last *parseable* line, whatever tag follows its timestamp, never the
+    // largest beat.
     let last_seen = body
         .lines()
-        .next_back()
-        .and_then(beat_of)
+        .rev()
+        .find_map(beat_of)
         .and_then(crate::time::instant);
     Lease {
         mark: mark.clone(),
@@ -848,6 +849,26 @@ mod tests {
         write(&dir, "proj.7.impl", "1000000\n");
         fs::create_dir_all(dir.join("beats")).unwrap();
         fs::write(beats_path(&dir, "proj.7.impl"), "1009000\n1000600\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, Some(at(1_000_600)));
+    }
+
+    #[test]
+    fn a_trailing_blank_line_does_not_hide_the_last_beat() {
+        let dir = sandbox("lease-trailing-blank");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000300\n1000600\n\n").unwrap();
+        let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
+        assert_eq!(lease.last_seen, Some(at(1_000_600)));
+    }
+
+    #[test]
+    fn a_trailing_junk_line_does_not_hide_the_last_beat() {
+        let dir = sandbox("lease-trailing-junk");
+        write(&dir, "proj.7.impl", "1000000\n");
+        fs::create_dir_all(dir.join("beats")).unwrap();
+        fs::write(beats_path(&dir, "proj.7.impl"), "1000600\nnot-a-beat\n").unwrap();
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
         assert_eq!(lease.last_seen, Some(at(1_000_600)));
     }
