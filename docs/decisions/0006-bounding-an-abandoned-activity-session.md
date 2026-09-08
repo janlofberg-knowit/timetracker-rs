@@ -44,7 +44,8 @@ evidence is treated as no evidence. An open session ends at its last evidence
 plus that grace, clamped to `now`; a session with an `end=` keeps it.
 
 **The bounded trailing row reads `[abandoned]`**, in the position the `[stale]`
-marker takes on a mark row. Only the row that ends at the bound carries it.
+marker takes on a mark row. Only a row that ends at a bound already fallen
+carries it, never one still measured to `now`.
 
 ## Alternatives considered
 
