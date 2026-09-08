@@ -294,6 +294,57 @@ fn project_keeps_that_project_s_rows_and_drops_the_rest() {
     assert_eq!(rows[0]["project"], "theirs");
 }
 
+#[test]
+fn dismissing_a_flagged_window_clears_it_without_billing_the_time() {
+    let case = Case::new("audit-dismiss");
+    case.write_store(&[]);
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "smoke", start, Some(end));
+    case.run(&["audit"]).assert_stdout_has("smoke");
+
+    let dismissed = case.run(&[
+        "dismiss",
+        "--session",
+        "sess-1",
+        "smoke",
+        &format!("{start}-{end}"),
+        "a long lunch",
+    ]);
+    dismissed.assert_status(0);
+
+    let after = case.run(&["audit"]);
+    after.assert_status(0);
+    after.assert_stdout_has("No unaccounted agent activity.");
+    assert!(
+        case.store().entries.is_empty(),
+        "a dismissal must never bill the time"
+    );
+    assert_eq!(common::count_files(&case.dismissed), 1);
+}
+
+#[test]
+fn a_dismissal_leaves_a_concurrent_session_s_row_alone() {
+    let case = Case::new("audit-dismiss-concurrent");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "twin", start, Some(end));
+    case.write_session("sess-2", "twin", start, Some(end));
+
+    case.run(&[
+        "dismiss",
+        "--session",
+        "sess-1",
+        "twin",
+        &format!("{start}-{end}"),
+    ])
+    .assert_status(0);
+
+    let rows = rows(&case.run(&["audit", "--json"]));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["session"], "sess-2");
+}
+
 /// The minutes an 8h session with two 60-minute idle holes reports, as three
 /// contiguous active stretches. Counted against the dispatches below it: a
 /// removed dispatch leaves a 60m hole between its neighbours.

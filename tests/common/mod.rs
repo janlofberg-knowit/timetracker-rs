@@ -25,6 +25,7 @@ pub struct Case {
     pub data: PathBuf,
     pub config: PathBuf,
     pub activity: PathBuf,
+    pub dismissed: PathBuf,
 }
 
 pub struct Run {
@@ -42,16 +43,19 @@ impl Case {
         let data = root.join("store");
         let config = root.join("config.toml");
         let activity = root.join("activity");
+        let dismissed = root.join("dismissed");
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&marks).unwrap();
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&activity).unwrap();
+        fs::create_dir_all(&dismissed).unwrap();
         Self {
             home,
             marks,
             data,
             config,
             activity,
+            dismissed,
         }
     }
 
@@ -88,7 +92,8 @@ impl Case {
                 && self.marks.starts_with(root)
                 && self.data.starts_with(root)
                 && self.config.starts_with(root)
-                && self.activity.starts_with(root),
+                && self.activity.starts_with(root)
+                && self.dismissed.starts_with(root),
             "sandbox paths escaped the scratch directory: {:?}",
             self.home
         );
@@ -99,6 +104,7 @@ impl Case {
         command.env("TT_DATA_DIR", &self.data);
         command.env("TT_CONFIG_FILE", &self.config);
         command.env("TT_ACTIVITY_DIR", &self.activity);
+        command.env("TT_DISMISSED_DIR", &self.dismissed);
         // `env_clear()` strips this too, so it has to be set explicitly on every
         // run — otherwise every one of these subprocess invocations would attempt
         // a real network call to GitHub's release API during `cargo test`.

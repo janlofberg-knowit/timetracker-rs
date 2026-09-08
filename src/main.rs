@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod completions;
 mod config;
+mod dismissed;
 mod duration;
 mod entry_data;
 mod icons;

@@ -16,6 +16,7 @@
 use chrono::{DateTime, Local};
 
 use crate::activity::Session;
+use crate::dismissed::Dismissal;
 use crate::marks::{self, Lease, Thresholds};
 use crate::time::instant;
 use crate::tracker::TimeEntry;
@@ -150,6 +151,7 @@ pub fn unaccounted(
     sessions: &[Session],
     leases: &[Lease],
     entries: &[TimeEntry],
+    dismissals: &[Dismissal],
     now: DateTime<Local>,
     thresholds: Thresholds,
 ) -> Vec<Unaccounted> {
@@ -169,7 +171,8 @@ pub fn unaccounted(
 
             let stretches =
                 uncovered_by_marks(project, session.start, end, leases, now_epoch, thresholds);
-            let fragments = uncovered_by_entries(project, stretches, entries, now_epoch);
+            let covered = uncovered_by_entries(project, stretches, entries, now_epoch);
+            let fragments = uncovered_by_dismissals(project, &session.id, covered, dismissals);
             // Every row is one contiguous active stretch: with no dispatches a
             // fragment passes through whole, otherwise it is cut at its idle holes.
             let active: Vec<(i64, i64)> = if session.subagent_at.is_empty() {
@@ -282,6 +285,30 @@ fn uncovered_by_marks(
         remaining = remaining
             .into_iter()
             .flat_map(|stretch| subtract(stretch, (from, until)))
+            .collect();
+    }
+    remaining
+}
+
+/// What is left of `stretches` after removing every dismissal **of this session**
+/// whose project matches. Another session's dismissal never subtracts here, or one
+/// agent's "that was not work" would erase a concurrent agent's row.
+fn uncovered_by_dismissals(
+    project: &str,
+    session: &str,
+    stretches: Vec<(i64, i64)>,
+    dismissals: &[Dismissal],
+) -> Vec<(i64, i64)> {
+    let mut remaining = stretches;
+    for dismissal in dismissals.iter().filter(|dismissal| {
+        dismissal.session == session && marks::same_project(&dismissal.project, project)
+    }) {
+        if dismissal.end <= dismissal.start {
+            continue;
+        }
+        remaining = remaining
+            .into_iter()
+            .flat_map(|stretch| subtract(stretch, (dismissal.start, dismissal.end)))
             .collect();
     }
     remaining
@@ -412,16 +439,39 @@ mod tests {
         now: DateTime<Local>,
         floor_minutes: i64,
     ) -> Vec<Unaccounted> {
+        dismissing(&[], sessions, leases, entries, now, floor_minutes)
+    }
+
+    /// The same with a dismissal ledger, for the cases that need one.
+    fn dismissing(
+        dismissals: &[Dismissal],
+        sessions: &[Session],
+        leases: &[Lease],
+        entries: &[TimeEntry],
+        now: DateTime<Local>,
+        floor_minutes: i64,
+    ) -> Vec<Unaccounted> {
         super::unaccounted(
             sessions,
             leases,
             entries,
+            dismissals,
             now,
             Thresholds {
                 gap: 45,
                 unvouched: floor_minutes,
             },
         )
+    }
+
+    fn dismissal(project: &str, session: &str, start: i64, end: i64) -> Dismissal {
+        Dismissal {
+            project: project.to_string(),
+            session: session.to_string(),
+            start,
+            end,
+            reason: None,
+        }
     }
 
     #[test]
@@ -821,6 +871,46 @@ mod tests {
                 .map(|u| (u.start, u.end, u.subagents))
                 .collect::<Vec<_>>(),
             vec![(at(0), at(3 * HOUR), 8), (at(0), at(121 * 60), 0)]
+        );
+    }
+
+    #[test]
+    fn a_dismissal_clears_the_session_it_names_and_no_other() {
+        let sessions = vec![
+            session(Some("tt"), 0, Some(3 * HOUR), 0),
+            Session {
+                id: "sess-2".to_string(),
+                ..session(Some("tt"), 0, Some(3 * HOUR), 0)
+            },
+        ];
+        let dismissals = vec![dismissal("tt", "sess-1", 0, 3 * HOUR)];
+        let flagged = dismissing(&dismissals, &sessions, &[], &[], at(3 * HOUR), FLOOR);
+        assert_eq!(
+            flagged
+                .iter()
+                .map(|u| u.session.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sess-2"],
+            "a concurrent session's row over the same minutes must survive"
+        );
+    }
+
+    /// The subtraction runs before the floor sum, so a dismissed stretch never
+    /// counts toward the session's own total either.
+    #[test]
+    fn a_dismissed_stretch_does_not_count_toward_the_floor() {
+        let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
+        let dismissals = vec![dismissal("tt", "sess-1", HOUR, 3 * HOUR)];
+        assert!(dismissing(&dismissals, &sessions, &[], &[], at(3 * HOUR), FLOOR).is_empty());
+    }
+
+    #[test]
+    fn a_dismissal_of_another_project_does_not_subtract() {
+        let sessions = vec![session(Some("tt"), 0, Some(3 * HOUR), 0)];
+        let dismissals = vec![dismissal("other", "sess-1", 0, 3 * HOUR)];
+        assert_eq!(
+            dismissing(&dismissals, &sessions, &[], &[], at(3 * HOUR), FLOOR).len(),
+            1
         );
     }
 

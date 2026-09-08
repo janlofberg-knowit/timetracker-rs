@@ -247,6 +247,22 @@ pub enum AgentCommands {
         #[arg(long, value_parser = parse_data)]
         data: Option<serde_json::Value>,
     },
+    /// Record that a stretch of one session's clock time was **not** work, so
+    /// the audit stops reporting it. Writes no entry, so it bills no time.
+    Dismiss {
+        /// The activity session the stretch belongs to: this session's id from
+        /// the per-prompt card, or a row's `session` from `audit --json`
+        #[arg(long)]
+        session: String,
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
+        project: String,
+        /// The stretch as `<start>-<end>` epoch seconds, as `audit --json`
+        /// prints them
+        #[arg(value_name = "START-END", value_parser = parse_idle)]
+        span: IdleInterval,
+        /// Why it was not work, recorded verbatim
+        reason: Option<String>,
+    },
     /// Hook-only activity ledger, hidden from `--help` — never called by the
     /// model. See docs/decisions/0001-agent-activity-tracking.md.
     #[command(hide = true, subcommand)]
@@ -328,7 +344,9 @@ impl AgentCommands {
             AgentCommands::Begin { .. }
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
-            | AgentCommands::List { .. } => false,
+            | AgentCommands::List { .. }
+            // Writes only the dismissal ledger, never an entry.
+            | AgentCommands::Dismiss { .. } => false,
             AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.

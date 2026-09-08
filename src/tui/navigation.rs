@@ -85,6 +85,7 @@ impl App {
             &self.activity_sessions,
             &self.leases,
             &self.data.entries,
+            &crate::dismissed::read_all(),
             Local::now(),
             self.liveness_thresholds,
         );

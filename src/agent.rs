@@ -74,6 +74,12 @@ pub fn run(command: &AgentCommands) -> Result<()> {
                 data: data.clone(),
             },
         ),
+        AgentCommands::Dismiss {
+            session,
+            project,
+            span,
+            reason,
+        } => dismiss(session, project, span, reason.as_deref()),
         AgentCommands::Activity(command) => activity_command(command),
         AgentCommands::Audit {
             auto_log,
@@ -130,13 +136,21 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         return Ok(());
     };
     let leases = open_leases();
+    let dismissals = crate::dismissed::read_all();
     let now = chrono::Local::now();
     let thresholds = audit::thresholds();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&[session], &leases, &data.entries, now, thresholds)
+        audit::unaccounted(
+            &[session],
+            &leases,
+            &data.entries,
+            &dismissals,
+            now,
+            thresholds,
+        )
     };
 
     let threshold = auto_log
@@ -277,6 +291,32 @@ fn list(project: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// `tt agent dismiss --session <id> <project> <start>-<end> ["<reason>"]`: record that
+/// one session's stretch of clock time was not work. Records the span as given and
+/// matches no row: it is a statement about clock time, not an operation on a row.
+fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&str>) -> Result<()> {
+    let dir = crate::dismissed::dismissed_dir()
+        .context("could not determine a cache directory for the dismissals")?;
+    crate::dismissed::write_in(
+        &dir,
+        &crate::dismissed::Dismissal {
+            project: project.to_string(),
+            session: session.to_string(),
+            start: span.start.timestamp(),
+            end: span.end.timestamp(),
+            reason: reason.map(str::to_string),
+        },
+    )?;
+    println!(
+        "dismissed {} {}-{} for session {}",
+        project,
+        span.start.format("%H:%M"),
+        span.end.format("%H:%M"),
+        session
+    );
+    Ok(())
+}
+
 /// `tt agent audit`: reconcile the activity ledger against marks and logged entries,
 /// reporting activity with no evidence it was tracked. Missing directories read as empty.
 /// `--json` prints the same rows as an array, `[]` included, and never the prose.
@@ -285,13 +325,21 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
     let leases = open_leases();
+    let dismissals = crate::dismissed::read_all();
     let thresholds = audit::thresholds();
     let now = chrono::Local::now();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
+        audit::unaccounted(
+            &sessions,
+            &leases,
+            &data.entries,
+            &dismissals,
+            now,
+            thresholds,
+        )
     };
 
     // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
@@ -310,7 +358,14 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
     let mut remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
+        audit::unaccounted(
+            &sessions,
+            &leases,
+            &data.entries,
+            &dismissals,
+            now,
+            thresholds,
+        )
     } else {
         flagged
     };
