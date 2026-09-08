@@ -298,8 +298,14 @@ day_med_hours = 4
 default_limit = 20     # default for `tt list` when -n isn't passed
 
 [agent]
-max_gap_minutes = 45        # silence between heartbeats that `tt agent end` refuses on
-max_unvouched_minutes = 120 # how long a phase with no heartbeat at all may run
+max_gap_minutes = 45        # silence between the model's own heartbeats that
+                            # `tt agent end` refuses on, and how long past its last
+                            # beat a mark keeps vouching
+max_unvouched_minutes = 120 # how long a phase the model never touched may run in
+                            # total, and how long a never-beaten mark keeps vouching
+round_minutes = 0           # 0 logs the actual minutes; N rounds `tt agent end` and
+                            # `tt agent item` up to the next N minutes, never below N.
+                            # `tt agent audit --auto-log` never rounds.
 
 [layout]
 show_projects = true   # whether the Projects, Agent, Summary, and Tags panels

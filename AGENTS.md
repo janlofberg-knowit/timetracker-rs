@@ -112,33 +112,64 @@ tt agent end   <project> <issue|-> <phase> "<summary>"
 # Never a substitute for measuring a span you could have marked instead.
 tt agent item  <project> <issue|-> <phase> "<summary>" <minutes>
 
-tt agent list                                  # what is still open
+tt agent list [PROJECT]                        # what is still open
 tt agent cancel <project> <issue|-> <phase>    # drop without logging
 tt agent audit [--auto-log]                    # unaccounted activity; see below
 
 tt report [--week|--all|--since DATE [--until DATE]] [--project NAME] [--json]
 ```
 
-Durations are rounded **up** to the nearest 5 minutes, never below 5 — a
-ceiling, not nearest, so a logged span never reads shorter than what was
-actually spent.
+Durations are logged as the actual minutes. Set `agent.round_minutes = N` in
+the config file to round `end` and `item` up to the next N minutes instead,
+never below N; `audit --auto-log` stays unrounded either way.
 
 A mark's start time survives the agent's context being truncated or compacted, so do
 not hold start times in context. Marks live in the application's own cache directory;
 `TT_MARK_DIR` overrides it.
 
-`touch` matters twice over: `end` measures start → last touch, not start → now, so
-idle time after the work finished is not counted — and the heartbeats it appends are
-what let a long phase log without a question. `end` refuses on a *silent gap*, never
-on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES`
+`touch` matters twice over: `end` measures start → your last touch, not start → now,
+so idle time after the work finished is not counted — and the heartbeats it appends
+are what let a long phase log without a question. `end` refuses on a *silent gap*,
+never on length, so a stretch between heartbeats over `TT_MAX_GAP_MINUTES`
 or `agent.max_gap_minutes` (default 45) is what gets flagged.
 
-A phase that produced **no heartbeat at all** is judged on its own threshold instead,
-`TT_MAX_UNVOUCHED_MINUTES` or `agent.max_unvouched_minutes` (default 120). No beats is the absence of instrumentation —
-a session that compacted, or `begin`/`end` without any `touch` — where a hole between
-beats is positive evidence that work stopped, so the unmeasured phase gets the longer
-allowance. Long enough is still refused: 120 minutes with nothing to show for it wants
-a human.
+A phase **you never touched** is judged on its own threshold instead,
+`TT_MAX_UNVOUCHED_MINUTES` or `agent.max_unvouched_minutes` (default 120). No touch is
+the absence of instrumentation — a session that compacted, or `begin`/`end` without
+any `touch` — where a hole between heartbeats is positive evidence that work stopped,
+so the unmeasured phase gets the longer allowance. Long enough is still refused: 120
+minutes with nothing to show for it wants a human.
+
+A phase you never touched is judged **whole-span**: one silence from `begin` to
+where `end` measures, exactly as if the hooks had never beaten it. Once you have
+touched, only the holes between *your* touches are judged, at the 45-minute
+standard — so a phase touched at minute 0 and again at minute 60 is refused for
+that hour however many hook beats fill it. Touch as the work runs, or pass the
+real minutes.
+
+Two kinds of heartbeat share one file, and only one of them vouches for time. **Your
+`tt agent touch` is the vouch**: `end` measures to it, and it is what lifts a phase off
+the unvouched threshold. **The hooks' beats prove the session is alive**, nothing more —
+Claude Code's `UserPromptSubmit`, `SubagentStop` and `Stop` each beat the open marks of
+the project the beating session resolved, and only that project's, at every turn
+boundary. They keep a mark from expiring; they never move what `end` bills and never
+make an untouched phase look touched. So `tt agent touch` is still yours to run when a
+phase runs long inside a single turn.
+
+A mark **expires** when it is not renewed: `max_gap_minutes` past its last
+heartbeat from either source, or `max_unvouched_minutes` past `begin` if nothing beat
+at all. An
+expired mark stops vouching for its project, so that project's activity shows up
+as unaccounted again, and `tt agent list` marks the row `[stale]` and prints
+under it the exact `tt agent end` line that logs the work and clears it —
+`--trim` when you touched the phase, explicit minutes when only the hooks beat it
+or nothing did, since `--trim` on an untouched phase reads the whole span as one
+gap and cuts nothing, logging all of it.
+
+**An existing install must re-run `install-hooks.mjs`.** The hook scripts are
+copied into Claude Code's own hooks directory, so a machine still holding the
+old copies gets no automatic beat at all, and every mark then expires on the
+unvouched grace.
 
 ## Working in parallel
 
@@ -200,8 +231,8 @@ the plain begin → touch → end flow is enough.
   of work in it, and the message names that stretch's length and clock interval, then
   quotes what `--full` and what `--trim` would log. Length alone is never the
   complaint: a long session that kept heartbeating logs silently. Which threshold
-  applied depends on the evidence — 45 minutes between beats, 120 for a phase that
-  never beat at all.
+  applied depends on the evidence — 45 minutes between beats, 120 for a phase you
+  never touched.
 
   **Ask the operator about the named gap — never pick between `--full` and `--trim`
   yourself**, and reach for neither by reflex; only the person who was there knows
@@ -246,7 +277,7 @@ leave it as `auto`, and if it matters, say so and let the operator decide
 whether to split or re-tag it by hand.
 
 `agent.auto_log_on_stop` extends the same mechanism to the `Stop` hook
-itself: when set, `tt-stop-check.mjs`'s `tt agent activity check --auto-log`
+itself: when set, `tt-activity-hook.mjs`'s `tt agent activity check --auto-log`
 call auto-logs the ending session's own unaccounted window instead of only
 warning about it — same fixed phase/summary/tags, same idempotency. It
 requires `agent.auto_log_after_minutes` to already be set (a config error

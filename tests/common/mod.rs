@@ -163,6 +163,24 @@ impl Case {
         fs::write(self.activity.join(session_id), body).unwrap();
     }
 
+    /// The same, with one `subagent=` line per dispatch epoch.
+    pub fn write_session_with_dispatches(
+        &self,
+        session_id: &str,
+        project: &str,
+        start: i64,
+        end: Option<i64>,
+        dispatches: &[i64],
+    ) {
+        self.write_session(session_id, project, start, end);
+        let path = self.activity.join(session_id);
+        let mut body = fs::read_to_string(&path).unwrap();
+        for at in dispatches {
+            body.push_str(&format!("subagent={at}\n"));
+        }
+        fs::write(path, body).unwrap();
+    }
+
     /// Run `tt <args>` with **no** `agent` prefix, for the store-reading commands.
     pub fn run_bare(&self, args: &[&str]) -> Run {
         self.run_with(args, true)
@@ -240,6 +258,14 @@ impl Case {
         let file = self.beats_file(key);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         let body: String = beats.iter().map(|beat| format!("{beat}\n")).collect();
+        fs::write(file, body).unwrap();
+    }
+
+    /// The same, tagged as the hooks write them: `<epoch> hook`.
+    pub fn hook_beats_at(&self, key: &str, beats: &[i64]) {
+        let file = self.beats_file(key);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let body: String = beats.iter().map(|beat| format!("{beat} hook\n")).collect();
         fs::write(file, body).unwrap();
     }
 
@@ -367,17 +393,16 @@ impl Idle {
     }
 }
 
-/// The rounding `tt` applies to a logged duration: up to the next 5 minutes,
-/// never below 5.
-pub fn round_five(minutes: i64) -> i64 {
-    (((minutes + 4) / 5) * 5).max(5)
+/// The rounding `agent.round_minutes = step` applies to a logged duration: up
+/// to the next `step` minutes, never below `step`.
+pub fn round_to(minutes: i64, step: i64) -> i64 {
+    (((minutes + step - 1) / step) * step).max(step)
 }
 
 /// The `- Duration:` tail `commands::log` prints for `minutes` — the figure it was asked
-/// for, never the stored span.
+/// for, never the stored span. Unrounded, as the default config logs it.
 pub fn logged_duration(minutes: i64) -> String {
-    let rounded = round_five(minutes);
-    format!("- Duration: {}h {}m", rounded / 60, rounded % 60)
+    format!("- Duration: {}h {}m", minutes / 60, minutes % 60)
 }
 
 impl Run {

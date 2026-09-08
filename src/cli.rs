@@ -177,7 +177,12 @@ pub enum AgentCommands {
         phase: String,
     },
     /// List every open mark
-    List,
+    List {
+        /// Narrow the list to one project, matched on the whole sanitised
+        /// project segment of a mark's name
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
+        project: Option<String>,
+    },
     /// Log one finished piece of work for a **known** duration, with no mark
     /// involved. A fallback for when there was nothing to `begin`/`end`
     /// around (the duration is already known some other way) — prefer
@@ -193,7 +198,7 @@ pub enum AgentCommands {
         phase: String,
         /// 3-6 words of plain prose, with no issue number in them
         summary: Option<String>,
-        /// Whole minutes, rounded up to the nearest 5 minutes
+        /// Whole minutes, rounded up only when `agent.round_minutes` is set
         minutes: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
         #[arg(long, value_parser = parse_data)]
@@ -249,10 +254,21 @@ pub enum ActivityCommands {
         session_id: String,
         project: Option<String>,
     },
-    /// Stop: close this session's activity window.
-    End { session_id: String },
-    /// SubagentStop: record that one subagent dispatch finished.
-    Subagent { session_id: String },
+    /// Stop: close this session's activity window, and beat this project's
+    /// open marks.
+    End {
+        session_id: String,
+        project: Option<String>,
+    },
+    /// SubagentStop: record that one subagent dispatch finished, and beat this
+    /// project's open marks.
+    Subagent {
+        session_id: String,
+        project: Option<String>,
+    },
+    /// UserPromptSubmit: beat this project's open marks. Writes nothing to the
+    /// ledger, so it takes no session id.
+    Prompt { project: Option<String> },
     /// Stop: report this one session's window if it is unaccounted for,
     /// silent otherwise. Same reconciliation as `tt agent audit`, narrowed
     /// to a single session so the Stop hook can warn immediately.
@@ -287,7 +303,7 @@ impl AgentCommands {
             AgentCommands::Begin { .. }
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
-            | AgentCommands::List => false,
+            | AgentCommands::List { .. } => false,
             AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.

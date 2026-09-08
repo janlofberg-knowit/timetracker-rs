@@ -4,3 +4,5 @@
 # flatpak-builder — never committed.
 /flatpak/tt-x86_64-unknown-linux-gnu
 ~
+
+.claude/settings.local.json

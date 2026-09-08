@@ -54,16 +54,44 @@ fn item_drops_the_item_tag_for_the_sentinel_issue() {
 }
 
 #[test]
-fn item_rounds_the_minutes_to_a_quarter_hour() {
-    let case = Case::new("item-rounding");
+fn item_logs_the_minutes_it_was_given() {
+    let case = Case::new("item-actual");
     let run = case.run(&["item", "proj", "7", "impl", "did the thing", "43"]);
     run.assert_status(0);
     run.assert_stdout_has(&logged_duration(43));
 
-    let floored = Case::new("item-rounding-floor");
-    let run = floored.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
+    let short = Case::new("item-actual-short");
+    let run = short.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
     run.assert_status(0);
     run.assert_stdout_has(&logged_duration(2));
+}
+
+#[test]
+fn round_minutes_rounds_an_item_up_to_the_next_step() {
+    let case = Case::new("item-rounding");
+    case.write_config("[agent]\nround_minutes = 5\n");
+    let run = case.run(&["item", "proj", "7", "impl", "did the thing", "43"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(common::round_to(43, 5)));
+
+    let floored = Case::new("item-rounding-floor");
+    floored.write_config("[agent]\nround_minutes = 5\n");
+    let run = floored.run(&["item", "proj", "7", "impl", "a quick errand", "2"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(5));
+}
+
+#[test]
+fn round_minutes_rounds_a_measured_close_up_to_the_next_step() {
+    let case = Case::new("end-rounding");
+    case.write_config("[agent]\nround_minutes = 15\n");
+    let start = now() - 43 * 60;
+    case.write_mark("proj.7.impl", start);
+    case.beats_at("proj.7.impl", &[now()]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "did the thing"]);
+    run.assert_status(0);
+    assert_eq!(run.logged_minutes(), common::round_to(43, 15));
 }
 
 /// A summary that merely mentions an issue number does not become a tag.
@@ -209,19 +237,12 @@ fn steady_beats_log_the_full_span_however_long_it_ran() {
 /// A 110-minute phase with an 80-minute hole, shared so no case restates a number.
 struct GapFixture {
     hole: (i64, i64),
-    /// The measured span, unrounded.
+    /// The measured span.
     minutes: i64,
-    /// The hole, unrounded.
+    /// The hole.
     hole_minutes: i64,
     /// The last heartbeat, where `end` measures to and so where the entry must end.
     last_beat: i64,
-}
-
-impl GapFixture {
-    /// The measured span as logged, through the same rounding `end` applies.
-    fn minutes_rounded(&self) -> i64 {
-        common::round_five(self.minutes)
-    }
 }
 
 fn gap_fixture(case: &Case) -> GapFixture {
@@ -253,7 +274,7 @@ fn a_single_over_threshold_hole_is_refused_and_named() {
         clock(fixture.hole.0),
         clock(fixture.hole.1)
     ));
-    // Both figures unrounded, and `--trim`'s derived from the fixture, not restated.
+    // `--trim`'s figure is derived from the fixture, not restated.
     run.assert_stderr_has(&format!(
         "--full logs {}m, --trim logs {}m",
         fixture.minutes,
@@ -367,6 +388,147 @@ fn an_unvouched_span_over_the_unvouched_threshold_is_flagged() {
     run.assert_status(65);
     run.assert_stderr_has(&format!("gap ({}-", clock(start)));
     assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+// --- automatic beats -------------------------------------------------------
+//
+// No automatic beat may shorten what `end` bills, or move a phase off the
+// unvouched threshold.
+
+/// The same 90-minute span `an_unvouched_span_under_the_unvouched_threshold_logs`
+/// bills, with hook beats all through it.
+#[test]
+fn hook_beats_alone_bill_the_same_span_on_the_same_threshold() {
+    let case = Case::new("gaps-hook-only");
+    let span = 90;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 20 * 60, start + 50 * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "hooks beat, the model did not"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// A hook beat after the model's last touch must not discard that touch: the
+/// bill is the touch's, not the whole span to now.
+#[test]
+fn a_hook_beat_after_a_touch_does_not_discard_the_touchs_anchor() {
+    let case = Case::new("gaps-hook-after-touch");
+    let start = now() - 61 * 60;
+    case.write_mark("proj.7.impl", start);
+    let file = case.beats_file("proj.7.impl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!("{}\n{} hook\n", start + 20 * 60, start + 21 * 60),
+    )
+    .unwrap();
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "closing work after the last beat",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(20));
+}
+
+/// An abandoned mark whose only beats are automatic is judged across its whole
+/// span, so the refusal names the mark's own start and `--trim` has nothing
+/// left to bill: the printed close line asks for the minutes instead.
+#[test]
+fn an_abandoned_hook_beaten_mark_is_refused_across_its_whole_span() {
+    let case = Case::new("gaps-hook-abandoned");
+    let start = now() - 200 * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 10 * 60, start + 40 * 60]);
+
+    let refused = case.run(&["end", "proj", "7", "impl", "left open over the weekend"]);
+    refused.assert_status(65);
+    refused.assert_stderr_has(&format!("gap ({}-", clock(start)));
+    assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+// --- an unvouched phase is judged as if its beats file were empty ----------
+
+/// Hook beats at either end of the span buy no interior allowance: 125 minutes
+/// is one silence over the unvouched grace.
+#[test]
+fn hook_beats_do_not_bracket_an_over_grace_unvouched_span() {
+    let case = Case::new("gaps-hook-bracketed");
+    let span = 125;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 5 * 60, start + (span - 2) * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "hooks bracketed the idle"]);
+    run.assert_status(65);
+    run.assert_stderr_has(&format!("gap ({}-", clock(start)));
+    assert!(case.store().entries.is_empty(), "nothing was logged");
+}
+
+/// Nor does one cost the grace: 100 minutes still bills whole.
+#[test]
+fn a_hook_beat_does_not_shorten_an_under_grace_unvouched_span() {
+    let case = Case::new("gaps-hook-under-grace");
+    let span = 100;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+    case.hook_beats_at("proj.7.impl", &[start + 5 * 60]);
+
+    let run = case.run(&["end", "proj", "7", "impl", "one hook beat, then work"]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(span));
+}
+
+/// The rule itself: the beats file's hook lines change neither the bill nor the
+/// refusal, on either side of the grace.
+#[test]
+fn an_unvouched_phase_is_judged_the_same_with_hook_beats_as_with_none() {
+    for span in [90, 150] {
+        let start = now() - span * 60;
+
+        let empty = Case::new(&format!("gaps-unvouched-empty-{span}"));
+        empty.write_mark("proj.7.impl", start);
+        let without = empty.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+
+        let hooked = Case::new(&format!("gaps-unvouched-hooked-{span}"));
+        hooked.write_mark("proj.7.impl", start);
+        hooked.hook_beats_at("proj.7.impl", &[start + 5 * 60, start + (span - 2) * 60]);
+        let with = hooked.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+
+        assert_eq!(with.status, without.status, "{span}m: exit code");
+        assert_eq!(with.stdout, without.stdout, "{span}m: what was billed");
+    }
+}
+
+/// However many hook beats follow the model's last touch, the bill is the
+/// touch's.
+#[test]
+fn hook_beats_after_a_touch_never_move_the_bill() {
+    let case = Case::new("gaps-hook-after-touch-many");
+    let start = now() - 61 * 60;
+    case.write_mark("proj.7.impl", start);
+    let file = case.beats_file("proj.7.impl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut body = format!("{}\n", start + 20 * 60);
+    for minute in 21..=60 {
+        body.push_str(&format!("{} hook\n", start + minute * 60));
+    }
+    std::fs::write(&file, body).unwrap();
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "touched once, hooks all through",
+    ]);
+    run.assert_status(0);
+    run.assert_stdout_has(&logged_duration(20));
 }
 
 /// Beating once does not buy the longer allowance: 46 minutes, one over.
@@ -514,7 +676,7 @@ fn trim_adds_the_split_and_full_does_not() {
         vec![fixture.hole],
         "the silence is recorded, not removed"
     );
-    assert_eq!(entries[0].seconds(), fixture.minutes_rounded() * 60);
+    assert_eq!(entries[0].seconds(), fixture.minutes * 60);
 }
 
 /// A mark-derived entry is pinned to the mark's timeline, not to `now`: `end`
@@ -562,9 +724,9 @@ fn trim_subtracts_each_gap_exactly_once_and_reports_what_survived() {
     let run = case.run(&["end", "proj", "12", "plan", "planned the thing", "--trim"]);
     run.assert_status(0);
 
-    // `split_at_idle` does the subtraction, so what survives is the *rounded* span
+    // `split_at_idle` does the subtraction, so what survives is the measured span
     // minus the hole.
-    let survives = fixture.minutes_rounded() - fixture.hole_minutes;
+    let survives = fixture.minutes - fixture.hole_minutes;
     let entries = case.store().entries;
     let stored: i64 = entries.iter().map(|entry| entry.seconds()).sum();
     assert_eq!(
@@ -614,7 +776,7 @@ fn explicit_minutes_beat_trim_as_well_and_record_nothing() {
         "--trim",
     ]);
     run.assert_status(0);
-    assert_eq!(run.logged_minutes(), common::round_five(30));
+    assert_eq!(run.logged_minutes(), 30);
 
     let entries = case.store().entries;
     assert_eq!(entries.len(), 1, "nothing was split");
@@ -622,7 +784,7 @@ fn explicit_minutes_beat_trim_as_well_and_record_nothing() {
     assert!(entries[0].idle.is_empty(), "an idle interval was recorded");
 }
 
-/// Quarter-aligned, so `--full` and `--trim` differ by the hole, not by rounding.
+/// Quarter-aligned, so `--full` and `--trim` differ by the hole alone.
 struct AlignedGapFixture {
     hole_minutes: i64,
 }
@@ -806,4 +968,24 @@ fn an_entry_recorded_with_the_mark_left_behind_exits_74() {
     let retry = case.run(&["end", "proj", "7", "impl", "did the thing"]);
     retry.assert_status(75);
     assert_eq!(case.store().entries.len() - fixture.before, 1);
+}
+
+/// An unvouched phase's holes cover its whole span, so `--trim` would store
+/// all of it: the refusal names only `--full` and the explicit minutes.
+#[test]
+fn an_unvouched_refusal_names_no_trim_figure() {
+    let case = Case::new("gaps-unvouched-no-trim");
+    let span = 150;
+    let start = now() - span * 60;
+    case.write_mark("proj.7.impl", start);
+
+    let run = case.run(&["end", "proj", "7", "impl", "no evidence either way"]);
+    run.assert_status(65);
+    run.assert_stderr_has(&format!("tt: --full logs {span}m\n"));
+    run.assert_stderr_has("or pass the real minutes instead.");
+    assert!(
+        !run.stderr.contains("--trim"),
+        "the refusal named a --trim figure it will not honour: {:?}",
+        run.stderr
+    );
 }

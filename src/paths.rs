@@ -42,20 +42,21 @@ pub fn env_or(value: Option<OsString>, default: Option<PathBuf>) -> Option<PathB
     }
 }
 
-/// Every character outside `[A-Za-z0-9._-]` replaced by `_`.
+/// Every character outside `[A-Za-z0-9_-]` replaced by `_`, and every `.` by `-`.
 ///
 /// Both a mark's key and an activity session's id become filenames built from
 /// text this program does not control — a project name from the environment, a
 /// session id from the harness. Sanitising them the same way is what lets a
-/// path be rebuilt from its parts and still find the file it wrote.
+/// path be rebuilt from its parts and still find the file it wrote. A `.` is
+/// reserved as [`crate::marks::mark_key`]'s segment separator, so no sanitised
+/// segment may hold one.
 pub fn sanitise_key(raw: &str) -> String {
     raw.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
+        .map(|c| match c {
+            '.' => '-',
+            '_' | '-' => c,
+            c if c.is_ascii_alphanumeric() => c,
+            _ => '_',
         })
         .collect()
 }
@@ -90,10 +91,10 @@ mod tests {
 
     #[test]
     fn a_key_keeps_what_is_legal_and_replaces_the_rest() {
-        assert_eq!(sanitise_key("tt.8.impl"), "tt.8.impl");
-        assert_eq!(sanitise_key("vinge.-.plan"), "vinge.-.plan", "the sentinel");
+        assert_eq!(sanitise_key("tt.8.impl"), "tt-8-impl", "a dot is not legal");
+        assert_eq!(sanitise_key("-"), "-", "the sentinel");
         assert_eq!(sanitise_key("my proj/7"), "my_proj_7");
-        assert_eq!(sanitise_key("a_b-c.d"), "a_b-c.d", "all four legal symbols");
+        assert_eq!(sanitise_key("a_b-c"), "a_b-c", "both legal symbols");
     }
 
     /// Not asserting a concrete path — it is per-OS and per-user. What matters is

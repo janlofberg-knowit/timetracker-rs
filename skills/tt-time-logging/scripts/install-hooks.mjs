@@ -13,7 +13,8 @@
 //                      the begin/touch/end discipline survives context getting
 //                      pushed out in a long session without re-spending the
 //                      whole document every turn. See tt-contract-hook.mjs.
-//   Stop             - warns about open marks; closes the activity window.
+//   Stop             - closes the activity window, then warns about open
+//                      marks and an unaccounted session window.
 //   SubagentStop     - records a subagent dispatch on the activity window.
 //
 // It also appends a one-line pointer to this skill into the user's global
@@ -32,7 +33,8 @@
 // Usage (from anywhere, after `npx skills add ...`):
 //   node <wherever the skill landed>/scripts/install-hooks.mjs
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -56,7 +58,6 @@ const settingsPath = join(claudeHome, "settings.json");
 // wherever `npx skills add` put this skill (project-local or global).
 const destDir = join(claudeHome, "hooks", "tt-time-logging");
 const skillMdDest = join(destDir, "SKILL.md");
-const stopCheckDest = join(destDir, "tt-stop-check.mjs");
 const activityHookDest = join(destDir, "tt-activity-hook.mjs");
 // Sits beside the SKILL.md copy on purpose: it reads the contract from its own
 // directory, so the pair stays self-contained wherever it's installed.
@@ -64,14 +65,15 @@ const contractHookDest = join(destDir, "tt-contract-hook.mjs");
 
 mkdirSync(destDir, { recursive: true });
 copyFileSync(join(skillDir, "SKILL.md"), skillMdDest);
-copyFileSync(join(scriptDir, "tt-stop-check.mjs"), stopCheckDest);
 copyFileSync(join(scriptDir, "tt-activity-hook.mjs"), activityHookDest);
 copyFileSync(join(scriptDir, "tt-contract-hook.mjs"), contractHookDest);
+// The Stop check moved into tt-activity-hook.mjs; this directory is the
+// installer's, so a copy left by an earlier version goes.
+rmSync(join(destDir, "tt-stop-check.mjs"), { force: true });
 
 // Forward slashes only: Node's fs calls accept them on every OS, and it keeps
 // the commands written into settings.json free of escaped backslashes.
 const toFwd = (p) => p.replace(/\\/g, "/");
-const stopCheckAbs = toFwd(stopCheckDest);
 const activityHookAbs = toFwd(activityHookDest);
 const contractHookAbs = toFwd(contractHookDest);
 
@@ -95,27 +97,38 @@ const isLegacyInjector = (command) =>
   command.startsWith("node -e ") &&
   command.includes("tt-time-logging");
 
-let removedLegacy = 0;
-for (const event of ["SessionStart", "UserPromptSubmit"]) {
-  settings.hooks[event] = settings.hooks[event]
-    .map((entry) => {
-      if (!Array.isArray(entry.hooks)) return entry;
-      const kept = entry.hooks.filter((h) => !isLegacyInjector(h.command));
-      removedLegacy += entry.hooks.length - kept.length;
-      return { ...entry, hooks: kept };
-    })
-    // An entry that held nothing but the legacy injector is now empty — prune it
-    // rather than leaving a hook entry with no hooks in it.
-    .filter((entry) => !Array.isArray(entry.hooks) || entry.hooks.length > 0);
-}
+// A separate `Stop` entry running tt-stop-check.mjs: left in place it would run
+// the check a second time, in parallel with the beat it must follow.
+const isStopCheck = (command) =>
+  typeof command === "string" && command.includes("tt-stop-check.mjs");
+
+const prune = (events, matches) => {
+  let removed = 0;
+  for (const event of events) {
+    settings.hooks[event] = settings.hooks[event]
+      .map((entry) => {
+        if (!Array.isArray(entry.hooks)) return entry;
+        const kept = entry.hooks.filter((h) => !matches(h.command));
+        removed += entry.hooks.length - kept.length;
+        return { ...entry, hooks: kept };
+      })
+      // An entry that held nothing but the pruned hook is now empty — prune it
+      // rather than leaving a hook entry with no hooks in it.
+      .filter((entry) => !Array.isArray(entry.hooks) || entry.hooks.length > 0);
+  }
+  return removed;
+};
+
+const removedLegacy = prune(["SessionStart", "UserPromptSubmit"], isLegacyInjector);
+const removedStopCheck = prune(["Stop"], isStopCheck);
 
 // Quoted: an absolute home path can contain spaces (e.g. "C:/Users/John Doe/...").
 const sessionStartCmd = `node "${contractHookAbs}" session`;
 const userPromptSubmitCmd = `node "${contractHookAbs}" prompt`;
-const stopCmd = `node "${stopCheckAbs}"`;
 const activityBeginCmd = `node "${activityHookAbs}" begin`;
 const activityEndCmd = `node "${activityHookAbs}" end`;
 const activitySubagentCmd = `node "${activityHookAbs}" subagent`;
+const activityPromptCmd = `node "${activityHookAbs}" prompt`;
 
 const hasCommand = (event, command) =>
   settings.hooks[event].some((entry) => entry.hooks?.some((h) => h.command === command));
@@ -138,15 +151,21 @@ if (!hasCommand("UserPromptSubmit", userPromptSubmitCmd)) {
   });
 }
 
-if (!hasCommand("Stop", stopCmd)) {
-  settings.hooks.Stop.push({
-    hooks: [{ type: "command", command: stopCmd, statusMessage: "Checking for unclosed tt marks" }],
+if (!hasCommand("UserPromptSubmit", activityPromptCmd)) {
+  settings.hooks.UserPromptSubmit.push({
+    hooks: [{ type: "command", command: activityPromptCmd, statusMessage: "Renewing tt marks" }],
   });
 }
 
 if (!hasCommand("Stop", activityEndCmd)) {
   settings.hooks.Stop.push({
-    hooks: [{ type: "command", command: activityEndCmd, statusMessage: "Closing tt activity window" }],
+    hooks: [
+      {
+        type: "command",
+        command: activityEndCmd,
+        statusMessage: "Closing tt activity window and checking tt marks",
+      },
+    ],
   });
 }
 
@@ -159,9 +178,12 @@ if (!hasCommand("SubagentStop", activitySubagentCmd)) {
 writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
 
 console.log(`tt-time-logging hooks installed into ${settingsPath}.`);
-console.log(`Contract, stop-check, activity- and contract-hook scripts copied into ${destDir}.`);
+console.log(`Contract, activity- and contract-hook scripts copied into ${destDir}.`);
 if (removedLegacy > 0) {
   console.log(`Removed ${removedLegacy} legacy inline contract-injection hook(s).`);
+}
+if (removedStopCheck > 0) {
+  console.log(`Removed ${removedStopCheck} superseded tt-stop-check.mjs Stop hook(s).`);
 }
 
 // Append a one-line pointer into the global CLAUDE.md, mirroring the
@@ -184,6 +206,39 @@ if (existsSync(claudeMdPath)) {
   }
 } else {
   console.log(`No ${claudeMdPath} found — skipped the CLAUDE.md pointer.`);
+}
+
+// The hooks need a `tt` that understands `tt agent activity prompt` and the
+// project positional on `end`/`subagent`. An older binary rejects those with
+// clap's exit 2, which the activity hook's own catch swallows — the ledger
+// silently stops recording `end=`/`subagent=` lines. Probe the subcommand
+// rather than parsing a version: with no project argument it is a deliberate
+// no-op on a capable binary, so nothing is written either way. Install
+// regardless: the contract injection works against any version.
+const understandsPrompt = () => {
+  try {
+    execFileSync("tt", ["agent", "activity", "prompt"], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch (error) {
+    // No `tt` on PATH at all is not a version complaint.
+    return error?.code === "ENOENT";
+  }
+};
+
+if (!understandsPrompt()) {
+  console.log("");
+  console.log(
+    "WARNING: the installed tt does not understand `tt agent activity prompt`, " +
+      "which these hooks need.",
+  );
+  console.log(
+    "  Until you upgrade, marks will not be renewed automatically and the " +
+      "activity ledger will stop recording session ends and subagent " +
+      "dispatches — silently, since a hook never fails its event.",
+  );
+  console.log("");
 }
 
 console.log("Restart Claude Code or open /hooks once so the new settings file is picked up.");

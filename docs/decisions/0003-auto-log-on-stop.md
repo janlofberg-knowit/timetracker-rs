@@ -21,7 +21,7 @@ revisiting it:
    confirmation gate.
 3. Idempotency (0002 guardrail: running it twice writes one entry) needs to
    hold under a hook's stricter latency/failure constraints — a hook must
-   never fail the harness event it's attached to (see `tt-stop-check.mjs`'s
+   never fail the harness event it's attached to (see `tt-activity-hook.mjs`'s
    header comment and `activity_command`'s doc comment in `src/agent.rs`).
 
 This doc proposes concrete answers to all three, and a shape to implement
@@ -123,11 +123,11 @@ under `#auto`.
 This matters more once `Stop`-triggered writes remove the human from the
 loop entirely: today, an operator running `--auto-log` by hand can eyeball
 `describe()`'s printed span before trusting it; a hook cannot. Before wiring
-`auto_log_on_stop`, `write_auto_log` (or `unaccounted` itself) should
-subtract idle intervals over `max_gap_minutes` from the logged span, the
-same way `split_at_idle` already does for mark-based closes — so an
-auto-logged entry reports only genuinely-active time, not wall-clock time
-including idle. This is really an `--auto-log` correctness fix, not
+`auto_log_on_stop`, the idle stretches over `max_gap_minutes` have to leave
+the logged span — which `unaccounted` now does by splitting each uncovered
+fragment at those stretches before it becomes a row, so an auto-logged entry
+reports only genuinely-active time, not wall-clock time including idle. This
+is really an `--auto-log` correctness fix, not
 specific to the `Stop`-hook wiring, but it becomes load-bearing once a human
 is no longer there to notice an inflated window before it lands. Tracked as
 its own issue (see below) since it can and should land independently,
@@ -178,7 +178,7 @@ not a silent downgrade to no-op, so a misconfigured operator finds out from
 - Idempotent by construction — same `#auto`-covers-window mechanism as
   `--auto-log`, not a parallel implementation.
 - Hook never fails the harness event — errors swallowed exactly as
-  `tt-stop-check.mjs` and `activity_command` already do today.
+  `tt-activity-hook.mjs` and `activity_command` already do today.
 - Still never a phase guess — `write_auto_log` is unchanged.
 
 ## Consequences
