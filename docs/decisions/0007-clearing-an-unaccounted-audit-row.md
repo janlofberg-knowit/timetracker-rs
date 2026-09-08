@@ -42,8 +42,8 @@ a hand-written row — keeps covering every session of its project.
 
 **3. A row that was not work is recorded in a dismissal ledger, not as an
 entry.** `uncovered_by_entries` subtracts only `#agent`/`#auto` entries and skips
-any shorter than the stretch it would cover, so no entry can clear a row without
-billing its minutes to `tt report`. `dismissed/` is therefore a third subtracting
+a zero-length entry, so no entry can clear a row without billing its minutes to
+`tt report`. `dismissed/` is therefore a third subtracting
 source beside leases and entries — one small file per dismissal, named after the
 project key, the session and the span, written with `create_new` so a repeat is
 idempotent. `tt agent dismiss --session <id> <project> <start>-<end>
