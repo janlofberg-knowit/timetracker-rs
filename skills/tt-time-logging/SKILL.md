@@ -172,6 +172,16 @@ under it the exact `tt agent end` line that logs the work and clears it —
 or nothing did, since `--trim` on an untouched phase reads the whole span as one
 gap and cuts nothing, logging all of it.
 
+**Unaccounted activity is reconciled per session.** Two sessions working one
+project in the same minute are two agents, so the audit prints a row for each and
+the two sum; two rows can read the same for the same minute, which is the sum and
+not a duplicate. A session whose `Stop` hook never wrote its end is measured to
+its own last evidence of life — its last subagent dispatch, or its start when
+there was none — plus the same grace a mark gets, and its last row then reads
+`[abandoned]`. Such a session therefore stops widening with every audit, and it
+reports no row at all while a mark opened alongside it covers that whole bound;
+`[stale]` in `tt agent list` is the only nudge left in that case.
+
 **An existing install must re-run `install-hooks.mjs`.** The hook scripts are
 copied into Claude Code's own hooks directory, so a machine still holding the
 old copies gets no automatic beat at all, and every mark then expires on the

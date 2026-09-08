@@ -8,6 +8,10 @@
 //! `docs/decisions/0002-auto-logging-unaccounted-activity.md` for the
 //! latter). Neither is **unaccounted agent activity**: real work that never
 //! got tracked at all.
+//!
+//! Reconciliation runs per session, and an open one is bounded at its own last
+//! evidence of life — see
+//! `docs/decisions/0006-bounding-an-abandoned-activity-session.md`.
 
 use chrono::{DateTime, Local};
 
