@@ -23,6 +23,11 @@ issue number, or `-`. `<phase>` is one of:
 | open-ended exploration with no specific question | `explore` |
 | tooling, config, environment, release | `ops` |
 
+**If the `Stop` hook or an audit names unaccounted activity, sweep it:**
+`tt agent audit --json --project <project>`, then one `tt agent resolve` or
+`tt agent dismiss` per row until it reports none — see [Sweeping the unaccounted
+list](#sweeping-the-unaccounted-list).
+
 Everything below is detail on those three commands.
 
 > **Maintainers:** this file is mirrored by `skills/tt-time-logging/SKILL.md`,
@@ -53,7 +58,9 @@ Everything below is detail on those three commands.
 3. **Never batch at day's end.** `tt log` back-dates from now, so entries written in
    a batch claim overlapping slots. Totals stay right; the timeline stops being
    true. Log when each phase finishes. `tt report` counts the overlaps so this stays
-   visible rather than quietly rotting.
+   visible rather than quietly rotting. Two agents working one project in the same
+   minute produce entries that overlap **by design**, so a climbing counter no
+   longer implies drift on its own.
 
 ## Naming
 
@@ -117,9 +124,17 @@ tt agent item  <project> <issue|-> <phase> "<summary>" <minutes>
 # Parallel subagents on one phase. `begin`, `touch`, `end` and `cancel` take it.
 tt agent begin <project> <issue|-> <phase> --agent <label>
 
+# this session's id, from the per-prompt card: dismisses whatever the close
+# leaves uncovered, so it stops showing up as unaccounted activity.
+tt agent end   <project> <issue|-> <phase> "<summary>" <minutes> --session <id>
+
 tt agent list [PROJECT]                        # what is still open
 tt agent cancel <project> <issue|-> <phase>    # drop without logging
-tt agent audit [--auto-log]                    # unaccounted activity; see below
+tt agent audit [--json] [--project NAME] [--auto-log]   # unaccounted activity; see below
+
+# clear one unaccounted row — see Sweeping the unaccounted list
+tt agent resolve --session <id> <start> <issue|-> <phase> "<summary>"
+tt agent dismiss --session <id> <project> <start>-<end> ["<reason>"]
 
 tt report [--week|--all|--since DATE [--until DATE]] [--project NAME] [--json]
 ```
@@ -130,7 +145,8 @@ never below N; `audit --auto-log` stays unrounded either way.
 
 A mark's start time survives the agent's context being truncated or compacted, so do
 not hold start times in context. Marks live in the application's own cache directory;
-`TT_MARK_DIR` overrides it.
+`TT_MARK_DIR` overrides it. The dismissal ledger sits beside them, with
+`TT_DISMISSED_DIR` overriding that one.
 
 `touch` matters twice over: `end` measures start → your last touch, not start → now,
 so idle time after the work finished is not counted — and the heartbeats it appends
@@ -185,7 +201,8 @@ whole bound; `[stale]` in `tt agent list` is the only nudge left in that case.
 **An existing install must re-run `install-hooks.mjs`.** The hook scripts are
 copied into Claude Code's own hooks directory, so a machine still holding the
 old copies gets no automatic beat at all, and every mark then expires on the
-unvouched grace.
+unvouched grace. Until it is re-run the per-prompt card also carries no session
+id, so nothing can pass `--session`.
 
 ## Working in parallel
 
@@ -238,11 +255,14 @@ is measured rather than summed from what the tooling reported.
    that the report does not give you rather than guessing a value. `tt` writes `agent.label` itself from
    `--agent`, so never pass that. The full schema is the "Well-known keys"
    table in `docs/usage.md`.
-3. **Bill your own time under `--agent orchestrator`.** Dispatching, relaying
-   and reading reports is real work on the same phase. Open it beside the
-   others and close it with **explicit minutes** — never `--full` and never
-   `--trim`, because its wall clock spans the whole fan-out that the subagents'
-   own spans already bill.
+3. **Bill your own time under one held `--agent orchestrator` mark.**
+   Dispatching, relaying and reading reports is real work on the same phase.
+   Open that mark at the **first** dispatch and `touch` it at each later one —
+   never open and close one around each dispatch — then close it once with
+   **explicit minutes**, never `--full` and never `--trim`, because its wall
+   clock spans the whole fan-out that the subagents' own spans already bill.
+   Holding it open is also what keeps the relay span off the unaccounted list:
+   an open mark covers its span in the audit by existing.
 4. **A per-agent mark needs no `touch`.** The hooks beat every open mark of the
    project, tagged, so a mark never expires while its subagent runs and the beat
    never moves what `end` bills. An untouched span inside the 120-minute
@@ -321,6 +341,43 @@ call auto-logs the ending session's own unaccounted window instead of only
 warning about it — same fixed phase/summary/tags, same idempotency. It
 requires `agent.auto_log_after_minutes` to already be set (a config error
 otherwise) — see `docs/decisions/0003-auto-log-on-stop.md`.
+
+## Sweeping the unaccounted list
+
+The list's default state is **empty**. When the `Stop` hook or an audit names
+unaccounted activity, clear it rather than letting rows pile up until the list
+stops meaning anything:
+
+```sh
+tt agent audit --json --project <project>   # this project's rows, with their addresses
+tt agent resolve --session <id> <start> <issue|-> <phase> "<summary>"   # it was work
+tt agent dismiss --session <id> <project> <start>-<end> ["<reason>"]    # it was not
+```
+
+Put one proposed resolution per row to the owner — `resolve` for real work,
+`dismiss` for a seam or a break — apply the approved ones, and repeat until
+`tt agent audit --project <project>` prints `No unaccounted agent activity.`
+This project's rows only, and each addressed by **its own session id from the
+JSON**, so a concurrent agent's row is never touched. The one row you may act on
+unasked is one you can attribute to a phase you just closed yourself — your own
+relay tail.
+
+`resolve` logs an entry spanning the row exactly, with the project taken from the
+row and the phase you name, and it never rounds. A `--session`/`<start>` pair
+matching no row exits 64 and writes nothing. Resolving a row covers those minutes
+for the whole project, so a concurrent session's row over the same minutes exits
+64 in turn — log that second agent's work with `tt agent item` instead.
+
+`dismiss` writes no entry, so a dismissed stretch appears in no `tt report`
+total, and it records exactly the span you give it whether or not a row matches.
+
+**A session id names an orchestrator; `--agent <label>` names a dispatch under
+it.** Two orchestrators working one project are two sessions with distinct ids,
+and their work sums. Subagents dispatched by one orchestrator share that
+orchestrator's session id and differ only by label, so a dismissal is keyed by
+session and never by mark. The per-prompt card names **this** session's id: pass
+it as `--session <id>` on `end`, and on `resolve`/`dismiss` for this session's
+own rows, taking the id from `tt agent audit --json` for any other row.
 
 ## Reading back
 
