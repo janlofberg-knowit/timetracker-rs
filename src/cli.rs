@@ -243,6 +243,11 @@ pub enum AgentCommands {
         /// `agent.label` in the entry's data
         #[arg(long)]
         agent: Option<String>,
+        /// This session's id, from the per-prompt card. With it, the span this
+        /// close leaves uncovered is dismissed for that session; without it,
+        /// the remainder is only named on stderr.
+        #[arg(long)]
+        session: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
         #[arg(long, value_parser = parse_data)]
         data: Option<serde_json::Value>,

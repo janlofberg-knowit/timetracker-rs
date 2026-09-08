@@ -63,6 +63,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             full,
             trim,
             agent,
+            session,
             data,
         } => end(
             mark_ref(project, issue, phase, agent.as_deref()),
@@ -71,6 +72,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
                 minutes: minutes.as_deref(),
                 full: *full,
                 trim: *trim,
+                session: session.as_deref(),
                 data: data.clone(),
             },
         ),
@@ -526,6 +528,7 @@ struct Close<'a> {
     minutes: Option<&'a str>,
     full: bool,
     trim: bool,
+    session: Option<&'a str>,
     data: Option<serde_json::Value>,
 }
 
@@ -540,6 +543,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         minutes,
         full,
         trim,
+        session,
         data,
     } = close;
     let Some(summary) = summary else {
@@ -561,8 +565,23 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
     // Stays `None` on the explicit-minutes path, which reads no timestamps.
     let mut anchor = None;
 
+    // What this close leaves for the audit: the mark's head on the explicit-minutes
+    // path, one stretch per gap `--trim` cuts, nothing at all for `--full`.
+    let mut remainder: Vec<(i64, i64)> = Vec::new();
+
     let minutes = match minutes {
-        Some(raw) => whole_minutes(raw),
+        Some(raw) => {
+            let minutes = whole_minutes(raw);
+            // The one mark read on this path, and only to state what it leaves
+            // behind: explicit minutes still close a phase with no mark at all.
+            if let Some(marked) = marks::read_phase_in(&dir, mark).ok().flatten() {
+                let head = (marked.started, Local::now().timestamp() - minutes * 60);
+                if head.1 > head.0 {
+                    remainder.push(head);
+                }
+            }
+            minutes
+        }
         None => {
             let Some(marked) = marks::read_phase_in(&dir, mark)? else {
                 eprintln!(
@@ -606,6 +625,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
                 } else if trim {
                     // The measured span, not `trimmed`: `split_at_idle` cuts the same gaps.
                     split_at_idle = true;
+                    remainder = gaps.clone();
                     measured
                 } else {
                     refuse(mark, &gaps, measured, trimmed);
@@ -629,6 +649,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         },
         data,
     )?;
+    record_remainder(mark, session, &remainder);
     // Cleared only once the entry is recorded; a refusal leaves the mark and its beats.
     if let Err(err) = marks::cancel_in(&dir, mark) {
         eprintln!(
@@ -642,6 +663,49 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         std::process::exit(74);
     }
     Ok(())
+}
+
+/// Dismiss what a close left uncovered, for the session it names. Keyed by session
+/// and never by mark: several labelled marks under one orchestrator clear against the
+/// same session's rows. **Warns and returns**, whatever fails — the close is already
+/// recorded, and `end`'s exit codes are a documented contract.
+fn record_remainder(mark: MarkRef, session: Option<&str>, remainder: &[(i64, i64)]) {
+    if remainder.is_empty() {
+        return;
+    }
+    let Some(session) = session else {
+        let minutes: i64 = remainder.iter().map(|(from, to)| (to - from) / 60).sum();
+        eprintln!(
+            "tt: {}m of {}'s span is not covered by this entry",
+            minutes,
+            phase_name(mark)
+        );
+        eprintln!(
+            "tt: pass --session <id> to dismiss it, or clear it with tt agent audit --json --project {}",
+            mark.project
+        );
+        return;
+    };
+
+    let Some(dir) = crate::dismissed::dismissed_dir() else {
+        eprintln!("tt: no cache directory for the dismissals — the remainder stays unaccounted");
+        return;
+    };
+    for &(start, end) in remainder {
+        let record = crate::dismissed::Dismissal {
+            project: mark.project.to_string(),
+            session: session.to_string(),
+            start,
+            end,
+            reason: Some(format!("not billed by the close of {}", phase_name(mark))),
+        };
+        if let Err(err) = crate::dismissed::write_in(&dir, &record) {
+            eprintln!(
+                "tt: the remainder of {} was not dismissed: {err}",
+                phase_name(mark)
+            );
+        }
+    }
 }
 
 /// The close's data with the mark's label stamped in, or exit 64 on data whose

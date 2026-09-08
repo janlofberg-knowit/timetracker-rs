@@ -1149,3 +1149,133 @@ fn a_labelled_refusal_names_the_mark_its_recovery_clears() {
     run.assert_stderr_has("tt agent cancel proj 7 review --agent code");
     assert!(case.store().entries.is_empty(), "nothing was logged");
 }
+
+// --- the close's own uncovered remainder -----------------------------------
+
+/// Explicit minutes end the entry *now*, so the mark's earlier span is left
+/// uncovered. With a session to name, that remainder is a dismissal.
+#[test]
+fn explicit_minutes_with_a_session_dismiss_the_mark_s_uncovered_head() {
+    let case = Case::new("end-session-dismiss");
+    let start = now() - 3 * 3600;
+    case.write_mark("proj.7.impl", start);
+    case.write_session("sess-1", "proj", start, Some(now()));
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "relayed the phase",
+        "20",
+        "--session",
+        "sess-1",
+    ]);
+    run.assert_status(0);
+
+    let audit = case.run(&["audit"]);
+    audit.assert_status(0);
+    audit.assert_stdout_has("No unaccounted agent activity.");
+    assert_eq!(common::count_files(&case.dismissed), 1);
+}
+
+/// A dismissal names one session, so a concurrent session's row over the same
+/// minutes is untouched by another agent's close.
+#[test]
+fn a_close_s_dismissal_leaves_a_concurrent_session_s_row_alone() {
+    let case = Case::new("end-session-dismiss-concurrent");
+    let start = now() - 3 * 3600;
+    case.write_mark("proj.7.impl", start);
+    case.write_session("sess-1", "proj", start, Some(start + 60));
+    case.write_session("sess-2", "proj", start, Some(now()));
+
+    case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "relayed the phase",
+        "20",
+        "--session",
+        "sess-1",
+    ])
+    .assert_status(0);
+
+    let audit = case.run(&["audit"]);
+    audit.assert_stdout_has("proj");
+    audit.assert_stdout_has("sess-2");
+}
+
+#[test]
+fn trim_with_a_session_dismisses_each_gap_it_cut() {
+    let case = Case::new("end-session-dismiss-trim");
+    let fixture = gap_fixture(&case);
+    case.write_session("sess-1", "proj", fixture.hole.0, Some(now()));
+
+    let run = case.run(&[
+        "end",
+        "proj",
+        "12",
+        "plan",
+        "planned the thing",
+        "--trim",
+        "--session",
+        "sess-1",
+    ]);
+    run.assert_status(0);
+    assert_eq!(common::count_files(&case.dismissed), 1);
+}
+
+#[test]
+fn full_writes_no_dismissal() {
+    let case = Case::new("end-session-dismiss-full");
+    gap_fixture(&case);
+
+    case.run(&[
+        "end",
+        "proj",
+        "12",
+        "plan",
+        "planned the thing",
+        "--full",
+        "--session",
+        "sess-1",
+    ])
+    .assert_status(0);
+    assert_eq!(common::count_files(&case.dismissed), 0);
+}
+
+/// No session, no guess: the remainder is named on stderr and the close is
+/// otherwise exactly as before.
+#[test]
+fn without_a_session_the_close_names_the_remainder_and_writes_nothing() {
+    let case = Case::new("end-no-session-remainder");
+    let start = now() - 3 * 3600;
+    case.write_mark("proj.7.impl", start);
+
+    let run = case.run(&["end", "proj", "7", "impl", "relayed the phase", "20"]);
+    run.assert_status(0);
+    run.assert_stderr_has("tt agent audit");
+    assert_eq!(common::count_files(&case.dismissed), 0);
+    assert_eq!(case.store().entries.len(), 1);
+}
+
+/// `end` with explicit minutes works with no mark at all, and the remainder
+/// path must not change that.
+#[test]
+fn explicit_minutes_with_a_session_and_no_mark_still_closes_and_writes_nothing() {
+    let case = Case::new("end-session-no-mark");
+    let run = case.run(&[
+        "end",
+        "proj",
+        "7",
+        "impl",
+        "no mark to speak of",
+        "20",
+        "--session",
+        "sess-1",
+    ]);
+    run.assert_status(0);
+    assert_eq!(case.store().entries.len(), 1);
+    assert_eq!(common::count_files(&case.dismissed), 0);
+}
