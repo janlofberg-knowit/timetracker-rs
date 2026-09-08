@@ -112,7 +112,7 @@ fn overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
-/// Every window below `thresholds.unvouched` is not flagged. A session with no
+/// Every session below `thresholds.unvouched` is not flagged. A session with no
 /// project cannot be reconciled against anything, so it is skipped rather than
 /// assumed unaccounted.
 pub fn unaccounted(
@@ -125,25 +125,23 @@ pub fn unaccounted(
     let now_epoch = now.timestamp();
     let floor_minutes = thresholds.unvouched;
 
-    let mut found: Vec<Unaccounted> = windows(sessions, now_epoch)
-        .into_iter()
-        .flat_map(|window| {
-            if (window.end - window.start) / 60 < floor_minutes {
+    let mut found: Vec<Unaccounted> = sessions
+        .iter()
+        .flat_map(|session| {
+            let Some(project) = session.project.as_deref() else {
+                return Vec::new();
+            };
+            let end = session_end(session, now_epoch, thresholds);
+            if (end - session.start) / 60 < floor_minutes {
                 return Vec::new();
             }
 
-            let stretches = uncovered_by_marks(
-                &window.project,
-                window.start,
-                window.end,
-                leases,
-                now_epoch,
-                thresholds,
-            );
-            let fragments = uncovered_by_entries(&window.project, stretches, entries, now_epoch);
+            let stretches =
+                uncovered_by_marks(project, session.start, end, leases, now_epoch, thresholds);
+            let fragments = uncovered_by_entries(project, stretches, entries, now_epoch);
             // Every row is one contiguous active stretch: with no dispatches a
             // fragment passes through whole, otherwise it is cut at its idle holes.
-            let active: Vec<(i64, i64)> = if window.subagent_at.is_empty() {
+            let active: Vec<(i64, i64)> = if session.subagent_at.is_empty() {
                 fragments
             } else {
                 fragments
@@ -152,7 +150,7 @@ pub fn unaccounted(
                         marks::gaps_over(
                             fragment.0,
                             fragment.1,
-                            &window.subagent_at,
+                            &session.subagent_at,
                             thresholds.gap,
                         )
                         .into_iter()
@@ -166,7 +164,7 @@ pub fn unaccounted(
                     .collect()
             };
 
-            // The floor applies to the window's total active time, not to each row.
+            // The floor applies to the session's total active time, not to each row.
             let uncovered: i64 = active.iter().map(|(from, to)| (to - from) / 60).sum();
             if uncovered < floor_minutes {
                 return Vec::new();
@@ -175,11 +173,11 @@ pub fn unaccounted(
             active
                 .into_iter()
                 .filter_map(|(from, to)| {
-                    // Per row, so the rows sum to the window's; with no timestamps its own count stands.
-                    let subagents = if window.subagent_at.is_empty() {
-                        window.subagents
+                    // Per row, so the rows sum to the session's; with no timestamps its own count stands.
+                    let subagents = if session.subagent_at.is_empty() {
+                        session.subagents
                     } else {
-                        window
+                        session
                             .subagent_at
                             .iter()
                             .filter(|&&at| at >= from && at < to)
@@ -187,7 +185,7 @@ pub fn unaccounted(
                     };
 
                     Some(Unaccounted {
-                        project: window.project.clone(),
+                        project: project.to_string(),
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
@@ -201,59 +199,23 @@ pub fn unaccounted(
     found
 }
 
-/// One project's activity across a stretch of clock time, pooled from every
-/// session that runs into it.
-struct Window {
-    project: String,
-    start: i64,
-    end: i64,
-    subagents: usize,
-    subagent_at: Vec<i64>,
-}
-
-/// Each project's sessions merged into non-overlapping windows, still open ones
-/// measured to `now`. Reconciliation runs per window because two sessions that
-/// share clock time share the activity: per session each would report it again.
-fn windows(sessions: &[Session], now: i64) -> Vec<Window> {
-    let mut by_project: std::collections::BTreeMap<String, Vec<Window>> =
-        std::collections::BTreeMap::new();
-    for session in sessions {
-        let Some(project) = session.project.as_deref() else {
-            continue;
-        };
-        by_project
-            .entry(marks::project_key(project))
-            .or_default()
-            .push(Window {
-                project: project.to_string(),
-                start: session.start,
-                end: session.end.unwrap_or(now),
-                subagents: session.subagents,
-                subagent_at: session.subagent_at.clone(),
-            });
+/// Where a session is measured to: its own `end=`, else [`marks::grace_minutes`]
+/// past its last evidence of life — its last dispatch, or its start with none —
+/// clamped to `now`. Reads no file mtime and no lease: the mtime equals the last
+/// parsed line, and a lease's covered stretch is subtracted downstream.
+fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> i64 {
+    if let Some(end) = session.end {
+        return end;
     }
-
-    by_project
-        .into_values()
-        .flat_map(|mut group| {
-            group.sort_by_key(|window| (window.start, window.end));
-            group
-                .into_iter()
-                .fold(Vec::new(), |mut merged: Vec<Window>, window| {
-                    match merged.last_mut() {
-                        Some(last) if window.start <= last.end => {
-                            last.end = last.end.max(window.end);
-                            last.subagents += window.subagents;
-                            last.subagent_at.extend(window.subagent_at);
-                            // `gaps_over` walks the beats in order and skips any that goes backwards.
-                            last.subagent_at.sort_unstable();
-                        }
-                        _ => merged.push(window),
-                    }
-                    merged
-                })
-        })
-        .collect()
+    let lively = !session.subagent_at.is_empty();
+    let last = session
+        .subagent_at
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(session.start)
+        .max(session.start);
+    (last + marks::grace_minutes(lively, thresholds) * 60).min(now)
 }
 
 /// What is left of `start → end` after removing every same-project lease's covered
@@ -479,14 +441,16 @@ mod tests {
         assert!(unaccounted(&sessions, &live, &[], at(114 * HOUR), FLOOR).is_empty());
     }
 
+    /// The lease and the session bound share one grace, so a mark opened with
+    /// the session expires exactly where the session's bound falls.
     #[test]
-    fn the_remainder_of_a_still_open_session_past_its_marks_expiry_is_flagged() {
+    fn a_still_open_session_marked_from_its_start_reports_nothing() {
         let sessions = vec![session(Some("tt"), 0, None, 0)];
         let abandoned = vec![mark("tt", 0)];
-        let flagged = unaccounted(&sessions, &abandoned, &[], at(114 * HOUR), FLOOR);
-        assert_eq!(flagged.len(), 1);
-        assert_eq!(flagged[0].start, at(2 * HOUR + 60));
-        assert_eq!(flagged[0].end, at(114 * HOUR));
+        assert!(
+            unaccounted(&sessions, &abandoned, &[], at(114 * HOUR), FLOOR).is_empty(),
+            "the bound leaves nothing the lease did not cover"
+        );
     }
 
     #[test]
@@ -662,11 +626,45 @@ mod tests {
     }
 
     #[test]
-    fn a_still_open_session_is_measured_to_now() {
+    fn a_still_open_session_with_no_dispatches_is_measured_to_its_bound() {
         let sessions = vec![session(Some("tt"), 0, None, 0)];
-        let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
+        let flagged = unaccounted(&sessions, &[], &[], at(114 * HOUR), FLOOR);
         assert_eq!(flagged.len(), 1);
-        assert_eq!(flagged[0].end, at(3 * HOUR));
+        assert_eq!(
+            flagged[0].end,
+            at(121 * 60),
+            "start plus the unvouched grace"
+        );
+    }
+
+    /// The bound is the last dispatch plus the gap grace, and that trailing
+    /// grace is itself one idle hole, so the row stops at the dispatch.
+    #[test]
+    fn a_still_open_session_reports_nothing_past_its_last_dispatch() {
+        let dispatches = vec![30 * 60, 60 * 60, 90 * 60];
+        let sessions = vec![session_with_subagents("tt", 0, None, dispatches)];
+        let flagged = unaccounted(&sessions, &[], &[], at(200 * HOUR), 60);
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].end, at(90 * 60));
+    }
+
+    #[test]
+    fn a_session_younger_than_its_grace_is_measured_to_now() {
+        let dispatches = vec![30 * 60, 60 * 60, 90 * 60];
+        let sessions = vec![session_with_subagents("tt", 0, None, dispatches)];
+        let flagged = unaccounted(&sessions, &[], &[], at(100 * 60), 60);
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].end, at(100 * 60));
+    }
+
+    #[test]
+    fn a_bounded_window_a_mark_cuts_into_drops_under_the_floor() {
+        let sessions = vec![session(Some("tt"), 0, None, 0)];
+        let marks = vec![mark("tt", HOUR)];
+        assert!(
+            unaccounted(&sessions, &marks, &[], at(121 * 60), FLOOR).is_empty(),
+            "an hour of the 121-minute bound is left, under the 120-minute floor"
+        );
     }
 
     #[test]
@@ -676,10 +674,10 @@ mod tests {
         assert!(unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).is_empty());
     }
 
-    /// Two same-project sessions covering one stretch of clock time are one
-    /// stretch of activity, so they report one row.
+    /// Two same-project sessions in one stretch of clock time are two agents,
+    /// so each reports its own row and the two sum.
     #[test]
-    fn two_overlapping_sessions_report_the_same_stretch_once() {
+    fn two_overlapping_sessions_report_a_row_each() {
         let sessions = vec![
             session(Some("tt"), 0, Some(3 * HOUR), 0),
             session(Some("tt"), 0, None, 0),
@@ -687,12 +685,12 @@ mod tests {
         let flagged = unaccounted(&sessions, &[], &[], at(3 * HOUR), FLOOR);
         assert_eq!(
             flagged.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
-            vec![(at(0), at(3 * HOUR))]
+            vec![(at(0), at(3 * HOUR)), (at(0), at(121 * 60))]
         );
     }
 
     #[test]
-    fn two_overlapping_sessions_report_the_same_stretch_once_with_the_dispatches() {
+    fn two_overlapping_sessions_keep_their_own_dispatches() {
         let sessions = vec![
             session_with_subagents(
                 "tt",
@@ -708,7 +706,7 @@ mod tests {
                 .iter()
                 .map(|u| (u.start, u.end, u.subagents))
                 .collect::<Vec<_>>(),
-            vec![(at(0), at(3 * HOUR), 8)]
+            vec![(at(0), at(3 * HOUR), 8), (at(0), at(121 * 60), 0)]
         );
     }
 

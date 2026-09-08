@@ -62,7 +62,7 @@ fn auto_log_writes_a_fixed_phase_auto_entry_over_the_threshold() {
     let case = Case::new("audit-auto-log-writes");
     case.write_config("[agent]\nauto_log_after_minutes = 180\n"); // 3h, floor stays 120
     let start = now() - 4 * HOUR; // 240m, over both the 120m floor and the 180m auto-log threshold
-    case.write_session("sess-1", "smoke", start, None);
+    case.write_session("sess-1", "smoke", start, Some(now()));
 
     let run = case.run(&["audit", "--auto-log"]);
     run.assert_status(0);
@@ -89,7 +89,7 @@ fn auto_log_never_rounds_even_with_round_minutes_set() {
         "[agent]\nmax_unvouched_minutes = 20\nauto_log_after_minutes = 21\nround_minutes = 5\n",
     );
     let start = now() - 47 * 60;
-    case.write_session("sess-1", "smoke", start, None);
+    case.write_session("sess-1", "smoke", start, Some(now()));
 
     let run = case.run(&["audit", "--auto-log"]);
     run.assert_status(0);
@@ -142,7 +142,7 @@ fn running_auto_log_twice_logs_the_window_once() {
     let case = Case::new("audit-auto-log-idempotent");
     case.write_config("[agent]\nauto_log_after_minutes = 180\n");
     let start = now() - 4 * HOUR;
-    case.write_session("sess-1", "smoke", start, None);
+    case.write_session("sess-1", "smoke", start, Some(now()));
 
     case.run(&["audit", "--auto-log"]).assert_status(0);
     assert_eq!(case.store().entries.len(), 1, "first run logs one entry");
@@ -179,7 +179,7 @@ fn dispatches(start: i64) -> Vec<i64> {
 fn an_entry_logged_with_the_printed_project_silences_the_next_check() {
     let case = Case::new("audit-close-line-covers");
     let start = now() - 5 * HOUR;
-    case.write_session("sess-1", "my proj", start, None);
+    case.write_session("sess-1", "my proj", start, Some(now()));
     case.write_mark("my_proj.-.impl", start);
 
     let flagged = case.run(&["activity", "check", "sess-1"]);
@@ -208,7 +208,7 @@ fn fragments_under_the_floor_are_reported_but_never_auto_logged() {
     let case = Case::new("audit-fragment-floor");
     case.write_config("[agent]\nauto_log_after_minutes = 180\n");
     let start = now() - 6 * HOUR;
-    case.write_session("sess-1", "smoke", start, None);
+    case.write_session("sess-1", "smoke", start, Some(now()));
     // Two unvouched marks, each covering the two hours after it was opened,
     // leaving a 50m head and an 80m middle.
     case.write_mark("smoke.1.impl", start + 50 * 60);
