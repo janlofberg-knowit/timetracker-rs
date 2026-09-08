@@ -108,6 +108,18 @@ pub struct Thresholds {
     pub unvouched: i64,
 }
 
+/// How long a lease or an activity session keeps vouching past its last evidence
+/// of life, in minutes: `gap` with evidence, `unvouched` without, plus the one
+/// minute [`gaps_over`]'s floor-minutes-and-strictly-greater rule adds.
+pub fn grace_minutes(lively: bool, thresholds: Thresholds) -> i64 {
+    let allowed = if lively {
+        thresholds.gap
+    } else {
+        thresholds.unvouched
+    };
+    allowed + 1
+}
+
 /// One open mark plus the instant [`crate::agent`]'s `end` would measure it to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lease {
@@ -120,15 +132,11 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// The **first** instant this mark no longer vouches: `last_seen + gap`, or
-    /// `mark.start + unvouched` when it never beat, plus the one minute
-    /// [`gaps_over`]'s floor-minutes-and-strictly-greater rule adds.
+    /// The **first** instant this mark no longer vouches: [`grace_minutes`] past
+    /// its last beat, or past `mark.start` when it never beat.
     pub fn expires_at(&self, thresholds: Thresholds) -> DateTime<Local> {
-        let (since, allowed) = match self.last_seen {
-            Some(seen) => (seen, thresholds.gap),
-            None => (self.mark.start, thresholds.unvouched),
-        };
-        since + TimeDelta::minutes(allowed + 1)
+        let since = self.last_seen.unwrap_or(self.mark.start);
+        since + TimeDelta::minutes(grace_minutes(self.last_seen.is_some(), thresholds))
     }
 
     /// Whether the lease has run out by `now`: the one boundary the coverage bound
@@ -750,6 +758,12 @@ mod tests {
 
     fn at(seconds: i64) -> DateTime<Local> {
         crate::time::instant(seconds).unwrap()
+    }
+
+    #[test]
+    fn the_grace_is_the_gap_with_evidence_of_life_and_the_whole_span_without() {
+        assert_eq!(grace_minutes(true, HOUSE), 46);
+        assert_eq!(grace_minutes(false, HOUSE), 121);
     }
 
     #[test]
