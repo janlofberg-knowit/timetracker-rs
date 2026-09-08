@@ -13,7 +13,7 @@ use crate::audit;
 use crate::cli::{ActivityCommands, AgentCommands};
 use crate::commands;
 use crate::icons;
-use crate::marks::{self, Begin, Thresholds, Touch};
+use crate::marks::{self, Begin, MarkRef, Thresholds, Touch};
 use crate::storage;
 use crate::tracker;
 
@@ -24,17 +24,20 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             project,
             issue,
             phase,
-        } => begin(project, issue, phase),
+            agent,
+        } => begin(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::Touch {
             project,
             issue,
             phase,
-        } => touch(project, issue, phase),
+            agent,
+        } => touch(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::Cancel {
             project,
             issue,
             phase,
-        } => cancel(project, issue, phase),
+            agent,
+        } => cancel(mark_ref(project, issue, phase, agent.as_deref())),
         AgentCommands::List { project } => list(project.as_deref()),
         AgentCommands::Item {
             project,
@@ -59,11 +62,10 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             minutes,
             full,
             trim,
+            agent,
             data,
         } => end(
-            project,
-            issue,
-            phase,
+            mark_ref(project, issue, phase, agent.as_deref()),
             Close {
                 summary: summary.as_deref(),
                 minutes: minutes.as_deref(),
@@ -169,21 +171,39 @@ fn mark_dir() -> Result<std::path::PathBuf> {
     marks::mark_dir().context("could not determine a cache directory for the marks")
 }
 
-/// The phase as the messages name it: `<project>/<issue> <phase>`, `-` sentinel included.
-fn phase_name(project: &str, issue: &str, phase: &str) -> String {
-    format!("{}/{} {}", project, issue, phase)
+/// The mark the clap fields address.
+fn mark_ref<'a>(
+    project: &'a str,
+    issue: &'a str,
+    phase: &'a str,
+    agent: Option<&'a str>,
+) -> MarkRef<'a> {
+    MarkRef {
+        project,
+        issue,
+        phase,
+        agent,
+    }
+}
+
+/// The phase as the messages name it: `<project>/<issue> <phase>`, `-` sentinel
+/// included, plus `:<label>` for a mark with an agent label.
+fn phase_name(mark: MarkRef) -> String {
+    let name = format!("{}/{} {}", mark.project, mark.issue, mark.phase);
+    match mark.agent {
+        Some(agent) => format!("{name}:{agent}"),
+        None => name,
+    }
 }
 
 /// `tt agent begin <project> <issue|-> <phase>`: open a mark, or keep the one
 /// already open. Idempotent: the original start wins, on stderr, exit 0.
-fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
+fn begin(mark: MarkRef) -> Result<()> {
     let dir = mark_dir()?;
-    match marks::begin_in(&dir, project, issue, phase)? {
-        Begin::Created(start) => println!(
-            "marked {} at {}",
-            phase_name(project, issue, phase),
-            start.format("%H:%M")
-        ),
+    match marks::begin_in(&dir, mark)? {
+        Begin::Created(start) => {
+            println!("marked {} at {}", phase_name(mark), start.format("%H:%M"))
+        }
         Begin::AlreadyOpen(start) => {
             // `??:??` for a mark whose contents are not a timestamp.
             let since = start.map_or_else(
@@ -192,45 +212,45 @@ fn begin(project: &str, issue: &str, phase: &str) -> Result<()> {
             );
             eprintln!(
                 "tt: already marked {} (since {}) — using the original start",
-                phase_name(project, issue, phase),
+                phase_name(mark),
                 since
             );
         }
-        Begin::Closing => refuse_unfinished_close(project, issue, phase),
+        Begin::Closing => refuse_unfinished_close(mark),
     }
     Ok(())
 }
 
 /// Report a close that was started and never finished, and exit 75; nothing is cleared.
-fn refuse_unfinished_close(project: &str, issue: &str, phase: &str) -> ! {
+fn refuse_unfinished_close(mark: MarkRef) -> ! {
     eprintln!(
         "tt: {} has an unfinished close — a previous close may already have recorded its entry",
-        phase_name(project, issue, phase)
+        phase_name(mark)
     );
-    eprintln!("tt: check tt report, then tt agent cancel {project} {issue} {phase} to clear it.");
+    eprintln!(
+        "tt: check tt report, then tt agent cancel {} to clear it.",
+        mark.args()
+    );
     std::process::exit(75);
 }
 
 /// `tt agent touch <project> <issue|-> <phase>`: one heartbeat; exit 64 on an unmarked phase.
-fn touch(project: &str, issue: &str, phase: &str) -> Result<()> {
+fn touch(mark: MarkRef) -> Result<()> {
     let dir = mark_dir()?;
-    match marks::touch_in(&dir, project, issue, phase)? {
+    match marks::touch_in(&dir, mark)? {
         Touch::Recorded => Ok(()),
         Touch::NoMark => {
-            eprintln!(
-                "tt: no mark for {} — nothing to touch",
-                phase_name(project, issue, phase)
-            );
+            eprintln!("tt: no mark for {} — nothing to touch", phase_name(mark));
             std::process::exit(64);
         }
     }
 }
 
 /// `tt agent cancel <project> <issue|-> <phase>`: drop a mark without logging, present or not.
-fn cancel(project: &str, issue: &str, phase: &str) -> Result<()> {
+fn cancel(mark: MarkRef) -> Result<()> {
     let dir = mark_dir()?;
-    marks::cancel_in(&dir, project, issue, phase)?;
-    println!("dropped mark for {}", phase_name(project, issue, phase));
+    marks::cancel_in(&dir, mark)?;
+    println!("dropped mark for {}", phase_name(mark));
     Ok(())
 }
 
@@ -415,7 +435,7 @@ struct Close<'a> {
 /// file; only a phase with no bare beat measures to now. A flagged silence with nothing
 /// said about it **refuses** the close. Explicit minutes win over both flags and skip the
 /// mark's timestamps; `--full` logs the measured span, `--trim` it minus every gap.
-fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
+fn end(mark: MarkRef, close: Close) -> Result<()> {
     let Close {
         summary,
         minutes,
@@ -430,10 +450,11 @@ fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
         );
         std::process::exit(64);
     };
+    let data = stamp_label(data, mark.agent);
 
     let dir = mark_dir()?;
-    if marks::is_closing_in(&dir, project, issue, phase) {
-        refuse_unfinished_close(project, issue, phase);
+    if marks::is_closing_in(&dir, mark) {
+        refuse_unfinished_close(mark);
     }
 
     let mut idle = Vec::new();
@@ -444,10 +465,10 @@ fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
     let minutes = match minutes {
         Some(raw) => whole_minutes(raw),
         None => {
-            let Some(marked) = marks::read_phase_in(&dir, project, issue, phase)? else {
+            let Some(marked) = marks::read_phase_in(&dir, mark)? else {
                 eprintln!(
                     "tt: no mark for {} — pass minutes explicitly",
-                    phase_name(project, issue, phase)
+                    phase_name(mark)
                 );
                 std::process::exit(64);
             };
@@ -488,18 +509,18 @@ fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
                     split_at_idle = true;
                     measured
                 } else {
-                    refuse(project, issue, phase, &gaps, measured, trimmed);
+                    refuse(mark, &gaps, measured, trimmed);
                 }
             }
         }
     };
 
     // Written before the entry, so a failure here logs nothing and the retry is safe.
-    marks::start_closing_in(&dir, project, issue, phase)?;
+    marks::start_closing_in(&dir, mark)?;
     log_entry(
-        project,
-        issue,
-        phase,
+        mark.project,
+        mark.issue,
+        mark.phase,
         summary,
         minutes,
         Span {
@@ -510,29 +531,38 @@ fn end(project: &str, issue: &str, phase: &str, close: Close) -> Result<()> {
         data,
     )?;
     // Cleared only once the entry is recorded; a refusal leaves the mark and its beats.
-    if let Err(err) = marks::cancel_in(&dir, project, issue, phase) {
+    if let Err(err) = marks::cancel_in(&dir, mark) {
         eprintln!(
             "tt: {} is recorded, but its mark could not be cleared: {err}",
-            phase_name(project, issue, phase)
+            phase_name(mark)
         );
         eprintln!(
-            "tt: do not retry the close — run tt agent cancel {project} {issue} {phase} once the mark directory is writable."
+            "tt: do not retry the close — run tt agent cancel {} once the mark directory is writable.",
+            mark.args()
         );
         std::process::exit(74);
     }
     Ok(())
 }
 
+/// The close's data with the mark's label stamped in, or exit 64 on data whose
+/// `agent` key is not an object. Unlabelled data is passed through untouched.
+fn stamp_label(data: Option<serde_json::Value>, agent: Option<&str>) -> Option<serde_json::Value> {
+    let Some(label) = agent else {
+        return data;
+    };
+    match crate::entry_data::with_agent_label(data, label) {
+        Ok(data) => Some(data),
+        Err(message) => {
+            eprintln!("tt: {message}");
+            std::process::exit(64);
+        }
+    }
+}
+
 /// Refuse the close, naming the worst hole, and exit 65. Both totals are the
 /// measured minutes, before any `agent.round_minutes` step.
-fn refuse(
-    project: &str,
-    issue: &str,
-    phase: &str,
-    gaps: &[(i64, i64)],
-    measured: i64,
-    trimmed: i64,
-) -> ! {
+fn refuse(mark: MarkRef, gaps: &[(i64, i64)], measured: i64, trimmed: i64) -> ! {
     // Strictly greater, so the **first** of two equal holes is the one named.
     let mut worst = (0, 0, 0);
     for &(from, to) in gaps {
@@ -544,7 +574,7 @@ fn refuse(
 
     eprintln!(
         "tt: {} has {} {}m gap ({}-{})",
-        phase_name(project, issue, phase),
+        phase_name(mark),
         article(worst.0),
         worst.0,
         clock(worst.1),

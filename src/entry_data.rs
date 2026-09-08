@@ -2,7 +2,7 @@
 //! can hang extra information on. Parsed once at every boundary — `--data`, the
 //! TUI form — so nothing downstream ever holds a string that isn't valid JSON.
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 /// Parse one `--data` / form value. Blank means "no data"; anything else must be
 /// a JSON **object**, since the detail view renders it as key/value rows and a
@@ -21,6 +21,27 @@ pub fn parse(raw: &str) -> Result<Option<Value>, String> {
         ));
     }
     Ok(Some(value))
+}
+
+/// Stamp `{"agent": {"label": <label>}}` into the caller's data, keeping every key
+/// it already wrote — its own `agent.label` included.
+pub fn with_agent_label(data: Option<Value>, label: &str) -> Result<Value, String> {
+    // Anything other than an object is unreachable: `parse` is the only producer.
+    let mut object = match data {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    let namespace = object.entry("agent").or_insert_with(|| json!({}));
+    let Value::Object(namespace) = namespace else {
+        return Err(format!(
+            "expected \"agent\" to be a JSON object, got {}",
+            kind(namespace)
+        ));
+    };
+    namespace
+        .entry("label")
+        .or_insert_with(|| Value::String(label.to_string()));
+    Ok(Value::Object(object))
 }
 
 /// serde_json errors are single-line already, but stay defensive: a message with
@@ -138,6 +159,52 @@ mod tests {
         let edited = to_edit_string(Some(&value));
         assert_eq!(parse(&edited), Ok(Some(value)));
         assert_eq!(to_edit_string(None), "");
+    }
+
+    #[test]
+    fn a_label_stamps_the_agent_namespace_onto_no_data_at_all() {
+        assert_eq!(
+            with_agent_label(None, "code"),
+            Ok(json!({"agent": {"label": "code"}}))
+        );
+    }
+
+    #[test]
+    fn a_label_keeps_the_callers_own_keys_inside_and_outside_the_namespace() {
+        assert_eq!(
+            with_agent_label(
+                Some(json!({
+                    "pr": 42,
+                    "agent": {"model": "opus", "tokens": {"input": 1200}},
+                })),
+                "code"
+            ),
+            Ok(json!({
+                "pr": 42,
+                "agent": {"label": "code", "model": "opus", "tokens": {"input": 1200}},
+            }))
+        );
+    }
+
+    #[test]
+    fn a_label_the_caller_already_wrote_wins() {
+        assert_eq!(
+            with_agent_label(Some(json!({"agent": {"label": "mine"}})), "code"),
+            Ok(json!({"agent": {"label": "mine"}}))
+        );
+    }
+
+    #[test]
+    fn a_namespace_that_is_not_an_object_is_rejected_by_name() {
+        assert_eq!(
+            with_agent_label(Some(json!({"agent": "code"})), "code"),
+            Err("expected \"agent\" to be a JSON object, got a string".to_string())
+        );
+        assert!(
+            with_agent_label(Some(json!({"agent": [1]})), "code")
+                .unwrap_err()
+                .ends_with("got an array")
+        );
     }
 
     #[test]

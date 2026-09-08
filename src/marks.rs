@@ -1,7 +1,7 @@
 //! Reader and writer for the agent layer's open phase marks: one file per phase at
-//! `<mark dir>/<project>.<issue>.<phase>` holding a unix-seconds start, heartbeats in
-//! `beats/<key>`, an unfinished close in `closing/<key>`. Each segment is sanitised on
-//! its own, so a key holds exactly the two dots that join it.
+//! `<mark dir>/<project>.<issue>.<phase>[.<agent>]` holding a unix-seconds start,
+//! heartbeats in `beats/<key>`, an unfinished close in `closing/<key>`. Each segment is
+//! sanitised on its own, so a key holds exactly the two or three dots that join it.
 
 use chrono::{DateTime, Local, TimeDelta};
 use std::ffi::OsString;
@@ -18,11 +18,14 @@ pub struct Mark {
     /// `None` when the mark was made with the no-issue sentinel `-`.
     pub issue: Option<String>,
     pub phase: String,
+    /// `None` for a mark with no `--agent` label.
+    pub agent: Option<String>,
     pub start: DateTime<Local>,
 }
 
 impl Mark {
-    /// `project/issue phase`, or bare `project phase` for the `-` sentinel.
+    /// `project/issue phase:agent`, dropping the `/issue` for the `-` sentinel and the
+    /// `:agent` for an unlabelled mark.
     pub fn label(&self) -> String {
         let subject = match &self.issue {
             Some(issue) => format!("{}/{}", self.project, issue),
@@ -31,7 +34,20 @@ impl Mark {
         if self.phase.is_empty() {
             return subject;
         }
-        format!("{} {}", subject, self.phase)
+        match &self.agent {
+            Some(agent) => format!("{} {}:{}", subject, self.phase, agent),
+            None => format!("{} {}", subject, self.phase),
+        }
+    }
+
+    /// The segments that address this mark, with the `-` sentinel for a missing issue.
+    pub fn as_key(&self) -> MarkRef<'_> {
+        MarkRef {
+            project: &self.project,
+            issue: self.issue.as_deref().unwrap_or("-"),
+            phase: &self.phase,
+            agent: self.agent.as_deref(),
+        }
     }
 
     /// The clock time the mark was made, `HH:MM`.
@@ -58,6 +74,28 @@ impl Mark {
     /// so a start in the future prints `0h 0m`.
     pub fn age_at(&self, now: DateTime<Local>) -> String {
         duration::format((now - self.start).max(TimeDelta::zero()))
+    }
+}
+
+/// The segments that address one mark. `issue` carries the `-` sentinel literally,
+/// never `None`; `agent` is the optional fourth key segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MarkRef<'a> {
+    pub project: &'a str,
+    pub issue: &'a str,
+    pub phase: &'a str,
+    pub agent: Option<&'a str>,
+}
+
+impl MarkRef<'_> {
+    /// The `<project> <issue> <phase> [--agent <label>]` words that address this mark on
+    /// a `tt agent` command line.
+    pub fn args(&self) -> String {
+        let mut args = format!("{} {} {}", self.project, self.issue, self.phase);
+        if let Some(agent) = self.agent {
+            args.push_str(&format!(" --agent {agent}"));
+        }
+        args
     }
 }
 
@@ -117,10 +155,8 @@ impl Lease {
         }
         let tail = if self.vouched { "--trim" } else { "<minutes>" };
         format!(
-            "tt agent end {} {} {} \"<summary>\" {}",
-            self.mark.project,
-            self.mark.issue.as_deref().unwrap_or("-"),
-            self.mark.phase,
+            "tt agent end {} \"<summary>\" {}",
+            self.mark.as_key().args(),
             tail
         )
     }
@@ -129,11 +165,7 @@ impl Lease {
 /// Read one mark's heartbeat file to pair it with its last-seen instant. Unlike
 /// [`open_marks_in`] this reads `beats/`, which no mark-directory mtime reflects.
 pub fn lease_in(dir: &Path, mark: &Mark) -> Lease {
-    let key = mark_key(
-        &mark.project,
-        mark.issue.as_deref().unwrap_or("-"),
-        &mark.phase,
-    );
+    let key = mark_key(mark.as_key());
     let body = fs::read_to_string(beats_path(dir, &key)).unwrap_or_default();
     // The last *parseable* line, whatever tag follows its timestamp, never the
     // largest beat.
@@ -239,9 +271,10 @@ pub fn open_marks_in(dir: &Path) -> Vec<Mark> {
 
     // Never `read_dir` order.
     marks.sort_by(|a, b| {
-        b.start
-            .cmp(&a.start)
-            .then_with(|| (&a.project, &a.issue, &a.phase).cmp(&(&b.project, &b.issue, &b.phase)))
+        b.start.cmp(&a.start).then_with(|| {
+            (&a.project, &a.issue, &a.phase, &a.agent)
+                .cmp(&(&b.project, &b.issue, &b.phase, &b.agent))
+        })
     });
     marks
 }
@@ -256,28 +289,33 @@ fn read_start(path: &Path) -> Option<DateTime<Local>> {
 /// Parse one mark file, or `None` if it is not one.
 fn read_mark(dir: &Path, name: &OsString) -> Option<Mark> {
     let start = read_start(&dir.join(name))?;
-    let (project, issue, phase) = split_key(name.to_str()?);
+    let (project, issue, phase, agent) = split_key(name.to_str()?);
     Some(Mark {
         project,
         issue,
         phase,
+        agent,
         start,
     })
 }
 
-/// Split a mark filename back into `<project>.<issue>.<phase>`. Every key
-/// [`mark_key`] wrote holds exactly two dots; extra dots land in the middle field.
-fn split_key(name: &str) -> (String, Option<String>, String) {
+/// Split a mark filename back into its segments. Every key [`mark_key`] wrote holds
+/// three or four of them; a longer hand-made name falls back to first dot and last dot,
+/// which [`closable`] then rejects.
+fn split_key(name: &str) -> (String, Option<String>, String, Option<String>) {
     let issue = |raw: &str| (raw != "-").then(|| raw.to_string());
+    let own = str::to_string;
+    let segments: Vec<&str> = name.split('.').collect();
 
-    match name.split_once('.') {
-        Some((project, rest)) => match rest.rsplit_once('.') {
-            Some((mid, phase)) => (project.to_string(), issue(mid), phase.to_string()),
-            // One `.`: an issue-less `<project>.<phase>`, as `-` produces.
-            None => (project.to_string(), None, rest.to_string()),
-        },
+    match segments.as_slice() {
+        // One `.`: an issue-less `<project>.<phase>`, as `-` produces.
+        [project, phase] => (own(project), None, own(phase), None),
+        [project, mid, phase] => (own(project), issue(mid), own(phase), None),
+        [project, mid, phase, agent] => (own(project), issue(mid), own(phase), Some(own(agent))),
+        // More segments than a key has: the first dot and the last one, as before.
+        [project, mid @ .., phase] => (own(project), issue(&mid.join(".")), own(phase), None),
         // Nothing to split: the whole name is the project.
-        None => (name.to_string(), None, String::new()),
+        _ => (own(name), None, String::new(), None),
     }
 }
 
@@ -305,12 +343,23 @@ pub enum Touch {
     NoMark,
 }
 
-/// The sanitised filename for one phase: `<project>.<issue>.<phase>`, with the `-`
-/// sentinel written literally. Sanitise the segments, never the joined string —
-/// [`crate::paths::sanitise_key`] maps `.` to `-`. Build every path from this key.
-pub fn mark_key(project: &str, issue: &str, phase: &str) -> String {
+/// The sanitised filename for one mark: `<project>.<issue>.<phase>`, plus `.<agent>`
+/// when it is labelled, with the `-` sentinel written literally. Sanitise the segments,
+/// never the joined string — [`crate::paths::sanitise_key`] maps `.` to `-`. Build every
+/// path from this key.
+pub fn mark_key(mark: MarkRef) -> String {
     let segment = crate::paths::sanitise_key;
-    format!("{}.{}.{}", segment(project), segment(issue), segment(phase))
+    let mut key = format!(
+        "{}.{}.{}",
+        segment(mark.project),
+        segment(mark.issue),
+        segment(mark.phase)
+    );
+    if let Some(agent) = mark.agent {
+        key.push('.');
+        key.push_str(&segment(agent));
+    }
+    key
 }
 
 pub fn mark_path(dir: &Path, key: &str) -> PathBuf {
@@ -331,8 +380,8 @@ pub fn closing_path(dir: &Path, key: &str) -> PathBuf {
 
 /// Open a mark for one phase, or report the one already open. `create_new` keeps
 /// the check and the write atomic, and an existing mark is never rewritten.
-pub fn begin_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<Begin> {
-    let key = mark_key(project, issue, phase);
+pub fn begin_in(dir: &Path, mark: MarkRef) -> io::Result<Begin> {
+    let key = mark_key(mark);
     let path = mark_path(dir, &key);
     fs::create_dir_all(dir)?;
 
@@ -357,8 +406,8 @@ pub fn begin_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Resu
 
 /// Append one heartbeat for a phase that is already marked; appended, never
 /// overwritten. A phase nobody began records nothing at all.
-pub fn touch_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<Touch> {
-    let key = mark_key(project, issue, phase);
+pub fn touch_in(dir: &Path, mark: MarkRef) -> io::Result<Touch> {
+    let key = mark_key(mark);
     if !mark_path(dir, &key).is_file() {
         return Ok(Touch::NoMark);
     }
@@ -390,12 +439,7 @@ pub fn touch_project_in(dir: &Path, project: &str) {
         if !owned_by(&mark, project) {
             continue;
         }
-        let issue = mark.issue.as_deref().unwrap_or("-");
-        let _ = append_beat(
-            dir,
-            &mark_key(&mark.project, issue, &mark.phase),
-            Some("hook"),
-        );
+        let _ = append_beat(dir, &mark_key(mark.as_key()), Some("hook"));
     }
 }
 
@@ -411,26 +455,29 @@ pub fn owned_by(mark: &Mark, project: &str) -> bool {
     same_project(&mark.project, project)
 }
 
-/// Whether any command can address this mark: its triple has to survive [`mark_key`]
+/// Whether any command can address this mark: its segments have to survive [`mark_key`]
 /// and [`split_key`] unchanged, or `end` and `cancel` build a key that names no file.
 pub fn closable(mark: &Mark) -> bool {
-    let issue = mark.issue.as_deref().unwrap_or("-");
-    let (project, parsed, phase) = split_key(&mark_key(&mark.project, issue, &mark.phase));
-    (project.as_str(), parsed.as_deref(), phase.as_str())
+    split_key(&mark_key(mark.as_key()))
         == (
-            mark.project.as_str(),
-            mark.issue.as_deref(),
-            mark.phase.as_str(),
+            mark.project.clone(),
+            mark.issue.clone(),
+            mark.phase.clone(),
+            mark.agent.clone(),
         )
 }
 
 /// The one line offered for a mark [`closable`] rejects: what to log and which
 /// file to delete, carrying the project token as every mark line does.
 pub fn remove_by_hand(mark: &Mark) -> String {
-    let issue = mark.issue.as_deref().unwrap_or("-");
+    let key = mark.as_key();
+    let name = match key.agent {
+        Some(agent) => format!("{}.{}.{}.{}", key.project, key.issue, key.phase, agent),
+        None => format!("{}.{}.{}", key.project, key.issue, key.phase),
+    };
     format!(
-        "{}.{}.{} cannot be closed — log it with tt agent item {} {} {} \"<summary>\" <minutes> and remove the file by hand",
-        mark.project, issue, mark.phase, mark.project, issue, mark.phase
+        "{} cannot be closed — log it with tt agent item {} {} {} \"<summary>\" <minutes> and remove the file by hand",
+        name, key.project, key.issue, key.phase
     )
 }
 
@@ -445,8 +492,8 @@ pub fn unclosable_in(dir: &Path) -> Vec<String> {
 
 /// Record that a close for one phase is under way, holding the mark's start so the
 /// file names its own span. An existing sentinel is overwritten; [`is_closing_in`] refuses.
-pub fn start_closing_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<()> {
-    let key = mark_key(project, issue, phase);
+pub fn start_closing_in(dir: &Path, mark: MarkRef) -> io::Result<()> {
+    let key = mark_key(mark);
     let path = closing_path(dir, &key);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -457,8 +504,8 @@ pub fn start_closing_in(dir: &Path, project: &str, issue: &str, phase: &str) -> 
 }
 
 /// Whether a close for one phase was started and never finished.
-pub fn is_closing_in(dir: &Path, project: &str, issue: &str, phase: &str) -> bool {
-    closing_path(dir, &mark_key(project, issue, phase)).exists()
+pub fn is_closing_in(dir: &Path, mark: MarkRef) -> bool {
+    closing_path(dir, &mark_key(mark)).exists()
 }
 
 /// Remove one path, treating an absent one as done.
@@ -473,8 +520,8 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
 /// Drop a mark, its `beats/` entry and its `closing/` sentinel, each allowed to be
 /// absent. **Beats go first**, or a failure part-way leaves beats a later phase
 /// would read back as its own. The `beats/` and `closing/` directories stay.
-pub fn cancel_in(dir: &Path, project: &str, issue: &str, phase: &str) -> io::Result<()> {
-    let key = mark_key(project, issue, phase);
+pub fn cancel_in(dir: &Path, mark: MarkRef) -> io::Result<()> {
+    let key = mark_key(mark);
     for path in [
         beats_path(dir, &key),
         mark_path(dir, &key),
@@ -511,22 +558,17 @@ fn all_digits(text: &str) -> bool {
 
 /// Read a marked phase back, or `None` when the phase is not marked at all. A
 /// mark holding something other than a timestamp is an error naming the path.
-pub fn read_phase_in(
-    dir: &Path,
-    project: &str,
-    issue: &str,
-    phase: &str,
-) -> io::Result<Option<Phase>> {
-    let key = mark_key(project, issue, phase);
-    let mark = mark_path(dir, &key);
-    if !mark.is_file() {
+pub fn read_phase_in(dir: &Path, mark: MarkRef) -> io::Result<Option<Phase>> {
+    let key = mark_key(mark);
+    let path = mark_path(dir, &key);
+    if !path.is_file() {
         return Ok(None);
     }
-    let started = read_start(&mark)
+    let started = read_start(&path)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("{} does not hold a unix timestamp", mark.display()),
+                format!("{} does not hold a unix timestamp", path.display()),
             )
         })?
         .timestamp();
@@ -584,6 +626,29 @@ mod tests {
         unvouched: 120,
     };
 
+    /// One unlabelled mark, `<project>.<issue>.<phase>`.
+    fn key<'a>(project: &'a str, issue: &'a str, phase: &'a str) -> MarkRef<'a> {
+        MarkRef {
+            project,
+            issue,
+            phase,
+            agent: None,
+        }
+    }
+
+    /// The same mark under one agent label.
+    fn labelled<'a>(
+        project: &'a str,
+        issue: &'a str,
+        phase: &'a str,
+        agent: &'a str,
+    ) -> MarkRef<'a> {
+        MarkRef {
+            agent: Some(agent),
+            ..key(project, issue, phase)
+        }
+    }
+
     /// A fresh scratch mark directory: the real one is live and off limits.
     fn sandbox(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tt-marks-test-{name}"));
@@ -602,16 +667,19 @@ mod tests {
         write(&dir, "a.7.impl", "1000100\n");
         // The `-` sentinel has to round-trip through the key to be beaten.
         write(&dir, "a.-.plan", "1000200\n");
+        // A labelled mark is beaten under its own four-segment key.
+        write(&dir, "a.7.review.code", "1000250\n");
         write(&dir, "b.9.impl", "1000300\n");
 
         touch_project_in(&dir, "A");
 
-        for key in ["a.7.impl", "a.-.plan"] {
+        for key in ["a.7.impl", "a.-.plan", "a.7.review.code"] {
             let body = fs::read_to_string(beats_path(&dir, key)).unwrap();
             assert_eq!(body.lines().count(), 1, "{key}");
         }
         assert!(!beats_path(&dir, "b.9.impl").exists());
-        assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 2);
+        assert!(!beats_path(&dir, "a.7.review").exists());
+        assert_eq!(fs::read_dir(dir.join("beats")).unwrap().count(), 3);
     }
 
     #[test]
@@ -623,7 +691,7 @@ mod tests {
 
         let body = fs::read_to_string(beats_path(&dir, "a.7.impl")).unwrap();
         assert!(body.trim_end().ends_with(" hook"), "{body}");
-        let phase = read_phase_in(&dir, "a", "7", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("a", "7", "impl")).unwrap().unwrap();
         assert!(phase.beats.is_empty(), "a tagged beat is not a beat here");
     }
 
@@ -666,7 +734,7 @@ mod tests {
     #[test]
     fn a_dotted_issue_stays_inside_its_own_segment() {
         let dir = sandbox("touch-project-dotted-issue");
-        begin_in(&dir, "app", "1.2", "impl").unwrap();
+        begin_in(&dir, key("app", "1.2", "impl")).unwrap();
         assert!(mark_path(&dir, "app.1-2.impl").is_file());
 
         touch_project_in(&dir, "app");
@@ -739,17 +807,17 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_whose_triple_does_not_round_trip_prints_no_close_line() {
+    fn a_mark_with_more_segments_than_a_key_has_prints_no_close_line() {
         let dir = sandbox("legacy-dotted");
-        write(&dir, "app.web.7.impl", "1000000\n");
+        write(&dir, "app.web.7.impl.v2", "1000000\n");
         let lease = lease_in(&dir, &open_marks_in(&dir)[0]);
 
         assert!(!closable(&lease.mark));
         let note = lease.close_command();
         assert!(!note.contains("tt agent end"), "{note}");
-        assert!(note.contains("app.web.7.impl"), "{note}");
+        assert!(note.contains("app.web.7.impl.v2"), "{note}");
         assert!(
-            note.contains("tt agent item app web.7 impl"),
+            note.contains("tt agent item app web.7.impl v2"),
             "the note has to name the work to log and its project: {note}"
         );
     }
@@ -767,11 +835,12 @@ mod tests {
     #[test]
     fn only_the_marks_no_command_can_close_get_a_note() {
         let dir = sandbox("legacy-notes");
-        write(&dir, "app.web.7.impl", "1000000\n");
+        write(&dir, "app.web.7.impl.v2", "1000000\n");
         write(&dir, "app.7.impl", "1000000\n");
+        write(&dir, "app.7.impl.reviewer", "1000000\n");
         let notes = unclosable_in(&dir);
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("app.web.7.impl"), "{notes:?}");
+        assert!(notes[0].contains("app.web.7.impl.v2"), "{notes:?}");
     }
 
     #[test]
@@ -943,6 +1012,7 @@ mod tests {
             project: "tt".into(),
             issue: Some("14".into()),
             phase: "impl".into(),
+            agent: None,
             start: crate::time::instant(seconds).unwrap(),
         };
         let start = 1_000_000_000;
@@ -963,16 +1033,14 @@ mod tests {
     #[test]
     fn a_lossy_name_degrades_to_a_label_instead_of_an_error() {
         let dir = sandbox("lossy");
-        write(&dir, "my.proj.7.impl", "1000400\n");
-        write(&dir, "tt.8.impl.v2", "1000300\n");
+        write(&dir, "my.proj.7.impl.v2", "1000400\n");
         write(&dir, "my_proj.-.code_review", "1000200\n");
         write(&dir, "bare", "1000100\n");
 
         assert_eq!(
             labels(&open_marks_in(&dir)),
             vec![
-                ("my".into(), Some("proj.7".into()), "impl".into()),
-                ("tt".into(), Some("8.impl".into()), "v2".into()),
+                ("my".into(), Some("proj.7.impl".into()), "v2".into()),
                 ("my_proj".into(), None, "code_review".into()),
                 ("bare".into(), None, String::new()),
             ]
@@ -1157,29 +1225,98 @@ mod tests {
 
     #[test]
     fn a_key_is_sanitised_once_and_keeps_the_no_issue_sentinel() {
-        assert_eq!(mark_key("tt", "8", "impl"), "tt.8.impl");
-        assert_eq!(mark_key("vinge", "-", "plan"), "vinge.-.plan");
+        assert_eq!(mark_key(key("tt", "8", "impl")), "tt.8.impl");
+        assert_eq!(mark_key(key("vinge", "-", "plan")), "vinge.-.plan");
         assert_eq!(
-            mark_key("my proj", "7", "code/review"),
+            mark_key(key("my proj", "7", "code/review")),
             "my_proj.7.code_review"
         );
-        assert_eq!(mark_key("app", "1.2", "impl"), "app.1-2.impl");
-        assert_eq!(mark_key("app.web", "7", "impl"), "app-web.7.impl");
+        assert_eq!(mark_key(key("app", "1.2", "impl")), "app.1-2.impl");
+        assert_eq!(mark_key(key("app.web", "7", "impl")), "app-web.7.impl");
         let dir = Path::new("/marks");
         assert_eq!(
-            mark_path(dir, &mark_key("my proj", "7", "impl")),
+            mark_path(dir, &mark_key(key("my proj", "7", "impl"))),
             PathBuf::from("/marks/my_proj.7.impl")
         );
         assert_eq!(
-            beats_path(dir, &mark_key("my proj", "7", "impl")),
+            beats_path(dir, &mark_key(key("my proj", "7", "impl"))),
             PathBuf::from("/marks/beats/my_proj.7.impl")
+        );
+    }
+
+    #[test]
+    fn an_agent_label_is_a_fourth_sanitised_segment() {
+        assert_eq!(
+            mark_key(labelled("tt", "8", "impl", "reviewer")),
+            "tt.8.impl.reviewer"
+        );
+        assert_eq!(
+            mark_key(labelled("tt", "-", "impl", "code review")),
+            "tt.-.impl.code_review"
+        );
+        assert_eq!(
+            mark_key(labelled("tt", "8", "impl", "v1.2")),
+            "tt.8.impl.v1-2"
+        );
+    }
+
+    #[test]
+    fn a_four_segment_name_reads_back_as_a_labelled_mark() {
+        let dir = sandbox("agent-roundtrip");
+        write(&dir, "tt.8.impl.reviewer", "1000200\n");
+
+        let mark = &open_marks_in(&dir)[0];
+        assert_eq!(mark.project, "tt");
+        assert_eq!(mark.issue.as_deref(), Some("8"));
+        assert_eq!(mark.phase, "impl");
+        assert_eq!(mark.agent.as_deref(), Some("reviewer"));
+        assert_eq!(mark.label(), "tt/8 impl:reviewer");
+        assert!(closable(mark));
+    }
+
+    #[test]
+    fn two_labels_on_one_phase_are_independent_marks() {
+        let dir = sandbox("agent-independent");
+        begin_in(&dir, labelled("tt", "8", "review", "style")).unwrap();
+        begin_in(&dir, labelled("tt", "8", "review", "code")).unwrap();
+        begin_in(&dir, key("tt", "8", "review")).unwrap();
+        assert_eq!(count_files(&dir), 3);
+
+        touch_in(&dir, labelled("tt", "8", "review", "style")).unwrap();
+        let beats = |agent| {
+            read_phase_in(&dir, labelled("tt", "8", "review", agent))
+                .unwrap()
+                .unwrap()
+                .beats
+                .len()
+        };
+        assert_eq!((beats("style"), beats("code")), (1, 0));
+
+        cancel_in(&dir, labelled("tt", "8", "review", "style")).unwrap();
+        assert!(!mark_path(&dir, "tt.8.review.style").exists());
+        assert!(mark_path(&dir, "tt.8.review.code").is_file());
+        assert!(mark_path(&dir, "tt.8.review").is_file());
+    }
+
+    #[test]
+    fn a_labelled_stale_row_closes_the_mark_it_names() {
+        let dir = sandbox("agent-close-line");
+        let now = 1_000_000_000;
+        write(&dir, "tt.8.review.style", &format!("{}\n", now - 6 * 3600));
+
+        let rows = rows_at(&open_leases_in(&dir), at(now), HOUSE);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows[0].starts_with("tt/8 review:style "), "{rows:?}");
+        assert_eq!(
+            rows[1],
+            "  tt agent end tt 8 review --agent style \"<summary>\" <minutes>"
         );
     }
 
     #[test]
     fn begin_writes_the_start_the_reader_reads_back() {
         let dir = sandbox("begin");
-        let Begin::Created(start) = begin_in(&dir, "tt", "8", "impl").unwrap() else {
+        let Begin::Created(start) = begin_in(&dir, key("tt", "8", "impl")).unwrap() else {
             panic!("a fresh directory should have no mark to find");
         };
 
@@ -1196,7 +1333,7 @@ mod tests {
         let dir = sandbox("begin-again");
         write(&dir, "tt.8.impl", "1000200\n");
 
-        let again = begin_in(&dir, "tt", "8", "impl").unwrap();
+        let again = begin_in(&dir, key("tt", "8", "impl")).unwrap();
         assert_eq!(
             read(&dir, "tt.8.impl"),
             "1000200\n",
@@ -1210,7 +1347,7 @@ mod tests {
         // An unreadable start still reports the mark as open, never a new start.
         write(&dir, "broken.1.impl", "not a timestamp\n");
         assert_eq!(
-            begin_in(&dir, "broken", "1", "impl").unwrap(),
+            begin_in(&dir, key("broken", "1", "impl")).unwrap(),
             Begin::AlreadyOpen(None)
         );
     }
@@ -1218,11 +1355,14 @@ mod tests {
     #[test]
     fn each_touch_appends_one_beat_and_leaves_the_mark_alone() {
         let dir = sandbox("touch");
-        begin_in(&dir, "tt", "8", "impl").unwrap();
+        begin_in(&dir, key("tt", "8", "impl")).unwrap();
         let mark = read(&dir, "tt.8.impl");
 
         for _ in 0..3 {
-            assert_eq!(touch_in(&dir, "tt", "8", "impl").unwrap(), Touch::Recorded);
+            assert_eq!(
+                touch_in(&dir, key("tt", "8", "impl")).unwrap(),
+                Touch::Recorded
+            );
         }
 
         let beats = read(&dir, "beats/tt.8.impl");
@@ -1239,7 +1379,10 @@ mod tests {
     #[test]
     fn touch_on_an_unbegun_phase_writes_nothing_at_all() {
         let dir = sandbox("touch-unbegun");
-        assert_eq!(touch_in(&dir, "tt", "8", "impl").unwrap(), Touch::NoMark);
+        assert_eq!(
+            touch_in(&dir, key("tt", "8", "impl")).unwrap(),
+            Touch::NoMark
+        );
         assert!(
             !dir.join("beats").exists(),
             "no beats directory was created"
@@ -1254,12 +1397,12 @@ mod tests {
     #[test]
     fn cancel_clears_the_mark_and_its_beats_but_not_a_sibling_phase() {
         let dir = sandbox("cancel");
-        begin_in(&dir, "tt", "8", "impl").unwrap();
-        touch_in(&dir, "tt", "8", "impl").unwrap();
-        begin_in(&dir, "other", "9", "plan").unwrap();
-        touch_in(&dir, "other", "9", "plan").unwrap();
+        begin_in(&dir, key("tt", "8", "impl")).unwrap();
+        touch_in(&dir, key("tt", "8", "impl")).unwrap();
+        begin_in(&dir, key("other", "9", "plan")).unwrap();
+        touch_in(&dir, key("other", "9", "plan")).unwrap();
 
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
 
         assert!(!dir.join("tt.8.impl").exists());
         assert!(!dir.join("beats/tt.8.impl").exists());
@@ -1273,8 +1416,8 @@ mod tests {
         );
         assert!(dir.join("beats/other.9.plan").is_file());
 
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
-        cancel_in(&dir, "never", "1", "begun").unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
+        cancel_in(&dir, key("never", "1", "begun")).unwrap();
     }
 
     // --- the closing sentinel ---------------------------------------------
@@ -1282,13 +1425,13 @@ mod tests {
     #[test]
     fn the_sentinel_holds_the_marks_own_start() {
         let dir = sandbox("closing-round-trip");
-        let Begin::Created(start) = begin_in(&dir, "tt", "8", "impl").unwrap() else {
+        let Begin::Created(start) = begin_in(&dir, key("tt", "8", "impl")).unwrap() else {
             panic!("a fresh mark is created");
         };
-        assert!(!is_closing_in(&dir, "tt", "8", "impl"));
+        assert!(!is_closing_in(&dir, key("tt", "8", "impl")));
 
-        start_closing_in(&dir, "tt", "8", "impl").unwrap();
-        assert!(is_closing_in(&dir, "tt", "8", "impl"));
+        start_closing_in(&dir, key("tt", "8", "impl")).unwrap();
+        assert!(is_closing_in(&dir, key("tt", "8", "impl")));
         assert_eq!(
             read(&dir, "closing/tt.8.impl").trim(),
             start.timestamp().to_string()
@@ -1298,11 +1441,11 @@ mod tests {
     #[test]
     fn cancel_clears_the_sentinel_with_the_mark_and_the_beats() {
         let dir = sandbox("closing-cancel");
-        begin_in(&dir, "tt", "8", "impl").unwrap();
-        touch_in(&dir, "tt", "8", "impl").unwrap();
-        start_closing_in(&dir, "tt", "8", "impl").unwrap();
+        begin_in(&dir, key("tt", "8", "impl")).unwrap();
+        touch_in(&dir, key("tt", "8", "impl")).unwrap();
+        start_closing_in(&dir, key("tt", "8", "impl")).unwrap();
 
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
 
         assert!(!dir.join("tt.8.impl").exists());
         assert!(!dir.join("beats/tt.8.impl").exists());
@@ -1317,16 +1460,16 @@ mod tests {
     fn cancel_tolerates_any_of_the_three_paths_being_absent() {
         let dir = sandbox("closing-cancel-partial");
 
-        begin_in(&dir, "tt", "8", "impl").unwrap();
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        begin_in(&dir, key("tt", "8", "impl")).unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
 
         fs::create_dir_all(dir.join("beats")).unwrap();
         write(&dir.join("beats"), "tt.8.impl", "1000200\n");
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
 
         fs::create_dir_all(dir.join("closing")).unwrap();
         write(&dir.join("closing"), "tt.8.impl", "1000100\n");
-        cancel_in(&dir, "tt", "8", "impl").unwrap();
+        cancel_in(&dir, key("tt", "8", "impl")).unwrap();
 
         assert_eq!(
             count_files(&dir),
@@ -1353,14 +1496,16 @@ mod tests {
         fs::create_dir_all(dir.join("beats")).unwrap();
         write(&dir.join("beats"), "tt.8.impl", stale);
 
-        let Begin::Created(_) = begin_in(&dir, "tt", "8", "impl").unwrap() else {
+        let Begin::Created(_) = begin_in(&dir, key("tt", "8", "impl")).unwrap() else {
             panic!("no mark was open, so one is created");
         };
 
-        let phase = read_phase_in(&dir, "tt", "8", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("tt", "8", "impl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(phase.beats, Vec::<i64>::new(), "the stale beats survived");
 
-        touch_in(&dir, "tt", "8", "impl").unwrap();
+        touch_in(&dir, key("tt", "8", "impl")).unwrap();
         let beats = read(&dir, "beats/tt.8.impl");
         assert_eq!(
             beats.lines().count(),
@@ -1378,7 +1523,10 @@ mod tests {
         fs::create_dir_all(dir.join("closing")).unwrap();
         write(&dir.join("closing"), "tt.8.impl", "1000100\n");
 
-        assert_eq!(begin_in(&dir, "tt", "8", "impl").unwrap(), Begin::Closing);
+        assert_eq!(
+            begin_in(&dir, key("tt", "8", "impl")).unwrap(),
+            Begin::Closing
+        );
         assert!(!dir.join("tt.8.impl").exists(), "a mark was opened");
         assert_eq!(read(&dir, "beats/tt.8.impl"), stale);
         assert_eq!(read(&dir, "closing/tt.8.impl"), "1000100\n");
@@ -1464,7 +1612,9 @@ mod tests {
         // `end` measures to the last beat recorded, not the highest one.
         write(&dir, "beats/proj.7.impl", "1000600\n1002000\n1001200\n");
 
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("proj", "7", "impl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(phase.started, 1_000_000);
         assert_eq!(phase.beats, vec![1_000_600, 1_002_000, 1_001_200]);
     }
@@ -1481,7 +1631,9 @@ mod tests {
             &format!("{}\n{} hook\n", start + 20 * 60, start + 21 * 60),
         );
 
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("proj", "7", "impl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(phase.beats, vec![start + 20 * 60]);
         assert_eq!((phase.beats[0] - phase.started) / 60, 20);
     }
@@ -1493,7 +1645,9 @@ mod tests {
         fs::create_dir_all(dir.join("beats")).unwrap();
         write(&dir, "beats/proj.7.impl", "1000600 hook\n1000900 hook\n");
 
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("proj", "7", "impl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             phase,
             Phase {
@@ -1514,14 +1668,16 @@ mod tests {
             "\nnope\n1000600 note\n-5\nx1000700\n",
         );
 
-        let phase = read_phase_in(&dir, "proj", "7", "impl").unwrap().unwrap();
+        let phase = read_phase_in(&dir, key("proj", "7", "impl"))
+            .unwrap()
+            .unwrap();
         assert!(phase.beats.is_empty(), "only a bare line is a beat");
     }
 
     #[test]
     fn an_unmarked_phase_reads_back_as_nothing() {
         let dir = sandbox("phase-unmarked");
-        assert_eq!(read_phase_in(&dir, "proj", "7", "impl").unwrap(), None);
+        assert_eq!(read_phase_in(&dir, key("proj", "7", "impl")).unwrap(), None);
     }
 
     #[test]
@@ -1529,7 +1685,7 @@ mod tests {
         let dir = sandbox("phase-bad-mark");
         write(&dir, "proj.7.impl", "not a timestamp\n");
 
-        let err = read_phase_in(&dir, "proj", "7", "impl").unwrap_err();
+        let err = read_phase_in(&dir, key("proj", "7", "impl")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(
             err.to_string().contains("proj.7.impl"),

@@ -179,6 +179,7 @@ mod tests {
             project: project.to_string(),
             issue: issue.map(String::from),
             phase: "impl".to_string(),
+            agent: None,
             start: Local::now(),
         }
     }

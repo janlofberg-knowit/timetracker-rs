@@ -33,6 +33,23 @@ fn only_the_mark_only_agent_commands_leave_the_store_untouched() {
         );
     }
 
+    for label in ["code", "style"] {
+        case.run(&["begin", "proj", "7", "review", "--agent", label])
+            .assert_status(0);
+        case.run(&["touch", "proj", "7", "review", "--agent", label])
+            .assert_status(0);
+        case.run(&["cancel", "proj", "7", "review", "--agent", label])
+            .assert_status(0);
+    }
+
+    for name in ["data.json", "data.lock"] {
+        let path = data_dir.join(name);
+        assert!(
+            !path.exists(),
+            "{name} was created by a labelled mark-only command: {path:?}"
+        );
+    }
+
     case.run(&["item", "proj", "7", "impl", "did the thing", "30"])
         .assert_status(0);
     for name in ["data.json", "data.lock"] {
@@ -294,14 +311,14 @@ fn list_renders_an_age_in_the_house_duration_format() {
 }
 
 #[test]
-fn list_still_shows_a_mark_whose_phase_contains_a_dot() {
+fn list_still_shows_a_mark_with_more_segments_than_a_key_has() {
     let case = Case::new("list-dotted-phase");
-    case.write_mark("proj.23.impl.v2", now());
+    case.write_mark("proj.23.impl.v2.x", now());
 
     let run = case.run(&["list"]);
     run.assert_status(0);
     // The dot split is lossy by design; an imperfect label beats hiding an open mark.
-    run.assert_stdout_has("proj/23.impl v2");
+    run.assert_stdout_has("proj/23.impl.v2 x");
 }
 
 #[test]
@@ -449,19 +466,19 @@ fn list_for_a_project_with_no_open_marks_reports_the_bare_line() {
     assert_eq!(run.stdout, "No open marks.\n");
 }
 
-/// A mark file written before `.` mapped to `-` names a triple `end` and
+/// A mark file written before `.` mapped to `-` names segments `end` and
 /// `cancel` cannot address, so its row offers no runnable close line.
 #[test]
 fn a_legacy_dotted_mark_is_listed_with_no_close_line() {
     let case = Case::new("list-legacy-dotted");
     let start = now() - 5 * 3600;
-    case.write_mark("app.web.7.impl", start);
+    case.write_mark("app.web.7.impl.v2", start);
 
     let run = case.run(&["list"]);
     run.assert_status(0);
     run.assert_stdout_has(&format!("since {}", clock(start)));
-    run.assert_stdout_has("app.web.7.impl cannot be closed");
-    run.assert_stdout_has("tt agent item app web.7 impl");
+    run.assert_stdout_has("app.web.7.impl.v2 cannot be closed");
+    run.assert_stdout_has("tt agent item app web.7.impl v2");
     assert!(
         !run.stdout.contains("tt agent end"),
         "following this row must not log an entry that leaves the mark open: {:?}",
@@ -482,4 +499,59 @@ fn a_healthy_marks_close_line_is_unchanged() {
     run.assert_status(0);
     run.assert_stdout_has("tt agent end app 7 impl \"<summary>\" --trim");
     run.assert_stdout_has("tt agent end app - plan \"<summary>\" <minutes>");
+}
+
+// --- the agent label -------------------------------------------------------
+
+/// Two subagents on one phase hold one mark each, and the phase's own unlabelled
+/// mark is a third; each is begun, beaten and dropped on its own.
+#[test]
+fn a_label_addresses_a_mark_of_its_own() {
+    let case = Case::new("agent-label");
+    for args in [
+        &["begin", "proj", "7", "review", "--agent", "code"][..],
+        &["begin", "proj", "7", "review", "--agent", "style"][..],
+        &["begin", "proj", "7", "review"][..],
+    ] {
+        case.run(args).assert_status(0);
+    }
+    assert_eq!(case.mark_count(), 3);
+
+    case.run(&["touch", "proj", "7", "review", "--agent", "code"])
+        .assert_status(0);
+    assert_eq!(count_lines(&case.beats_file("proj.7.review.code")), 1);
+    assert!(
+        !case.beats_file("proj.7.review.style").exists(),
+        "the other label's mark was beaten"
+    );
+
+    let run = case.run(&["list"]);
+    run.assert_stdout_has("proj/7 review:code");
+    run.assert_stdout_has("proj/7 review:style");
+
+    case.run(&["cancel", "proj", "7", "review", "--agent", "code"])
+        .assert_status(0);
+    assert!(!case.mark_file("proj.7.review.code").exists());
+    assert!(case.mark_file("proj.7.review.style").is_file());
+    assert!(case.mark_file("proj.7.review").is_file());
+}
+
+#[test]
+fn the_messages_name_the_label_they_addressed() {
+    let case = Case::new("agent-label-messages");
+    let run = case.run(&["begin", "proj", "7", "review", "--agent", "code"]);
+    run.assert_status(0);
+    run.assert_stdout_has("marked proj/7 review:code at");
+
+    let again = case.run(&["begin", "proj", "7", "review", "--agent", "code"]);
+    again.assert_status(0);
+    again.assert_stderr_has("already marked proj/7 review:code");
+
+    let touch = case.run(&["touch", "proj", "7", "review", "--agent", "style"]);
+    touch.assert_status(64);
+    touch.assert_stderr_has("no mark for proj/7 review:style");
+
+    let cancel = case.run(&["cancel", "proj", "7", "review", "--agent", "code"]);
+    cancel.assert_status(0);
+    cancel.assert_stdout_has("dropped mark for proj/7 review:code");
 }

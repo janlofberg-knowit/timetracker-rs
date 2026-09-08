@@ -155,6 +155,10 @@ pub enum AgentCommands {
         issue: String,
         #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
+        /// One subagent's label on this phase, addressing a mark of its own
+        /// so parallel subagents each measure their own span
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Record one heartbeat for an open phase
     Touch {
@@ -165,6 +169,10 @@ pub enum AgentCommands {
         issue: String,
         #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
+        /// One subagent's label on this phase, addressing a mark of its own
+        /// so parallel subagents each measure their own span
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Drop a phase's mark and heartbeats without logging anything
     Cancel {
@@ -175,6 +183,10 @@ pub enum AgentCommands {
         issue: String,
         #[arg(add = ArgValueCandidates::new(completions::phases))]
         phase: String,
+        /// One subagent's label on this phase, addressing a mark of its own
+        /// so parallel subagents each measure their own span
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// List every open mark
     List {
@@ -226,6 +238,11 @@ pub enum AgentCommands {
         /// each one
         #[arg(long)]
         trim: bool,
+        /// One subagent's label on this phase, addressing a mark of its own so
+        /// parallel subagents each measure their own span; also recorded as
+        /// `agent.label` in the entry's data
+        #[arg(long)]
+        agent: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
         #[arg(long, value_parser = parse_data)]
         data: Option<serde_json::Value>,
