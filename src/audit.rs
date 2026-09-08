@@ -22,13 +22,17 @@ use crate::tracker::TimeEntry;
 
 /// One contiguous **active** stretch with no evidence it was tracked; a window's
 /// idle holes are cut out before it becomes a row, so an entry covers a row whole.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Unaccounted {
     pub project: String,
     /// The activity session this stretch came from — with `start`, the address
     /// `tt agent resolve` and `tt agent dismiss` match a row on.
     pub session: String,
+    /// Serialised as epoch seconds: `start` is half of a row's address, and a
+    /// caller must never have to read it back out of a formatted time.
+    #[serde(serialize_with = "as_epoch")]
     pub start: DateTime<Local>,
+    #[serde(serialize_with = "as_epoch")]
     pub end: DateTime<Local>,
     pub subagents: usize,
     /// True only for the trailing row of a session bounded at its own last
@@ -60,6 +64,10 @@ impl Unaccounted {
             if self.abandoned { " [abandoned]" } else { "" }
         )
     }
+}
+
+fn as_epoch<S: serde::Serializer>(at: &DateTime<Local>, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_i64(at.timestamp())
 }
 
 impl Unaccounted {

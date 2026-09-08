@@ -229,6 +229,71 @@ fn auto_log_writes_the_bounded_window_of_an_abandoned_session() {
     );
 }
 
+/// The rows a `--json` run parsed back, in the order the audit printed them.
+fn rows(run: &common::Run) -> Vec<serde_json::Value> {
+    serde_json::from_str(&run.stdout).unwrap_or_else(|err| panic!("{err}: {:?}", run.stdout))
+}
+
+#[test]
+fn json_carries_each_row_s_session_and_exact_epochs() {
+    let case = Case::new("audit-json");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "smoke", start, Some(end));
+
+    let run = case.run(&["audit", "--json"]);
+    run.assert_status(0);
+    let rows = rows(&run);
+    assert_eq!(rows.len(), 1, "{:?}", run.stdout);
+    assert_eq!(rows[0]["session"], "sess-1");
+    assert_eq!(rows[0]["project"], "smoke");
+    assert_eq!(rows[0]["start"], start);
+    assert_eq!(rows[0]["end"], end);
+    assert_eq!(rows[0]["abandoned"], false);
+    assert_eq!(rows[0]["subagents"], 0);
+}
+
+#[test]
+fn json_tells_two_overlapping_sessions_apart_by_their_ids() {
+    let case = Case::new("audit-json-twins");
+    let start = now() - 3 * HOUR;
+    case.write_session("sess-1", "twin", start, Some(now()));
+    case.write_session("sess-2", "twin", start, Some(now()));
+
+    let rows = rows(&case.run(&["audit", "--json"]));
+    let mut ids: Vec<&str> = rows
+        .iter()
+        .map(|row| row["session"].as_str().unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec!["sess-1", "sess-2"]);
+}
+
+#[test]
+fn json_is_an_empty_array_when_nothing_is_unaccounted() {
+    let case = Case::new("audit-json-clean");
+    let run = case.run(&["audit", "--json"]);
+    run.assert_status(0);
+    assert_eq!(run.stdout.trim(), "[]");
+}
+
+#[test]
+fn project_keeps_that_project_s_rows_and_drops_the_rest() {
+    let case = Case::new("audit-project");
+    let start = now() - 3 * HOUR;
+    case.write_session("sess-1", "mine", start, Some(now()));
+    case.write_session("sess-2", "theirs", start, Some(now()));
+
+    let run = case.run(&["audit", "--project", "mine"]);
+    run.assert_status(0);
+    run.assert_stdout_has("mine");
+    assert!(!run.stdout.contains("theirs"), "{:?}", run.stdout);
+
+    let rows = rows(&case.run(&["audit", "--json", "--project", "theirs"]));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["project"], "theirs");
+}
+
 /// The minutes an 8h session with two 60-minute idle holes reports, as three
 /// contiguous active stretches. Counted against the dispatches below it: a
 /// removed dispatch leaves a 60m hole between its neighbours.

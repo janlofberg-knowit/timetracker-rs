@@ -75,7 +75,11 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             },
         ),
         AgentCommands::Activity(command) => activity_command(command),
-        AgentCommands::Audit { auto_log } => run_audit(*auto_log),
+        AgentCommands::Audit {
+            auto_log,
+            json,
+            project,
+        } => run_audit(*auto_log, *json, project.as_deref()),
     }
 }
 
@@ -275,7 +279,8 @@ fn list(project: Option<&str>) -> Result<()> {
 
 /// `tt agent audit`: reconcile the activity ledger against marks and logged entries,
 /// reporting activity with no evidence it was tracked. Missing directories read as empty.
-fn run_audit(auto_log: bool) -> Result<()> {
+/// `--json` prints the same rows as an array, `[]` included, and never the prose.
+fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
     let sessions = activity::activity_dir()
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
@@ -302,13 +307,21 @@ fn run_audit(auto_log: bool) -> Result<()> {
     }
 
     // Re-read: the entries just written now cover their own rows.
-    let remaining = if wrote_any {
+    let mut remaining = if wrote_any {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
         audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
     } else {
         flagged
     };
+    if let Some(project) = project {
+        remaining.retain(|item| marks::same_project(&item.project, project));
+    }
+
+    if json {
+        println!("{}", serde_json::to_string(&remaining)?);
+        return Ok(());
+    }
 
     if remaining.is_empty() {
         println!("No unaccounted agent activity.");

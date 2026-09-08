@@ -260,6 +260,14 @@ pub enum AgentCommands {
         /// docs/decisions/0002-auto-logging-unaccounted-activity.md.
         #[arg(long)]
         auto_log: bool,
+        /// Print the remaining rows as a JSON array — exact epochs and the
+        /// session id each row is addressed by — instead of the text block.
+        #[arg(long)]
+        json: bool,
+        /// Only rows of this project, matched on the whole sanitised project
+        /// name the way a mark's project is
+        #[arg(long, value_name = "NAME", add = ArgValueCandidates::new(completions::projects))]
+        project: Option<String>,
     },
 }
 
@@ -324,7 +332,7 @@ impl AgentCommands {
             AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.
-            AgentCommands::Audit { auto_log } => *auto_log,
+            AgentCommands::Audit { auto_log, .. } => *auto_log,
             AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
         }
     }
