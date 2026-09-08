@@ -171,7 +171,7 @@ pub fn unaccounted(
 
             let stretches =
                 uncovered_by_marks(project, session.start, end, leases, now_epoch, thresholds);
-            let covered = uncovered_by_entries(project, stretches, entries, now_epoch);
+            let covered = uncovered_by_entries(project, &session.id, stretches, entries, now_epoch);
             let fragments = uncovered_by_dismissals(project, &session.id, covered, dismissals);
             // Every row is one contiguous active stretch: with no dispatches a
             // fragment passes through whole, otherwise it is cut at its idle holes.
@@ -334,8 +334,13 @@ fn subtract(stretch: (i64, i64), cut: (i64, i64)) -> Vec<(i64, i64)> {
 /// What is left of `stretches` after removing every covering entry's span; an entry
 /// covers when tagged `#agent` or `#auto`, and one still open covers up to `now`.
 /// Subtraction of what the leases left, so the two coverage sources compose.
+///
+/// An entry carrying `agent.session` covers **that session only**, which is what lets
+/// two agents resolve their own row of the same minutes; one naming no session covers
+/// every session of the project.
 fn uncovered_by_entries(
     project: &str,
+    session: &str,
     stretches: Vec<(i64, i64)>,
     entries: &[TimeEntry],
     now: i64,
@@ -344,6 +349,9 @@ fn uncovered_by_entries(
     for entry in entries
         .iter()
         .filter(|entry| entry.has_tag("agent") || entry.has_tag("auto"))
+        .filter(|entry| {
+            crate::entry_data::agent_session(entry.data.as_ref()).is_none_or(|its| its == session)
+        })
         // The same segment rule the lease join uses.
         .filter(|entry| {
             entry
@@ -415,6 +423,20 @@ mod tests {
             end_time: end.map(at),
             idle: Vec::new(),
             data: None,
+        }
+    }
+
+    /// The same entry, stamped with the session it was logged for.
+    fn entry_for(
+        session: &str,
+        project: &str,
+        start: i64,
+        end: Option<i64>,
+        tags: &[&str],
+    ) -> TimeEntry {
+        TimeEntry {
+            data: Some(crate::entry_data::with_agent_session(None, session).unwrap()),
+            ..entry(project, start, end, tags)
         }
     }
 
@@ -872,6 +894,49 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(at(0), at(3 * HOUR), 8), (at(0), at(121 * 60), 0)]
         );
+    }
+
+    /// `resolve` stamps the session on its entry, so covering one agent's row
+    /// leaves a concurrent agent's row over the same minutes to be resolved too.
+    #[test]
+    fn an_entry_naming_a_session_covers_that_session_only() {
+        let sessions = vec![
+            session(Some("tt"), 0, Some(3 * HOUR), 0),
+            Session {
+                id: "sess-2".to_string(),
+                ..session(Some("tt"), 0, Some(3 * HOUR), 0)
+            },
+        ];
+        let entries = vec![entry_for(
+            "sess-1",
+            "tt",
+            0,
+            Some(3 * HOUR),
+            &["tt", "agent"],
+        )];
+        let flagged = unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR);
+        assert_eq!(
+            flagged
+                .iter()
+                .map(|u| u.session.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sess-2"]
+        );
+    }
+
+    /// An entry that names no session — `item`, `--auto-log`, a hand-written
+    /// row — keeps covering every session of its project.
+    #[test]
+    fn an_entry_naming_no_session_covers_every_session_of_the_project() {
+        let sessions = vec![
+            session(Some("tt"), 0, Some(3 * HOUR), 0),
+            Session {
+                id: "sess-2".to_string(),
+                ..session(Some("tt"), 0, Some(3 * HOUR), 0)
+            },
+        ];
+        let entries = vec![entry("tt", 0, Some(3 * HOUR), &["tt", "agent"])];
+        assert!(unaccounted(&sessions, &[], &entries, at(3 * HOUR), FLOOR).is_empty());
     }
 
     #[test]

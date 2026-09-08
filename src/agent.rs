@@ -347,7 +347,9 @@ fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -
         // The row is one contiguous active stretch; nothing here may cut it again.
         trim: false,
         ended_at: Some(row.end),
-        data: None,
+        // Names the session, so this entry covers that agent's row and not a
+        // concurrent agent's row over the same minutes.
+        data: Some(stamp_session(None, session)),
     })
 }
 
@@ -553,7 +555,10 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         );
         std::process::exit(64);
     };
-    let data = stamp_label(data, mark.agent);
+    let mut data = stamp_label(data, mark.agent);
+    if let Some(session) = session {
+        data = Some(stamp_session(data, session));
+    }
 
     let dir = mark_dir()?;
     if marks::is_closing_in(&dir, mark) {
@@ -716,6 +721,18 @@ fn stamp_label(data: Option<serde_json::Value>, agent: Option<&str>) -> Option<s
     };
     match crate::entry_data::with_agent_label(data, label) {
         Ok(data) => Some(data),
+        Err(message) => {
+            eprintln!("tt: {message}");
+            std::process::exit(64);
+        }
+    }
+}
+
+/// The data with the activity session stamped in, or exit 64 on data whose `agent`
+/// key is not an object — the same contract as [`stamp_label`].
+fn stamp_session(data: Option<serde_json::Value>, session: &str) -> serde_json::Value {
+    match crate::entry_data::with_agent_session(data, session) {
+        Ok(data) => data,
         Err(message) => {
             eprintln!("tt: {message}");
             std::process::exit(64);

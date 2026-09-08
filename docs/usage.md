@@ -258,6 +258,7 @@ its own takes its own top-level namespace rather than adding to another's.
 |---|---|---|
 | `task` | the caller, via `--data` | a free string naming the unit of work inside the issue, e.g. `"#175"`; optional |
 | `agent.label` | `tt` | the `--agent <label>` the close was made under |
+| `agent.session` | `tt` | the activity session the work belongs to, written by `tt agent resolve` and by `tt agent end --session <id>`; the audit reads it as covering that session's rows and no other |
 | `agent.model` | the caller, via `--data` | the model that did the work, e.g. `opus` |
 | `agent.effort` | the caller, via `--data` | the reasoning effort it ran at, e.g. `high` |
 | `agent.tokens.input` | the caller, via `--data` | input tokens, a number |
@@ -269,8 +270,9 @@ tt agent end tt 163 review "read the diff" --agent code \
 ```
 
 `tt agent end --agent <label>` merges `agent.label` into whatever `--data`
-passed. A `label` the caller wrote itself wins, and an `agent` key that is not an
-object is a usage error.
+passed, and `--session <id>` merges `agent.session` the same way. A key the
+caller wrote itself wins, and an `agent` key that is not an object is a usage
+error.
 
 ---
 

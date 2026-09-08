@@ -34,6 +34,12 @@ taken from the matched row and the tags `tt agent item` writes. It never rounds:
 start. A pair matching no row exits 64 having written nothing, which is what
 keeps time off a window the audit never flagged.
 
+The entry carries the session it was logged for, as `agent.session` beside
+`agent.label` in the `agent` data namespace, and the audit subtracts such an
+entry from that session alone. So two agents over the same minutes each resolve
+their own row and the two sum. An entry naming no session — `item`, `--auto-log`,
+a hand-written row — keeps covering every session of its project.
+
 **3. A row that was not work is recorded in a dismissal ledger, not as an
 entry.** `uncovered_by_entries` subtracts only `#agent`/`#auto` entries and skips
 any shorter than the stretch it would cover, so no entry can clear a row without
@@ -85,13 +91,3 @@ drifted away from the moments it belongs to.
 
 `0002`'s principle is untouched: nothing here guesses a phase. `resolve` takes
 the phase from the caller and is not a way to reclassify a `#auto` entry.
-
-## Known limitations
-
-**Two concurrent same-project rows cannot both be resolved.** An entry carries
-no session, and the audit subtracts every same-project `#agent`/`#auto` entry
-from every session's fragments. So the first `resolve` covers the second
-session's overlapping stretch as well, and the second row is gone before it can
-be addressed — `resolve` exits 64 on it. Summing two agents' concurrent work
-therefore still goes through `tt agent item` for the second agent. Making entry
-coverage session-aware is a store change and is not decided here.

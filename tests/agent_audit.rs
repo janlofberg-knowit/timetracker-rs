@@ -377,6 +377,73 @@ fn resolve_covers_the_row_it_was_given_exactly() {
     after.assert_stdout_has("No unaccounted agent activity.");
 }
 
+/// Two orchestrators on one project are two rows, two resolutions and two
+/// entries over the same minutes; the report shows the sum.
+#[test]
+fn two_overlapping_sessions_resolve_to_two_entries_that_sum() {
+    let case = Case::new("audit-resolve-twins");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "twin", start, Some(end));
+    case.write_session("sess-2", "twin", start, Some(end));
+
+    for session in ["sess-1", "sess-2"] {
+        case.run(&[
+            "resolve",
+            "--session",
+            session,
+            &start.to_string(),
+            "-",
+            "impl",
+            "worked the same minutes",
+        ])
+        .assert_status(0);
+    }
+
+    let store = case.store();
+    assert_eq!(store.entries.len(), 2);
+    for entry in &store.entries {
+        assert_eq!(entry.start_time.timestamp(), start);
+        assert_eq!(entry.end_time.unwrap().timestamp(), end);
+    }
+    let sessions: Vec<&str> = store
+        .entries
+        .iter()
+        .map(|entry| {
+            entry.data.as_ref().unwrap()["agent"]["session"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(sessions, vec!["sess-1", "sess-2"]);
+
+    case.run(&["audit"])
+        .assert_stdout_has("No unaccounted agent activity.");
+
+    let report = case.run_bare(&["report", "--project", "twin"]);
+    report.assert_status(0);
+    report.assert_stdout_has("6h 0m");
+}
+
+/// An entry that names no session covers every session of its project, so one
+/// `item` still clears both rows.
+#[test]
+fn an_item_entry_naming_no_session_covers_both_overlapping_sessions() {
+    let case = Case::new("audit-item-covers-both");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("sess-1", "twin", start, Some(end));
+    case.write_session("sess-2", "twin", start, Some(end));
+
+    case.run(&["item", "twin", "-", "impl", "one entry for the lot", "180"])
+        .assert_status(0);
+
+    let entry = &case.store().entries[0];
+    assert_eq!(entry.data, None, "item names no session");
+    case.run(&["audit"])
+        .assert_stdout_has("No unaccounted agent activity.");
+}
+
 /// A rounded-up duration would reach back past the row's start, the reason
 /// `--auto-log` bypasses rounding too.
 #[test]

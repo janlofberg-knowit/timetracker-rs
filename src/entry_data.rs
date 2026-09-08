@@ -26,6 +26,24 @@ pub fn parse(raw: &str) -> Result<Option<Value>, String> {
 /// Stamp `{"agent": {"label": <label>}}` into the caller's data, keeping every key
 /// it already wrote — its own `agent.label` included.
 pub fn with_agent_label(data: Option<Value>, label: &str) -> Result<Value, String> {
+    with_agent_key(data, "label", label)
+}
+
+/// Stamp `{"agent": {"session": <id>}}` the same way. This is what makes an entry
+/// cover the activity session it was logged for and no other.
+pub fn with_agent_session(data: Option<Value>, session: &str) -> Result<Value, String> {
+    with_agent_key(data, "session", session)
+}
+
+/// The activity session an entry was logged for, or `None` for one that names no
+/// session — which the audit reads as covering every same-project session.
+pub fn agent_session(data: Option<&Value>) -> Option<&str> {
+    data?.get("agent")?.get("session")?.as_str()
+}
+
+/// One string key under the `agent` namespace, without disturbing anything else.
+/// A key the caller already wrote wins.
+fn with_agent_key(data: Option<Value>, key: &str, value: &str) -> Result<Value, String> {
     // Anything other than an object is unreachable: `parse` is the only producer.
     let mut object = match data {
         Some(Value::Object(map)) => map,
@@ -39,8 +57,8 @@ pub fn with_agent_label(data: Option<Value>, label: &str) -> Result<Value, Strin
         ));
     };
     namespace
-        .entry("label")
-        .or_insert_with(|| Value::String(label.to_string()));
+        .entry(key)
+        .or_insert_with(|| Value::String(value.to_string()));
     Ok(Value::Object(object))
 }
 
@@ -204,6 +222,28 @@ mod tests {
             with_agent_label(Some(json!({"agent": [1]})), "code")
                 .unwrap_err()
                 .ends_with("got an array")
+        );
+    }
+
+    #[test]
+    fn a_session_stamps_the_same_namespace_beside_the_label() {
+        let labelled = with_agent_label(None, "code").unwrap();
+        assert_eq!(
+            with_agent_session(Some(labelled), "sess-1"),
+            Ok(json!({"agent": {"label": "code", "session": "sess-1"}}))
+        );
+    }
+
+    #[test]
+    fn a_session_reads_back_out_of_the_namespace() {
+        let stamped = with_agent_session(None, "sess-1").unwrap();
+        assert_eq!(agent_session(Some(&stamped)), Some("sess-1"));
+        assert_eq!(agent_session(None), None);
+        assert_eq!(agent_session(Some(&json!({"pr": 42}))), None);
+        assert_eq!(
+            agent_session(Some(&json!({"agent": {"label": "code"}}))),
+            None,
+            "a labelled entry that names no session covers every session"
         );
     }
 

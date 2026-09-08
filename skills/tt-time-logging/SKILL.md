@@ -368,9 +368,9 @@ relay tail.
 
 `resolve` logs an entry spanning the row exactly, with the project taken from the
 row and the phase you name, and it never rounds. A `--session`/`<start>` pair
-matching no row exits 64 and writes nothing. Resolving a row covers those minutes
-for the whole project, so a concurrent session's row over the same minutes exits
-64 in turn — log that second agent's work with `tt agent item` instead.
+matching no row exits 64 and writes nothing. The entry names the session it was
+logged for, so a concurrent agent's row over the same minutes stays open for that
+agent to resolve in turn and the two sum.
 
 `dismiss` writes no entry, so a dismissed stretch appears in no `tt report`
 total, and it records exactly the span you give it whether or not a row matches.
