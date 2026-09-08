@@ -196,6 +196,11 @@ pub fn unaccounted(
             active
                 .into_iter()
                 .filter_map(|(from, to)| {
+                    // A seam under a minute is a row nothing can ever cover: an
+                    // entry shorter than a minute subtracts nothing.
+                    if to - from < 60 {
+                        return None;
+                    }
                     // Per row, so the rows sum to the session's; with no timestamps its own count stands.
                     let subagents = if session.subagent_at.is_empty() {
                         session.subagents
@@ -595,6 +600,35 @@ mod tests {
                 110
             );
         }
+    }
+
+    /// A seam between one entry's end and the next's start is real but shorter
+    /// than a minute, and no entry can ever cover it back.
+    #[test]
+    fn a_sub_minute_seam_is_never_a_row_of_its_own() {
+        let sessions = vec![session(Some("tt"), 0, Some(6 * HOUR), 0)];
+        let entries = vec![
+            entry("tt", 0, Some(HOUR), &["tt", "agent"]),
+            entry("tt", HOUR + 30, Some(2 * HOUR), &["tt", "agent"]),
+            entry("tt", 2 * HOUR + 1, Some(3 * HOUR), &["tt", "agent"]),
+        ];
+        let flagged = unaccounted(&sessions, &[], &entries, at(6 * HOUR), FLOOR);
+        assert_eq!(
+            flagged.iter().map(|u| (u.start, u.end)).collect::<Vec<_>>(),
+            vec![(at(3 * HOUR), at(6 * HOUR))]
+        );
+    }
+
+    /// The floor sums `(to - from) / 60`, to which a sub-minute fragment already
+    /// contributes 0, so filtering the rows cannot change what is reported.
+    #[test]
+    fn a_session_uncovered_only_by_sub_minute_seams_is_still_not_reported() {
+        let sessions = vec![session(Some("tt"), 0, Some(6 * HOUR), 0)];
+        let entries = vec![
+            entry("tt", 0, Some(HOUR), &["tt", "agent"]),
+            entry("tt", HOUR + 30, Some(6 * HOUR), &["tt", "agent"]),
+        ];
+        assert!(unaccounted(&sessions, &[], &entries, at(6 * HOUR), FLOOR).is_empty());
     }
 
     #[test]
