@@ -157,6 +157,78 @@ fn running_auto_log_twice_logs_the_window_once() {
     );
 }
 
+/// Two orchestrators working one project in the same minute are two agents,
+/// and the audit must show the sum of their work.
+#[test]
+fn two_overlapping_same_project_sessions_report_a_row_each() {
+    let case = Case::new("audit-two-sessions");
+    let start = now() - 3 * HOUR;
+    case.write_session("sess-1", "twin", start, Some(now()));
+    case.write_session("sess-2", "twin", start, Some(now()));
+
+    let run = case.run(&["audit"]);
+    run.assert_status(0);
+    assert_eq!(
+        run.stdout.lines().filter(|l| l.contains("twin")).count(),
+        2,
+        "{:?}",
+        run.stdout
+    );
+}
+
+/// An open session with no dispatch to lean on vouches for the unvouched
+/// grace past its start and no further, however long ago that start was.
+#[test]
+fn an_open_session_with_no_dispatches_reports_one_abandoned_row_at_its_grace() {
+    let case = Case::new("audit-abandoned");
+    let start = now() - 3 * 24 * HOUR;
+    case.write_session("sess-1", "stalled", start, None);
+
+    let run = case.run(&["audit"]);
+    run.assert_status(0);
+    let rows: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|l| l.contains("stalled"))
+        .collect();
+    assert_eq!(rows.len(), 1, "{:?}", run.stdout);
+    assert!(
+        rows[0].contains(&format!("since {}", clock(start)))
+            && rows[0].contains("(2h 1m)")
+            && rows[0].ends_with("[abandoned]"),
+        "{}",
+        rows[0]
+    );
+}
+
+/// The last dispatch plus the gap grace bounds the window, and the trailing
+/// grace is itself an idle hole, so the entry stops at the dispatch.
+#[test]
+fn auto_log_writes_the_bounded_window_of_an_abandoned_session() {
+    let case = Case::new("audit-abandoned-auto-log");
+    case.write_config("[agent]\nauto_log_after_minutes = 180\n");
+    let start = now() - 3 * 24 * HOUR;
+    let dispatches: Vec<i64> = (1..=10).map(|i| start + i * 30 * 60).collect();
+    case.write_session_with_dispatches("sess-1", "stalled", start, None, &dispatches);
+
+    let run = case.run(&["audit", "--auto-log"]);
+    run.assert_status(0);
+    run.assert_stdout_has("No unaccounted agent activity.");
+
+    let store = case.store();
+    assert_eq!(store.entries.len(), 1);
+    let entry = &store.entries[0];
+    assert_eq!(
+        entry.seconds(),
+        300 * 60,
+        "the bounded window, not the run to now"
+    );
+    assert_eq!(
+        entry.end_time.unwrap().timestamp(),
+        *dispatches.last().unwrap()
+    );
+}
+
 /// The minutes an 8h session with two 60-minute idle holes reports, as three
 /// contiguous active stretches. Counted against the dispatches below it: a
 /// removed dispatch leaves a 60m hole between its neighbours.
