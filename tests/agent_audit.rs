@@ -294,6 +294,50 @@ fn project_keeps_that_project_s_rows_and_drops_the_rest() {
     assert_eq!(rows[0]["project"], "theirs");
 }
 
+/// `--project` bounds what a run may **write**, not only what it prints.
+#[test]
+fn auto_log_with_a_project_never_writes_another_project_s_window() {
+    let case = Case::new("audit-auto-log-project");
+    case.write_config("[agent]\nauto_log_after_minutes = 180\n");
+    let start = now() - 4 * HOUR;
+    case.write_session("sess-1", "theirs", start, Some(now()));
+
+    let run = case.run(&["audit", "--auto-log", "--project", "mine"]);
+    run.assert_status(0);
+    run.assert_stdout_has("No unaccounted agent activity.");
+    assert!(
+        case.store().entries.is_empty(),
+        "another project's window must never be billed by this run"
+    );
+
+    // Still there, and still unaccounted, for its own project's sweep.
+    let theirs = case.run(&["audit", "--project", "theirs"]);
+    theirs.assert_stdout_has("theirs");
+}
+
+/// A session id is addressed by the sanitised key its file is named with, so a
+/// raw id that sanitises differently still clears the row it names.
+#[test]
+fn a_dismissal_matches_a_session_whose_id_needed_sanitising() {
+    let case = Case::new("audit-dismiss-sanitised");
+    let start = now() - 3 * HOUR;
+    let end = now();
+    case.write_session("weird_id", "smoke", start, Some(end));
+
+    case.run(&[
+        "dismiss",
+        "--session",
+        "weird/id",
+        "smoke",
+        &format!("{start}-{end}"),
+    ])
+    .assert_status(0);
+
+    let after = case.run(&["audit"]);
+    after.assert_status(0);
+    after.assert_stdout_has("No unaccounted agent activity.");
+}
+
 #[test]
 fn dismissing_a_flagged_window_clears_it_without_billing_the_time() {
     let case = Case::new("audit-dismiss");

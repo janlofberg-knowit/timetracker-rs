@@ -363,7 +363,9 @@ fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&st
         &dir,
         &crate::dismissed::Dismissal {
             project: project.to_string(),
-            session: session.to_string(),
+            // The ledger matches an activity session by its file name, which is the
+            // sanitised id; a raw id that sanitises differently would match no row.
+            session: crate::paths::sanitise_key(session),
             start: span.start.timestamp(),
             end: span.end.timestamp(),
             reason: reason.map(str::to_string),
@@ -384,7 +386,15 @@ fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&st
 /// `--json` prints the same rows as an array, `[]` included, and never the prose.
 fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
     let now = chrono::Local::now();
-    let flagged = unaccounted_at(now)?;
+    // Narrowed before the auto-log loop, never after: `--project` bounds what this
+    // run may write, not just what it prints.
+    let narrow = |mut rows: Vec<audit::Unaccounted>| {
+        if let Some(project) = project {
+            rows.retain(|item| marks::same_project(&item.project, project));
+        }
+        rows
+    };
+    let flagged = narrow(unaccounted_at(now)?);
 
     // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
     let mut wrote_any = false;
@@ -399,14 +409,11 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
     }
 
     // Re-read: the entries just written now cover their own rows.
-    let mut remaining = if wrote_any {
-        unaccounted_at(now)?
+    let remaining = if wrote_any {
+        narrow(unaccounted_at(now)?)
     } else {
         flagged
     };
-    if let Some(project) = project {
-        remaining.retain(|item| marks::same_project(&item.project, project));
-    }
 
     if json {
         println!("{}", serde_json::to_string(&remaining)?);
@@ -699,7 +706,7 @@ fn record_remainder(mark: MarkRef, session: Option<&str>, remainder: &[(i64, i64
     for &(start, end) in remainder {
         let record = crate::dismissed::Dismissal {
             project: mark.project.to_string(),
-            session: session.to_string(),
+            session: crate::paths::sanitise_key(session),
             start,
             end,
             reason: Some(format!("not billed by the close of {}", phase_name(mark))),
