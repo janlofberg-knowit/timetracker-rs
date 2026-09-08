@@ -458,14 +458,20 @@ mod tests {
 
     /// A write from outside the TUI, through the same `with_data` path `tt log` uses.
     fn agent_write(description: &str) -> u64 {
+        agent_write_at(description, Local::now())
+    }
+
+    /// [`agent_write`] with a fixed start, for a test whose sort order must not
+    /// depend on the wall clock.
+    fn agent_write_at(description: &str, start: chrono::DateTime<Local>) -> u64 {
         storage::with_data(|data| {
             Ok(data
                 .add_entry(
                     description.to_string(),
                     Some("probe".to_string()),
                     vec!["probe".to_string()],
-                    Local::now(),
-                    Some(Local::now()),
+                    start,
+                    Some(start),
                 )
                 .id)
         })
@@ -600,11 +606,18 @@ mod tests {
         let _guard = env_guard();
         sandbox("group-sync-anchor");
         let mut app = seed_grouped();
-        agent_write("probe");
+        // The fixtures start at 09:00; a later probe sorts above the group and
+        // shifts it down, whatever the clock says.
+        let later = app
+            .selected_date
+            .and_hms_opt(17, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        agent_write_at("probe", later);
 
         app.sync_from_store().unwrap();
 
-        // `probe` starts now, so it sorts above the group and shifts it down.
         assert_eq!(app.table_state.selected(), Some(1));
         assert!(matches!(
             app.selected_row(),
@@ -614,7 +627,7 @@ mod tests {
         // Expanded, the header's members each have a row of their own, and the
         // cursor must still land on the header rather than on the first member.
         app.expanded_issues.insert("tt/174".to_string());
-        agent_write("second probe");
+        agent_write_at("second probe", later + chrono::Duration::minutes(1));
         app.sync_from_store().unwrap();
 
         assert_eq!(app.table_state.selected(), Some(2));
