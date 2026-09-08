@@ -1,17 +1,19 @@
 //! Keys for the derived-view caches.
 //!
-//! [`App::filtered_entries`](super::App::filtered_entries) and
-//! [`App::pane_values`](super::App::pane_values) are recomputed only when the
+//! [`App::filtered_entries`](super::App::filtered_entries),
+//! [`App::pane_values`](super::App::pane_values) and
+//! [`App::rows`](super::App::rows) are recomputed only when the
 //! state they read has actually moved. A cached value is reused while the *key*
 //! it was computed under still compares equal, and that key holds **every**
 //! input the view reads — so validity is decided by construction rather than by
 //! remembering to call an `invalidate()` at each mutation site. A new mutator,
 //! or a test writing `app.view_mode` directly, is covered for free.
 //!
-//! Adding an input to either derived view means adding it here too; forgetting
-//! is the one way to get a stale cache.
+//! Adding an input to a derived view means adding it here too; forgetting is
+//! the one way to get a stale cache.
 
 use chrono::NaiveDate;
+use std::collections::HashSet;
 
 use super::App;
 use super::panes::PaneFilter;
@@ -58,6 +60,23 @@ impl FilterKey {
             tag_filter: app.tag_filter.clone(),
             // Only the text matters; the cursor does not filter anything.
             search: app.search_term.value().to_string(),
+        }
+    }
+}
+
+/// Every input to [`App::rows`](super::App::rows): the filtered entries, plus
+/// which issues are expanded.
+#[derive(Clone, PartialEq)]
+pub(crate) struct RowKey {
+    filter: FilterKey,
+    expanded: HashSet<String>,
+}
+
+impl RowKey {
+    pub(crate) fn of(app: &App) -> Self {
+        Self {
+            filter: FilterKey::of(app),
+            expanded: app.expanded_issues.clone(),
         }
     }
 }

@@ -104,18 +104,14 @@ impl App {
             return Ok(());
         }
 
-        // The index means nothing once the data changes, so anchor on the id.
+        // The index means nothing once the data changes, so anchor on the row.
         let previous_idx = self.table_state.selected();
-        let anchor_id =
-            previous_idx.and_then(|idx| self.filtered_entries().get(idx).map(|entry| entry.id));
+        let anchor = self.cursor_anchor();
 
         self.reload()?;
 
-        let (anchored_idx, len) = {
-            let entries = self.filtered_entries();
-            let anchored = anchor_id.and_then(|id| entries.iter().position(|e| e.id == id));
-            (anchored, entries.len())
-        };
+        let anchored_idx = anchor.and_then(|anchor| self.selectable_index_for(&anchor));
+        let len = self.selectable_len();
         self.table_state.select(match (anchored_idx, previous_idx) {
             (Some(idx), _) => Some(idx),
             // The anchor is gone: stay as near the old position as the list allows.
@@ -135,7 +131,7 @@ impl App {
     }
 
     pub(crate) fn next(&mut self) {
-        let len = self.filtered_len();
+        let len = self.selectable_len();
         if len == 0 {
             return;
         }
@@ -147,7 +143,7 @@ impl App {
     }
 
     pub(crate) fn previous(&mut self) {
-        let len = self.filtered_len();
+        let len = self.selectable_len();
         if len == 0 {
             return;
         }
@@ -164,12 +160,26 @@ impl App {
         self.table_state.select(Some(i));
     }
 
+    /// The entry under the cursor, or `None` on a group header — which is what
+    /// makes `e`, `d` and `t` inert there, with no guard of their own.
     pub(crate) fn selected_entry(&self) -> Option<&crate::tracker::TimeEntry> {
-        let idx = self.table_state.selected()?;
-        self.filtered_entries().into_iter().nth(idx)
+        let super::rows::VisibleRow::Entry { index, .. } = self.selected_row()? else {
+            return None;
+        };
+        self.data.entries.get(index)
     }
 
-    /// `Enter` on the table: show the entry in full, or nothing when none is selected.
+    /// `Enter` on the table: the selected entry in full, or the group under the
+    /// cursor toggled — a group header has no detail to show.
+    pub(crate) fn activate_row(&mut self) {
+        if self.selected_entry().is_some() {
+            self.open_detail();
+        } else {
+            self.toggle_group_at_cursor();
+        }
+    }
+
+    /// Show the selected entry in full, or nothing when none is selected.
     pub(crate) fn open_detail(&mut self) {
         if self.selected_entry().is_some() {
             self.input_mode = InputMode::Detail;
@@ -182,7 +192,7 @@ impl App {
         // An id that is already gone matches nothing — not an error.
         self.mutate_store(|data| data.entries.retain(|e| e.id != entry_id))?;
 
-        let new_len = self.filtered_len();
+        let new_len = self.selectable_len();
         let past_the_end = self
             .table_state
             .selected()
@@ -277,9 +287,10 @@ impl App {
         };
     }
 
-    /// Put the table cursor on this id, or leave it alone if the view lacks that row.
+    /// Put the table cursor on this id, or leave it alone if the view lacks any
+    /// row for it. A collapsed group lands the cursor on its header.
     pub(crate) fn select_by_id(&mut self, id: u64) {
-        if let Some(idx) = self.filtered_entries().iter().position(|e| e.id == id) {
+        if let Some(idx) = self.selectable_index_of(id) {
             self.table_state.select(Some(idx));
         }
     }

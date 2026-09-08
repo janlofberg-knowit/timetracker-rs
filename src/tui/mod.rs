@@ -4,7 +4,7 @@ use crate::marks::Mark;
 use crate::storage::{PathStamp, load_data};
 use crate::tracker::TimeData;
 use anyhow::Result;
-use cache::{FilterKey, ScopeKey};
+use cache::{FilterKey, RowKey, ScopeKey};
 use chrono::{Local, NaiveDate};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
@@ -24,6 +24,7 @@ mod navigation;
 mod onboarding;
 mod panes;
 mod render;
+mod rows;
 mod search;
 mod summary;
 mod text_input;
@@ -48,6 +49,11 @@ pub(crate) struct App {
     filtered_cache: RefCell<Option<(FilterKey, Vec<usize>)>>,
     /// `pane_values` for `[Projects, Tags]`, with the key they hold for.
     pane_cache: RefCell<Option<(ScopeKey, panes::PaneValues)>>,
+    /// `rows` — the grouped row model — with the key it holds for.
+    rows_cache: RefCell<Option<(RowKey, Vec<rows::VisibleRow>)>>,
+    /// The item tags whose group header is expanded. Keyed on the tag alone, so
+    /// in Week view an issue expands in every day it appears in.
+    pub(crate) expanded_issues: std::collections::HashSet<String>,
     pub(crate) table_state: TableState,
     pub(crate) should_quit: bool,
     pub(crate) view_mode: ViewMode,
@@ -155,6 +161,8 @@ impl App {
             data_revision: 0,
             filtered_cache: RefCell::new(None),
             pane_cache: RefCell::new(None),
+            rows_cache: RefCell::new(None),
+            expanded_issues: std::collections::HashSet::new(),
             store_stamp,
             marks: Vec::new(),
             marks_stamp: None,
@@ -450,14 +458,20 @@ mod tests {
 
     /// A write from outside the TUI, through the same `with_data` path `tt log` uses.
     fn agent_write(description: &str) -> u64 {
+        agent_write_at(description, Local::now())
+    }
+
+    /// [`agent_write`] with a fixed start, for a test whose sort order must not
+    /// depend on the wall clock.
+    fn agent_write_at(description: &str, start: chrono::DateTime<Local>) -> u64 {
         storage::with_data(|data| {
             Ok(data
                 .add_entry(
                     description.to_string(),
                     Some("probe".to_string()),
                     vec!["probe".to_string()],
-                    Local::now(),
-                    Some(Local::now()),
+                    start,
+                    Some(start),
                 )
                 .id)
         })
@@ -495,6 +509,132 @@ mod tests {
             .position(|e| e.description == description)
             .expect("entry not in view");
         app.table_state.select(Some(idx));
+    }
+
+    /// Three rounds on one issue, plus one hand-written entry: two selectable
+    /// rows, the group header first.
+    fn seed_grouped() -> App {
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                dated(0, "round one", "tt", &["tt/174", "impl"], today),
+                dated(1, "round two", "tt", &["tt/174", "impl"], today),
+                dated(2, "round three", "tt", &["tt/174", "impl"], today),
+                dated(3, "hand written", "tt", &[], today),
+            ],
+            4,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.table_state.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn a_group_header_is_no_entry_so_e_d_and_t_do_nothing_on_it() {
+        let _guard = env_guard();
+        sandbox("group-header-inert");
+        let mut app = seed_grouped();
+
+        assert!(app.selected_entry().is_none(), "a header is not an entry");
+        app.start_editing();
+        assert_eq!(app.input_mode, InputMode::Normal, "`e` opened the form");
+        press_d_then(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal, "`d` raised a prompt");
+        press_t_then(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal, "`t` raised a prompt");
+        assert_eq!(on_disk().entries.len(), 4, "the store was touched");
+    }
+
+    /// `Enter` is the second way in and out of a group, so the header need not
+    /// be learnt as the one row where `Enter` does nothing.
+    #[test]
+    fn enter_toggles_a_group_header_and_still_opens_an_entry() {
+        let _guard = env_guard();
+        sandbox("group-enter-toggle");
+        let mut app = seed_grouped();
+
+        // This is exactly what the Normal-mode Enter arm does.
+        let enter = |app: &mut App| {
+            if !app.cycle_pane_value(true) {
+                app.activate_row();
+            }
+        };
+
+        enter(&mut app);
+        assert_eq!(app.input_mode, InputMode::Normal, "a header has no detail");
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "Enter did not expand the group"
+        );
+        assert_eq!(app.table_state.selected(), Some(0), "the cursor moved");
+
+        enter(&mut app);
+        assert!(
+            app.expanded_issues.is_empty(),
+            "Enter did not collapse the group"
+        );
+
+        app.select_by_id(3);
+        enter(&mut app);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Detail,
+            "Enter stopped opening an entry"
+        );
+    }
+
+    #[test]
+    fn select_by_id_lands_on_the_header_of_the_group_holding_the_id() {
+        let _guard = env_guard();
+        sandbox("group-select-by-id");
+        let mut app = seed_grouped();
+
+        app.select_by_id(2);
+        assert_eq!(app.table_state.selected(), Some(0), "not on the header");
+        app.select_by_id(3);
+        assert_eq!(app.table_state.selected(), Some(1), "not on the entry");
+
+        // Expanded, the member has a row of its own: header, then the three.
+        app.expanded_issues.insert("tt/174".to_string());
+        app.select_by_id(2);
+        assert_eq!(app.table_state.selected(), Some(3));
+    }
+
+    #[test]
+    fn an_outside_write_keeps_the_cursor_on_the_group_header() {
+        let _guard = env_guard();
+        sandbox("group-sync-anchor");
+        let mut app = seed_grouped();
+        // The fixtures start at 09:00; a later probe sorts above the group and
+        // shifts it down, whatever the clock says.
+        let later = app
+            .selected_date
+            .and_hms_opt(17, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        agent_write_at("probe", later);
+
+        app.sync_from_store().unwrap();
+
+        assert_eq!(app.table_state.selected(), Some(1));
+        assert!(matches!(
+            app.selected_row(),
+            Some(rows::VisibleRow::GroupHeader(_))
+        ));
+
+        // Expanded, the header's members each have a row of their own, and the
+        // cursor must still land on the header rather than on the first member.
+        app.expanded_issues.insert("tt/174".to_string());
+        agent_write_at("second probe", later + chrono::Duration::minutes(1));
+        app.sync_from_store().unwrap();
+
+        assert_eq!(app.table_state.selected(), Some(2));
+        assert!(
+            matches!(app.selected_row(), Some(rows::VisibleRow::GroupHeader(_))),
+            "the anchor slid onto a member"
+        );
     }
 
     #[test]
@@ -2111,6 +2251,24 @@ mod tests {
             .collect()
     }
 
+    /// The background colour of the drawn row carrying `needle`.
+    fn row_bg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        let width = 120;
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = (0..30)
+            .find(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no drawn row carries {needle}"));
+        // Column 3 is inside the table and left of every cursor marker.
+        buffer[(3, row)].bg
+    }
+
     /// One rendered frame plus the cursor it asked for.
     fn frame_cursor(app: &mut App, width: u16, height: u16) -> (u16, u16) {
         let mut terminal =
@@ -2317,6 +2475,191 @@ mod tests {
 
         assert!(screen.contains("Description"), "the popover did draw");
         assert!(!screen.contains("Data"), "an empty Data header:\n{screen}");
+    }
+
+    #[test]
+    fn a_running_member_keeps_the_group_and_day_totals_moving() {
+        let _guard = env_guard();
+        sandbox("group-live-total");
+        let today = Local::now().date_naive();
+
+        // The running member is placed so its whole-minute count ticks over
+        // 500 ms from now, and the two reads below straddle that tick rather
+        // than an arbitrary one. Slipping past it early fails the first read,
+        // which is the safe direction.
+        let mut running = logged(0, "still going", "tt", &["tt/174"], today, 60);
+        running.start_time =
+            Local::now() - chrono::Duration::minutes(30) + chrono::Duration::milliseconds(500);
+        running.end_time = None;
+        seed(
+            vec![
+                running,
+                logged(1, "done", "tt", &["tt/174"], today, 60),
+                logged(2, "loose", "tt", &[], today, 10),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Week;
+
+        let line = |lines: &[String], needle: &str| {
+            lines
+                .iter()
+                .find(|l| l.contains(needle))
+                .cloned()
+                .unwrap_or_else(|| panic!("no line carries {needle}"))
+        };
+        let weekday = today.format("%A").to_string();
+
+        let before = frame_lines(&mut app, 120, 30);
+        assert!(
+            line(&before, "entries").contains("1h 29m"),
+            "group total at rest:\n{}",
+            line(&before, "entries")
+        );
+        assert!(
+            line(&before, &weekday).contains("1h 39m"),
+            "day total at rest:\n{}",
+            line(&before, &weekday)
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        let after = frame_lines(&mut app, 120, 30);
+        assert!(
+            line(&after, "entries").contains("1h 30m"),
+            "the group total froze with the row cache:\n{}",
+            line(&after, "entries")
+        );
+        assert!(
+            line(&after, &weekday).contains("1h 40m"),
+            "the day total froze with the row cache:\n{}",
+            line(&after, &weekday)
+        );
+    }
+
+    #[test]
+    fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
+        let _guard = env_guard();
+        sandbox("group-render");
+        let mut app = seed_grouped();
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("#tt/174"), "no issue tag:\n{screen}");
+        assert!(
+            screen.contains("▸ 3 entries - tt/174"),
+            "no collapsed row:\n{screen}"
+        );
+        assert!(screen.contains("3h 0m"), "no summed duration:\n{screen}");
+        assert!(!screen.contains("round"), "a member leaked:\n{screen}");
+        assert!(screen.contains("hand written"), "no plain row:\n{screen}");
+
+        app.expanded_issues.insert("tt/174".to_string());
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(
+            screen.contains("▾ 3 entries - tt/174"),
+            "no expanded row:\n{screen}"
+        );
+        for member in ["round one", "round two", "round three"] {
+            assert!(screen.contains(member), "{member} is missing:\n{screen}");
+        }
+    }
+
+    /// A member is told apart from a top-level row two ways at once, so neither
+    /// a narrow terminal nor a colour-blind palette leaves it ambiguous. The
+    /// connector sits in the column the header's chevron sits in.
+    #[test]
+    fn an_expanded_member_row_is_tinted_and_hangs_off_a_tree_connector() {
+        let _guard = env_guard();
+        sandbox("group-member-style");
+        let mut app = seed_grouped();
+        app.expanded_issues.insert("tt/174".to_string());
+        // Off the group header, whose own colour the cursor would override.
+        app.select_by_id(3);
+
+        let screen = frame_lines(&mut app, 120, 30).join("\n");
+        assert!(
+            screen.contains("10:00 \u{251c}\u{2500}\u{2500} round one"),
+            "no branch connector on a member:\n{screen}"
+        );
+        assert!(
+            screen.contains("10:00 \u{2514}\u{2500}\u{2500} round three"),
+            "the last member does not close the tree:\n{screen}"
+        );
+        assert!(
+            screen.contains("10:00 hand written"),
+            "a top-level row moved:\n{screen}"
+        );
+
+        assert_eq!(row_bg(&mut app, "round one"), theme::MEMBER_BG);
+        assert_eq!(
+            row_bg(&mut app, "▾ 3 entries - tt/174"),
+            theme::GROUP_HEADER_BG
+        );
+        assert_ne!(
+            row_bg(&mut app, "hand written"),
+            theme::MEMBER_BG,
+            "a top-level row was tinted"
+        );
+    }
+
+    /// 80 columns is the width the hint zone clips at, and the total and the
+    /// label are both variable-width, so the widest of each is what to test.
+    #[test]
+    fn the_footer_keeps_the_scope_hints_at_80_columns() {
+        let _guard = env_guard();
+        sandbox("footer-80-cols");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "long one", "tt", &["tt/174"], today, 12 * 60),
+                logged(1, "long two", "tt", &["tt/174"], today, 30),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+
+        // By position, not by content: a clipped legend may carry neither the
+        // label nor the hint the assertions are looking for.
+        let footer = |app: &mut App| {
+            let lines = frame_lines(app, 80, 30);
+            lines[lines.len() - 2].clone()
+        };
+
+        let widest_total = footer(&mut app);
+        assert!(widest_total.contains("12h 30m"), "{widest_total}");
+        assert!(widest_total.contains("t: today"), "{widest_total}");
+        assert!(widest_total.contains("g: toggle"), "{widest_total}");
+        assert!(widest_total.ends_with("?: help│"), "{widest_total}");
+
+        // `Filtered: ` is three cells wider than `Total: `.
+        app.tag_filter.cycle("tt/174", true);
+        let filtered = footer(&mut app);
+        assert!(filtered.contains("Filtered: "), "{filtered}");
+        assert!(filtered.contains("t: today"), "{filtered}");
+        assert!(filtered.contains("g: toggle"), "{filtered}");
+        assert!(filtered.ends_with("?: help│"), "{filtered}");
+    }
+
+    #[test]
+    fn the_group_key_is_listed_in_the_footer_and_in_the_help_overlay() {
+        let _guard = env_guard();
+        sandbox("group-key-hints");
+        let mut app = seed_grouped();
+
+        let footer = frame_lines(&mut app, 200, 30).join("\n");
+        assert!(footer.contains("g: toggle"), "footer legend:\n{footer}");
+        assert!(footer.contains("Total: "), "footer total:\n{footer}");
+        assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
+
+        app.input_mode = InputMode::Help;
+        let help = frame_lines(&mut app, 100, 40).join("\n");
+        assert!(
+            help.contains("toggle the issue group"),
+            "help popup:\n{help}"
+        );
     }
 
     #[test]

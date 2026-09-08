@@ -50,7 +50,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         // reporting false *is* the focus check.
         KeyCode::Enter => {
             if !app.cycle_pane_value(true) {
-                app.open_detail();
+                app.activate_row();
             }
         }
         // Reverse cycle; without pane focus it does nothing.
@@ -70,6 +70,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => app.reload()?,
         KeyCode::Char('a') => app.start_adding(),
         KeyCode::Char('e') => app.start_editing(),
+        KeyCode::Char('g') => app.toggle_group_at_cursor(),
         KeyCode::Char('/') => app.start_search(),
         KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
         KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
@@ -450,6 +451,56 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 
+    /// An entry `hours_ago`, tagged, so it groups with its siblings.
+    fn tagged(id: u64, description: &str, tags: &[&str], hours_ago: i64) -> TimeEntry {
+        let start = Local::now() - chrono::Duration::hours(hours_ago);
+        TimeEntry {
+            id,
+            description: description.to_string(),
+            project: Some("tt".to_string()),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            start_time: start,
+            end_time: Some(start + chrono::Duration::minutes(30)),
+            idle: Vec::new(),
+            data: None,
+        }
+    }
+
+    #[test]
+    fn j_and_k_step_over_a_collapsed_group_and_through_its_members() {
+        let _guard = env_guard();
+        sandbox("keys-group-steps");
+        seed(
+            vec![
+                tagged(0, "round one", &["tt/174"], 4),
+                tagged(1, "round two", &["tt/174"], 3),
+                tagged(2, "loose", &[], 5),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        // Collapsed: the header and the loose entry, and `j` wraps over two.
+        assert_eq!(app.selectable_len(), 2);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(1));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.expanded_issues.insert("tt/174".to_string());
+        assert_eq!(app.selectable_len(), 4);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            app.selected_entry().map(|e| e.description.clone()),
+            Some("round two".to_string()),
+            "`j` did not step onto the first member"
+        );
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert!(app.selected_entry().is_none(), "`k` left the header");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]
@@ -535,6 +586,32 @@ mod tests {
         press(&mut app, KeyCode::Char('h'));
         press(&mut app, KeyCode::Char('t'));
         assert_eq!(app.selected_date, Local::now().date_naive());
+
+        // `g` needs a group under the cursor to have anything to toggle.
+        seed(
+            vec![
+                tagged(0, "round one", &["tt/174"], 4),
+                tagged(1, "round two", &["tt/174"], 3),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+        press(&mut app, KeyCode::Char('g'));
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "`g` should reach the group toggle"
+        );
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.expanded_issues.is_empty(), "`g` should collapse again");
+
+        // `Enter` reaches the same toggle while the cursor is on a header.
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.expanded_issues.contains("tt/174"),
+            "Enter should toggle the group under the cursor"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal, "a header has no detail");
 
         // `s` stops the running entry through the same key path.
         let mut open = entry(1, "running");

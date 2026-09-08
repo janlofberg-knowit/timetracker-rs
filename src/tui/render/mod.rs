@@ -247,11 +247,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         ),
         Span::styled(total_str, Style::default().fg(theme::highlight()).bold()),
         Span::styled(" | ", Style::default().fg(theme::border())),
-        // Detail goes first; this zone clips from the right at 80 columns.
-        Span::styled("Enter", Style::default().fg(theme::accent())),
-        Span::styled(": detail | ", Style::default().fg(theme::inactive())),
+        // This zone clips from the right, and both the label and the total are
+        // variable-width, so the two hints that change what the list shows come
+        // first and `Enter: detail` is the first to go.
+        Span::styled("g", Style::default().fg(theme::accent())),
+        Span::styled(": toggle | ", Style::default().fg(theme::inactive())),
         Span::styled("t", Style::default().fg(theme::accent())),
         Span::styled(": today | ", Style::default().fg(theme::inactive())),
+        Span::styled("Enter", Style::default().fg(theme::accent())),
+        Span::styled(": detail | ", Style::default().fg(theme::inactive())),
         Span::styled("/", Style::default().fg(theme::accent())),
         Span::styled(": search | ", Style::default().fg(theme::inactive())),
         Span::styled("a", Style::default().fg(theme::accent())),

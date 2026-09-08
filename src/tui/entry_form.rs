@@ -46,25 +46,20 @@ impl App {
     }
 
     pub(crate) fn start_editing(&mut self) {
-        let entry_data = {
-            let filtered = self.filtered_entries();
-            self.table_state.selected().and_then(|idx| {
-                filtered.get(idx).map(|entry| {
-                    (
-                        entry.id,
-                        entry.description.clone(),
-                        entry.project.clone().unwrap_or_default(),
-                        entry.tags.join(" "),
-                        entry.start_time.format("%Y-%m-%d %H:%M").to_string(),
-                        entry
-                            .end_time
-                            .map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
-                        entry.end_time.map(|_| entry.format_duration()),
-                        crate::entry_data::to_edit_string(entry.data.as_ref()),
-                    )
-                })
-            })
-        };
+        let entry_data = self.selected_entry().map(|entry| {
+            (
+                entry.id,
+                entry.description.clone(),
+                entry.project.clone().unwrap_or_default(),
+                entry.tags.join(" "),
+                entry.start_time.format("%Y-%m-%d %H:%M").to_string(),
+                entry
+                    .end_time
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string()),
+                entry.end_time.map(|_| entry.format_duration()),
+                crate::entry_data::to_edit_string(entry.data.as_ref()),
+            )
+        });
 
         if let Some((id, description, project, tags, start_time, end_time, duration, data)) =
             entry_data
@@ -437,12 +432,16 @@ impl App {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// The date `a` pre-fills from: the selected entry's, or the group's on a
+    /// group header.
     fn date_under_cursor(&self) -> Option<chrono::NaiveDate> {
-        let filtered = self.filtered_entries();
-        self.table_state
-            .selected()
-            .and_then(|idx| filtered.get(idx))
-            .map(|entry| entry.start_time.date_naive())
+        match self.cursor_anchor()? {
+            super::rows::CursorAnchor::Header { date, .. } => Some(date),
+            super::rows::CursorAnchor::Entry(id) => self
+                .data
+                .get_entry(id)
+                .map(|entry| entry.start_time.date_naive()),
+        }
     }
 
     /// The project as typed, trimmed; an empty field means "no project".

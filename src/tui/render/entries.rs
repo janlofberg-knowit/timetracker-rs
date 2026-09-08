@@ -1,7 +1,7 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
-use crate::tui::types::ViewMode;
+use crate::tui::rows::{GroupHeader, Member, VisibleRow};
 use crate::tui::{App, theme};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use ratatui::{
@@ -174,7 +174,13 @@ pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
+/// One entry's row. A member row hangs off its group header's tree connector
+/// and carries the tint rather than the stripe.
+fn entry_row<'e>(
+    entry: &'e crate::tracker::TimeEntry,
+    stripe: bool,
+    member: Option<&Member>,
+) -> Row<'e> {
     let hours = entry.duration().num_hours();
     let dur_color = theme::duration_color(
         hours,
@@ -188,22 +194,38 @@ fn entry_row(entry: &crate::tracker::TimeEntry, stripe: bool) -> Row<'_> {
         Style::default().fg(theme::inactive())
     };
 
-    let row_style = if stripe {
-        Style::default().bg(Color::Rgb(35, 35, 35))
-    } else {
-        Style::default()
+    let row_style = match (member, stripe) {
+        (Some(_), _) => Style::default().bg(theme::MEMBER_BG),
+        (None, true) => Style::default().bg(Color::Rgb(35, 35, 35)),
+        (None, false) => Style::default(),
+    };
+    // The connector opens in the column the group header's chevron sits in, so
+    // its stroke runs unbroken from the header down to the last member.
+    let description = match member {
+        Some(member) if member.last => format!("\u{2514}\u{2500}\u{2500} {}", entry.description),
+        Some(_) => format!("\u{251c}\u{2500}\u{2500} {}", entry.description),
+        None => entry.description.clone(),
     };
 
     Row::new(vec![
         Cell::from(entry.format_date()).style(Style::default().fg(theme::title())),
         Cell::from(entry.format_start_time()).style(Style::default().fg(theme::accent())),
         Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive())),
-        Cell::from(entry.description.clone()),
+        Cell::from(description),
         Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight())),
         Cell::from(entry.format_duration()).style(Style::default().fg(dur_color)),
         Cell::from(entry.status_icon()).style(status_style),
     ])
     .style(row_style)
+}
+
+/// The live sum of the entries at `members`. Summed per frame and never
+/// cached: a running member's duration moves with the clock.
+fn members_total(entries: &[crate::tracker::TimeEntry], members: &[usize]) -> Duration {
+    members
+        .iter()
+        .filter_map(|index| entries.get(*index))
+        .fold(Duration::zero(), |acc, entry| acc + entry.duration())
 }
 
 fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
@@ -232,6 +254,55 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
     .style(Style::default().bg(theme::DAY_HEADER_BG))
 }
 
+/// One issue's collapsed row: its span, its member count and id behind a
+/// chevron, and the members' summed duration.
+fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry]) -> Row<'static> {
+    let total = members_total(entries, &header.members);
+    let dur_color = theme::duration_color(
+        total.num_hours(),
+        theme::theme().entry_duration_high_h,
+        theme::theme().entry_duration_med_h,
+    );
+    let chevron = if header.expanded {
+        "\u{25be}"
+    } else {
+        "\u{25b8}"
+    };
+    let end = header
+        .end
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_default();
+    let icon = if header.end.is_none() {
+        crate::icons::active()
+    } else {
+        ""
+    };
+
+    Row::new(vec![
+        Cell::from(header.start.format("%Y-%m-%d").to_string())
+            .style(Style::default().fg(theme::title())),
+        Cell::from(header.start.format("%H:%M").to_string())
+            .style(Style::default().fg(theme::accent())),
+        Cell::from(end).style(Style::default().fg(theme::inactive())),
+        // The count leads: this column is 19 cells at 80 columns, so whatever
+        // comes second is what the clip takes.
+        Cell::from(format!(
+            "{chevron} {} entries - {}",
+            header.members.len(),
+            header.tag
+        ))
+        .style(Style::default().add_modifier(Modifier::BOLD)),
+        // Stored tags carry no `#`; the display prefix comes from `format_tags`.
+        Cell::from(crate::tracker::format_tags(std::slice::from_ref(
+            &header.tag,
+        )))
+        .style(Style::default().fg(theme::highlight())),
+        Cell::from(crate::duration::format(total)).style(Style::default().fg(dur_color)),
+        Cell::from(icon).style(Style::default().fg(theme::active())),
+    ])
+    .style(Style::default().bg(theme::GROUP_HEADER_BG))
+}
+
 pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
     let header_cells = [
         "Date",
@@ -254,49 +325,50 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         .height(1)
         .style(Style::default().bg(theme::header_bg()));
 
-    let entries = app.filtered_entries();
+    // Day totals are summed here rather than carried on the row, so a running
+    // entry's minutes keep moving under a cached row model.
+    let mut day_totals: HashMap<NaiveDate, Duration> = HashMap::new();
+    for entry in app.filtered_entries() {
+        *day_totals
+            .entry(entry.start_time.date_naive())
+            .or_insert_with(Duration::zero) += entry.duration();
+    }
 
-    let (rows, visual_selected): (Vec<Row>, Option<usize>) = if app.view_mode == ViewMode::Week {
-        let mut day_totals: HashMap<NaiveDate, Duration> = HashMap::new();
-        for entry in &entries {
-            let date = entry.start_time.date_naive();
-            *day_totals.entry(date).or_insert_with(Duration::zero) += entry.duration();
-        }
-
-        let mut rows: Vec<Row> = Vec::new();
-        let mut visual_idx_map: Vec<usize> = Vec::with_capacity(entries.len());
-        let mut current_date: Option<NaiveDate> = None;
-        let mut stripe = false;
-
-        for entry in entries.iter() {
-            let entry_date = entry.start_time.date_naive();
-            if current_date != Some(entry_date) {
-                current_date = Some(entry_date);
+    // One walk over the row model builds the visual rows and, beside them, the
+    // map from the cursor's selectable index to the visual index it draws at.
+    let model = app.rows();
+    let mut rows: Vec<Row> = Vec::with_capacity(model.len());
+    let mut visual_of_selectable: Vec<usize> = Vec::with_capacity(model.len());
+    let mut stripe = false;
+    for row in &model {
+        match row {
+            VisibleRow::DayHeader { date } => {
+                // The stripe alternation restarts inside each day partition.
                 stripe = false;
-                let total = day_totals
-                    .get(&entry_date)
-                    .copied()
-                    .unwrap_or_else(Duration::zero);
-                rows.push(day_header_row(entry_date, total));
+                let total = day_totals.get(date).copied().unwrap_or_else(Duration::zero);
+                rows.push(day_header_row(*date, total));
             }
-            visual_idx_map.push(rows.len());
-            rows.push(entry_row(entry, stripe));
-            stripe = !stripe;
+            VisibleRow::GroupHeader(header) => {
+                visual_of_selectable.push(rows.len());
+                rows.push(group_header_row(header, &app.data.entries));
+            }
+            VisibleRow::Entry { index, member } => {
+                if let Some(entry) = app.data.entries.get(*index) {
+                    visual_of_selectable.push(rows.len());
+                    rows.push(entry_row(entry, stripe, member.as_ref()));
+                    // A member carries no stripe, so an expansion leaves the
+                    // top-level alternation around it as it was.
+                    if member.is_none() {
+                        stripe = !stripe;
+                    }
+                }
+            }
         }
-
-        let visual_sel = app
-            .table_state
-            .selected()
-            .and_then(|idx| visual_idx_map.get(idx).copied());
-        (rows, visual_sel)
-    } else {
-        let rows = entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| entry_row(entry, i % 2 != 0))
-            .collect();
-        (rows, app.table_state.selected())
-    };
+    }
+    let visual_selected = app
+        .table_state
+        .selected()
+        .and_then(|idx| visual_of_selectable.get(idx).copied());
 
     // `(tt)` and `#impl`, the CLI's own sigils, so the title needs no legend;
     // an excluded value carries a `-` prefix.
