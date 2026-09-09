@@ -63,6 +63,7 @@ pub fn run(command: &AgentCommands) -> Result<()> {
             full,
             trim,
             agent,
+            session,
             data,
         } => end(
             mark_ref(project, issue, phase, agent.as_deref()),
@@ -71,11 +72,29 @@ pub fn run(command: &AgentCommands) -> Result<()> {
                 minutes: minutes.as_deref(),
                 full: *full,
                 trim: *trim,
+                session: session.as_deref(),
                 data: data.clone(),
             },
         ),
+        AgentCommands::Resolve {
+            session,
+            start,
+            issue,
+            phase,
+            summary,
+        } => resolve(session, *start, issue, phase, summary),
+        AgentCommands::Dismiss {
+            session,
+            project,
+            span,
+            reason,
+        } => dismiss(session, project, span, reason.as_deref()),
         AgentCommands::Activity(command) => activity_command(command),
-        AgentCommands::Audit { auto_log } => run_audit(*auto_log),
+        AgentCommands::Audit {
+            auto_log,
+            json,
+            project,
+        } => run_audit(*auto_log, *json, project.as_deref()),
     }
 }
 
@@ -126,13 +145,21 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         return Ok(());
     };
     let leases = open_leases();
+    let dismissals = crate::dismissed::read_all();
     let now = chrono::Local::now();
     let thresholds = audit::thresholds();
 
     let flagged = {
         let mut data = storage::load_data()?;
         tracker::migrate(&mut data);
-        audit::unaccounted(&[session], &leases, &data.entries, now, thresholds)
+        audit::unaccounted(
+            &[session],
+            &leases,
+            &data.entries,
+            &dismissals,
+            now,
+            thresholds,
+        )
     };
 
     let threshold = auto_log
@@ -140,10 +167,11 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
         .and_then(|enabled| enabled.then(audit::auto_log_after_minutes))
         .flatten();
 
-    for item in &flagged {
+    // A warning surface, so the floor applies here.
+    for item in audit::over_floor(&flagged, thresholds) {
         let minutes = item.end.signed_duration_since(item.start).num_minutes();
         if threshold.is_some_and(|threshold| minutes > threshold) {
-            write_auto_log(item)?;
+            write_auto_log(item, false)?;
             println!("{} (auto-logged)", item.describe());
         } else {
             println!("{}", item.describe());
@@ -273,29 +301,121 @@ fn list(project: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `tt agent audit`: reconcile the activity ledger against marks and logged entries,
-/// reporting activity with no evidence it was tracked. Missing directories read as empty.
-fn run_audit(auto_log: bool) -> Result<()> {
+/// Every unaccounted row at `now`, from the activity ledger, the open marks, the
+/// dismissal ledger and the store. Two calls that must agree take one `now`: a live
+/// session's row end tracks the clock.
+fn unaccounted_at(now: DateTime<Local>) -> Result<Vec<audit::Unaccounted>> {
     let sessions = activity::activity_dir()
         .map(|dir| activity::read_sessions_in(&dir))
         .unwrap_or_default();
     let leases = open_leases();
-    let thresholds = audit::thresholds();
-    let now = chrono::Local::now();
+    let dismissals = crate::dismissed::read_all();
+    let mut data = storage::load_data()?;
+    tracker::migrate(&mut data);
+    Ok(audit::unaccounted(
+        &sessions,
+        &leases,
+        &data.entries,
+        &dismissals,
+        now,
+        audit::thresholds(),
+    ))
+}
 
-    let flagged = {
-        let mut data = storage::load_data()?;
-        tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
+/// `tt agent resolve --session <id> <start> <issue|-> <phase> "<summary>"`: cover the
+/// row with that session and start with one entry spanning it exactly. The project is
+/// the matched row's, never an argument, and the span is logged unrounded: a rounded
+/// duration reaches back past the row's start. A pair matching no row writes nothing.
+fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -> Result<()> {
+    // A row is addressed by the sanitised key its session file is named with.
+    let session = crate::paths::sanitise_key(session);
+    let rows = unaccounted_at(Local::now())?;
+    let Some(row) = rows
+        .iter()
+        .find(|row| row.session_id == session && row.start.timestamp() == start)
+    else {
+        eprintln!("tt: no unaccounted row for session {session} starting at {start}");
+        eprintln!("tt: run tt agent audit --json to list the rows and the addresses they take.");
+        std::process::exit(64);
     };
 
+    commands::log(commands::LogRequest {
+        description: description(&row.project, issue, phase, summary),
+        // The row's own span, never rounded: `ended_at` is pinned, so a longer
+        // duration would reach back past the row's start.
+        time: row.end.signed_duration_since(row.start),
+        extra_tags: Vec::new(),
+        project: Some(row.project.clone()),
+        idle: Vec::new(),
+        // The row is one contiguous active stretch; nothing here may cut it again.
+        trim: false,
+        ended_at: Some(row.end),
+        // Names the session, so this entry covers that agent's row and not a
+        // concurrent agent's row over the same minutes.
+        data: Some(stamp_session(None, &session)),
+        confirm_on_stderr: false,
+    })
+}
+
+/// `tt agent dismiss --session <id> <project> <start>-<end> ["<reason>"]`: record that
+/// one session's stretch of clock time was not work. Records the span as given and
+/// matches no row: it is a statement about clock time, not an operation on a row.
+fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&str>) -> Result<()> {
+    let (from, until) = (span.start.timestamp(), span.end.timestamp());
+    if until <= from {
+        eprintln!("tt: a dismissal needs a span that ends after it starts, got {from}-{until}");
+        std::process::exit(64);
+    }
+    let dir = crate::dismissed::dismissed_dir()
+        .context("could not determine a cache directory for the dismissals")?;
+    crate::dismissed::write_in(
+        &dir,
+        &crate::dismissed::Dismissal {
+            project: project.to_string(),
+            // The ledger matches an activity session by its file name, which is the
+            // sanitised id; a raw id that sanitises differently would match no row.
+            session_id: crate::paths::sanitise_key(session),
+            start: from,
+            end: until,
+            reason: reason.map(str::to_string),
+        },
+    )?;
+    println!(
+        "dismissed {} {}-{} for session {}",
+        project,
+        span.start.format("%H:%M"),
+        span.end.format("%H:%M"),
+        session
+    );
+    Ok(())
+}
+
+/// `tt agent audit`: reconcile the activity ledger against marks and logged entries,
+/// reporting activity with no evidence it was tracked. Missing directories read as empty.
+/// `--json` prints the same rows as an array, `[]` included, and never the prose.
+fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
+    let now = chrono::Local::now();
+    // Narrowed before the auto-log loop, never after: `--project` bounds what this
+    // run may write, not just what it prints.
+    let narrow = |mut rows: Vec<audit::Unaccounted>| {
+        if let Some(project) = project {
+            rows.retain(|item| marks::same_project(&item.project, project));
+        }
+        rows
+    };
+    let flagged = narrow(unaccounted_at(now)?);
+    let thresholds = audit::thresholds();
+
     // `auto_log_after_minutes` unset: `--auto-log` logs nothing, like a plain audit.
+    // Over the floor only: `--auto-log` writes what the warning names, nothing more.
     let mut wrote_any = false;
     if auto_log && let Some(threshold) = audit::auto_log_after_minutes() {
-        for item in &flagged {
+        for item in audit::over_floor(&flagged, thresholds) {
             let minutes = item.end.signed_duration_since(item.start).num_minutes();
             if minutes > threshold {
-                write_auto_log(item)?;
+                // `--json` promises one array on stdout, so the confirmation
+                // goes to stderr.
+                write_auto_log(item, json)?;
                 wrote_any = true;
             }
         }
@@ -303,20 +423,25 @@ fn run_audit(auto_log: bool) -> Result<()> {
 
     // Re-read: the entries just written now cover their own rows.
     let remaining = if wrote_any {
-        let mut data = storage::load_data()?;
-        tracker::migrate(&mut data);
-        audit::unaccounted(&sessions, &leases, &data.entries, now, thresholds)
+        narrow(unaccounted_at(now)?)
     } else {
         flagged
     };
 
-    if remaining.is_empty() {
+    // Every row, floor or no floor: this is the list the sweep addresses rows from.
+    if json {
+        println!("{}", serde_json::to_string(&remaining)?);
+        return Ok(());
+    }
+
+    let warned = audit::over_floor(&remaining, thresholds);
+    if warned.is_empty() {
         println!("No unaccounted agent activity.");
         return Ok(());
     }
 
     println!("{} Unaccounted agent activity:\n", icons::warning());
-    for item in &remaining {
+    for item in warned {
         println!("  {}", item.describe());
     }
     Ok(())
@@ -324,7 +449,7 @@ fn run_audit(auto_log: bool) -> Result<()> {
 
 /// `--auto-log`: write one fixed-phase `#auto` entry for an unaccounted window, the way
 /// `tt agent item` would but **never** tagged `#agent`; phase and summary are literal text.
-fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
+fn write_auto_log(item: &audit::Unaccounted, quiet: bool) -> Result<()> {
     let minutes = item.end.signed_duration_since(item.start).num_minutes();
     commands::log(commands::LogRequest {
         description: "unattended activity #auto".to_string(),
@@ -337,7 +462,10 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
         // The row is one contiguous active stretch; nothing here may cut it again.
         trim: false,
         ended_at: Some(item.end),
-        data: None,
+        // Names the row's session, or this entry would silence a concurrent
+        // same-project session's row as well.
+        data: Some(stamp_session(None, &item.session_id)),
+        confirm_on_stderr: quiet,
     })
 }
 
@@ -417,6 +545,7 @@ fn log_entry(
         trim: span.trim,
         ended_at: span.ended_at,
         data,
+        confirm_on_stderr: false,
     })
 }
 
@@ -427,6 +556,7 @@ struct Close<'a> {
     minutes: Option<&'a str>,
     full: bool,
     trim: bool,
+    session: Option<&'a str>,
     data: Option<serde_json::Value>,
 }
 
@@ -441,6 +571,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         minutes,
         full,
         trim,
+        session,
         data,
     } = close;
     let Some(summary) = summary else {
@@ -450,7 +581,10 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         );
         std::process::exit(64);
     };
-    let data = stamp_label(data, mark.agent);
+    let mut data = stamp_label(data, mark.agent);
+    if let Some(session) = session {
+        data = Some(stamp_session(data, session));
+    }
 
     let dir = mark_dir()?;
     if marks::is_closing_in(&dir, mark) {
@@ -459,11 +593,26 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
 
     let mut idle = Vec::new();
     let mut split_at_idle = false;
-    // Stays `None` on the explicit-minutes path, which reads no timestamps.
+    // Stays `None` on the explicit-minutes path.
     let mut anchor = None;
 
+    // What this close leaves for the audit: the mark's head on the explicit-minutes
+    // path, one stretch per gap `--trim` cuts, nothing at all for `--full`.
+    let mut remainder: Vec<(i64, i64)> = Vec::new();
+
     let minutes = match minutes {
-        Some(raw) => whole_minutes(raw),
+        Some(raw) => {
+            let minutes = whole_minutes(raw);
+            // The one mark read on this path, and only to state what it leaves
+            // behind: explicit minutes still close a phase with no mark at all.
+            if let Some(marked) = marks::read_phase_in(&dir, mark).ok().flatten() {
+                let head = (marked.started, Local::now().timestamp() - minutes * 60);
+                if head.1 > head.0 {
+                    remainder.push(head);
+                }
+            }
+            minutes
+        }
         None => {
             let Some(marked) = marks::read_phase_in(&dir, mark)? else {
                 eprintln!(
@@ -507,6 +656,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
                 } else if trim {
                     // The measured span, not `trimmed`: `split_at_idle` cuts the same gaps.
                     split_at_idle = true;
+                    remainder = gaps.clone();
                     measured
                 } else {
                     refuse(mark, &gaps, measured, trimmed);
@@ -530,6 +680,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
         },
         data,
     )?;
+    record_remainder(mark, session, &remainder);
     // Cleared only once the entry is recorded; a refusal leaves the mark and its beats.
     if let Err(err) = marks::cancel_in(&dir, mark) {
         eprintln!(
@@ -545,6 +696,49 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
     Ok(())
 }
 
+/// Dismiss what a close left uncovered, for the session it names. Keyed by session
+/// and never by mark: several labelled marks under one orchestrator clear against the
+/// same session's rows. **Warns and returns**, whatever fails — the close is already
+/// recorded, and `end`'s exit codes are a documented contract.
+fn record_remainder(mark: MarkRef, session: Option<&str>, remainder: &[(i64, i64)]) {
+    if remainder.is_empty() {
+        return;
+    }
+    let Some(session) = session else {
+        let minutes: i64 = remainder.iter().map(|(from, to)| (to - from) / 60).sum();
+        eprintln!(
+            "tt: {}m of {}'s span is not covered by this entry",
+            minutes,
+            phase_name(mark)
+        );
+        eprintln!(
+            "tt: pass --session <id> to dismiss it, or clear it with tt agent audit --json --project {}",
+            mark.project
+        );
+        return;
+    };
+
+    let Some(dir) = crate::dismissed::dismissed_dir() else {
+        eprintln!("tt: no cache directory for the dismissals — the remainder stays unaccounted");
+        return;
+    };
+    for &(start, end) in remainder {
+        let record = crate::dismissed::Dismissal {
+            project: mark.project.to_string(),
+            session_id: crate::paths::sanitise_key(session),
+            start,
+            end,
+            reason: Some(format!("not billed by the close of {}", phase_name(mark))),
+        };
+        if let Err(err) = crate::dismissed::write_in(&dir, &record) {
+            eprintln!(
+                "tt: the remainder of {} was not dismissed: {err}",
+                phase_name(mark)
+            );
+        }
+    }
+}
+
 /// The close's data with the mark's label stamped in, or exit 64 on data whose
 /// `agent` key is not an object. Unlabelled data is passed through untouched.
 fn stamp_label(data: Option<serde_json::Value>, agent: Option<&str>) -> Option<serde_json::Value> {
@@ -553,6 +747,18 @@ fn stamp_label(data: Option<serde_json::Value>, agent: Option<&str>) -> Option<s
     };
     match crate::entry_data::with_agent_label(data, label) {
         Ok(data) => Some(data),
+        Err(message) => {
+            eprintln!("tt: {message}");
+            std::process::exit(64);
+        }
+    }
+}
+
+/// The data with the activity session stamped in, or exit 64 on data whose `agent`
+/// key is not an object — the same contract as [`stamp_label`].
+fn stamp_session(data: Option<serde_json::Value>, session: &str) -> serde_json::Value {
+    match crate::entry_data::with_agent_session(data, session) {
+        Ok(data) => data,
         Err(message) => {
             eprintln!("tt: {message}");
             std::process::exit(64);

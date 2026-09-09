@@ -4,7 +4,6 @@
 //! keyed by the harness's own session id. Written only by hooks (see
 //! `skills/tt-time-logging/scripts/`), never by the model, so its presence
 //! proves a session was active even if `tt agent begin` was never called.
-//! See `docs/decisions/0001-agent-activity-tracking.md`.
 
 use chrono::Local;
 use std::ffi::OsString;
@@ -80,6 +79,9 @@ fn append_field(dir: &Path, session_id: &str, field: &str) -> io::Result<()> {
 /// One session's window, as read back from its file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
+    /// The sanitised key the session's file is named with, which is the address
+    /// every audit row is matched on and reads back through [`read_session_in`].
+    pub id: String,
     pub project: Option<String>,
     pub start: i64,
     /// `None` while the session is still open.
@@ -113,6 +115,7 @@ pub fn read_session_in(dir: &Path, session_id: &str) -> Option<Session> {
 }
 
 fn read_session(path: &Path) -> Option<Session> {
+    let id = path.file_name()?.to_str()?.to_string();
     let body = fs::read_to_string(path).ok()?;
     let mut project = None;
     let mut start = None;
@@ -141,6 +144,7 @@ fn read_session(path: &Path) -> Option<Session> {
     }
 
     Some(Session {
+        id,
         project,
         start: start?,
         end,
@@ -268,6 +272,27 @@ mod tests {
         assert_eq!(session.project.as_deref(), Some("tt"));
         assert!(session.end.is_some());
         assert_eq!(session.subagents, 2);
+    }
+
+    #[test]
+    fn a_session_carries_the_id_its_file_is_named_with() {
+        let dir = sandbox("read-id");
+        begin_in(&dir, "sess-1", Some("tt")).unwrap();
+
+        assert_eq!(read_sessions_in(&dir)[0].id, "sess-1");
+        assert_eq!(read_session_in(&dir, "sess-1").unwrap().id, "sess-1");
+    }
+
+    /// The id is the sanitised key, so it round-trips back through
+    /// [`read_session_in`] whatever the harness called the session.
+    #[test]
+    fn a_sanitised_id_reads_back_as_the_key_it_was_written_under() {
+        let dir = sandbox("read-id-sanitised");
+        begin_in(&dir, "weird/id", Some("tt")).unwrap();
+
+        let id = read_sessions_in(&dir)[0].id.clone();
+        assert_eq!(id, "weird_id");
+        assert!(read_session_in(&dir, &id).is_some());
     }
 
     #[test]

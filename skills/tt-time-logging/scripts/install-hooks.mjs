@@ -22,7 +22,7 @@
 // skill), mirroring how other global skills advertise themselves there.
 //
 // The activity ledger is a second, model-independent signal that a session
-// was active — see docs/decisions/0001-agent-activity-tracking.md. Keyed by
+// was active. Keyed by
 // Claude Code's own `session_id`, read off the hook's stdin JSON.
 //
 // All hook commands use absolute paths under ~/.claude/hooks/ — relative

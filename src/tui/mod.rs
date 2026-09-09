@@ -100,7 +100,7 @@ pub(crate) struct App {
     pub(crate) liveness_thresholds: crate::marks::Thresholds,
     /// Activity windows with no covering mark or logged entry — recomputed
     /// each tick from `marks`, `activity_sessions` and `data`, never read
-    /// from disk itself. See `docs/decisions/0001-agent-activity-tracking.md`.
+    /// from disk itself.
     pub(crate) unaccounted: Vec<Unaccounted>,
     /// Whether each collapsible surface is open. All default to off, so their rows
     /// are absent from the layout plan.

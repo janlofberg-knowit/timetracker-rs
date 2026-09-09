@@ -8,6 +8,9 @@
 //   prompt  - only the operating card (everything above the `card:end` marker
 //             in SKILL.md), on every prompt.
 //
+// Both modes append the harness's own session id, read from the hook payload on
+// stdin. Re-injected every prompt, so it cannot go stale in a compacted context.
+//
 // Why the split: UserPromptSubmit fires on every turn, and re-injecting 15KB
 // of unchanged reference text each time trains a "seen it, skip it" response —
 // the reader learns the block is boilerplate, which is exactly when the one
@@ -35,6 +38,22 @@ const EVENTS = {
   prompt: "UserPromptSubmit",
 };
 
+// The harness's own session id, from the hook payload — the model is told it
+// nowhere else, and `tt agent end|resolve|dismiss` need it to name a session.
+// An unreadable or unparseable payload just leaves the line out.
+function sessionLine() {
+  let id;
+  try {
+    id = JSON.parse(readFileSync(0, "utf8"))?.session_id;
+  } catch {
+    return "";
+  }
+  return id
+    ? `\n\nThis session's id is \`${id}\`. Pass it as \`--session <id>\` on ` +
+        "`tt agent end`, and on `tt agent resolve`/`dismiss` for this session's own rows."
+    : "";
+}
+
 function emit(hookEventName, additionalContext) {
   process.stdout.write(
     additionalContext
@@ -56,11 +75,16 @@ try {
   emit(hookEventName, null);
 }
 
-if (mode === "session") emit(hookEventName, contract);
+const session = sessionLine();
+
+if (mode === "session") emit(hookEventName, contract + session);
 
 // Card: the head of the document, minus the skill frontmatter. A missing
 // marker means someone edited SKILL.md without keeping one — fall back to the
 // whole file rather than injecting nothing.
 const cut = contract.indexOf(CARD_MARKER);
 const head = cut === -1 ? contract : contract.slice(0, cut);
-emit(hookEventName, head.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim());
+emit(
+  hookEventName,
+  head.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim() + session,
+);

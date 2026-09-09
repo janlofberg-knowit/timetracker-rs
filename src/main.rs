@@ -7,6 +7,7 @@ mod cli;
 mod commands;
 mod completions;
 mod config;
+mod dismissed;
 mod duration;
 mod entry_data;
 mod icons;
@@ -87,6 +88,7 @@ fn main() -> Result<()> {
             trim,
             ended_at: None,
             data,
+            confirm_on_stderr: false,
         }),
         Commands::Today => commands::today(),
         Commands::Report {
