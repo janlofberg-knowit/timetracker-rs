@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 // SessionStart/UserPromptSubmit/Stop/SubagentStop hook: writes to `tt`'s hook-only activity
-// ledger (`tt agent activity …`) — see
-// docs/decisions/0001-agent-activity-tracking.md. Installed by
-// install-hooks.mjs.
+// ledger (`tt agent activity …`). Installed by install-hooks.mjs.
 //
 // Usage: node tt-activity-hook.mjs <begin|end|subagent|prompt>
 //
@@ -128,8 +126,7 @@ try {
 const trimmed = checked.trim();
 if (trimmed) {
   // `tt` only marks a line `(auto-logged)` when `agent.auto_log_on_stop`
-  // is configured and it actually wrote an entry for that line — see
-  // docs/decisions/0003-auto-log-on-stop.md.
+  // is configured and it actually wrote an entry for that line.
   const autoLogged = trimmed
     .split("\n")
     .some((line) => line.includes("(auto-logged)"));

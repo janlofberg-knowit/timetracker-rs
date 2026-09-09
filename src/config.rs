@@ -71,15 +71,14 @@ pub struct AgentConfig {
     pub max_unvouched_minutes: Option<i64>,
     /// How long an activity window may sit unaccounted for before
     /// `tt agent audit --auto-log` writes a fallback `#auto` entry for it.
-    /// Unset (the default) disables auto-logging entirely — see
-    /// docs/decisions/0002-auto-logging-unaccounted-activity.md.
+    /// Unset (the default) disables auto-logging entirely, as does a value that
+    /// does not exceed `max_unvouched_minutes`.
     pub auto_log_after_minutes: Option<i64>,
     /// Have the `Stop` hook's `tt agent activity check` call auto-log this
     /// session's own unaccounted window, the same way `--auto-log` would.
-    /// Requires `auto_log_after_minutes` to already be set — see
-    /// docs/decisions/0003-auto-log-on-stop.md. A `true` value with no
-    /// `auto_log_after_minutes` is a misconfiguration: [`load`] warns and
-    /// disables it rather than silently no-op'ing.
+    /// Requires `auto_log_after_minutes` to already be set: a `true` value
+    /// without it is a misconfiguration, and [`load`] warns and disables it
+    /// rather than silently no-op'ing.
     pub auto_log_on_stop: Option<bool>,
     /// The step `tt agent end` and `tt agent item` round a logged duration up
     /// to, never below the step itself. 0 (the default) logs the actual
@@ -177,16 +176,15 @@ fn read(path: Option<&Path>) -> Config {
 }
 
 /// `auto_log_on_stop = true` without `auto_log_after_minutes` already set is a
-/// config error, not a silent no-op — see docs/decisions/0003-auto-log-on-stop.md
-/// decision 1. A loud warning and `auto_log_on_stop` reset to `None`, mirroring
-/// how a file that fails to parse warns and falls back rather than erroring the
-/// whole command.
+/// config error, not a silent no-op: a loud warning and `auto_log_on_stop` reset
+/// to `None`, the way a file that fails to parse warns and falls back rather
+/// than erroring the whole command.
 fn validate_agent(agent: AgentConfig) -> AgentConfig {
     if agent.auto_log_on_stop == Some(true) && agent.auto_log_after_minutes.is_none() {
         eprintln!(
             "Warning: agent.auto_log_on_stop is set but agent.auto_log_after_minutes is not — \
-             auto_log_on_stop requires it to be configured first (see \
-             docs/decisions/0003-auto-log-on-stop.md). Ignoring auto_log_on_stop."
+             auto_log_on_stop requires it to be configured first. \
+             Ignoring auto_log_on_stop."
         );
         return AgentConfig {
             auto_log_on_stop: None,

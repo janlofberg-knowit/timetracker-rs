@@ -243,12 +243,51 @@ pub enum AgentCommands {
         /// `agent.label` in the entry's data
         #[arg(long)]
         agent: Option<String>,
+        /// This session's id, from the per-prompt card. With it, the span this
+        /// close leaves uncovered is dismissed for that session; without it,
+        /// the remainder is only named on stderr.
+        #[arg(long)]
+        session: Option<String>,
         /// Custom data as a JSON object, e.g. `--data '{"pr": 42}'`
         #[arg(long, value_parser = parse_data)]
         data: Option<serde_json::Value>,
     },
+    /// Cover one unaccounted audit row with an entry spanning it exactly — the
+    /// row was real work. Address it by the session and start `audit --json`
+    /// prints; the project comes from the matched row.
+    Resolve {
+        /// The row's session: this session's id from the per-prompt card, or a
+        /// row's `session` from `audit --json`
+        #[arg(long)]
+        session: String,
+        /// The row's `start`, in epoch seconds
+        start: i64,
+        /// Issue number, or `-` for work with no issue
+        #[arg(add = ArgValueCandidates::new(completions::issues))]
+        issue: String,
+        #[arg(add = ArgValueCandidates::new(completions::phases))]
+        phase: String,
+        /// 3-6 words of plain prose, with no issue number in them
+        summary: String,
+    },
+    /// Record that a stretch of one session's clock time was **not** work, so
+    /// the audit stops reporting it. Writes no entry, so it bills no time.
+    Dismiss {
+        /// The activity session the stretch belongs to: this session's id from
+        /// the per-prompt card, or a row's `session` from `audit --json`
+        #[arg(long)]
+        session: String,
+        #[arg(add = ArgValueCandidates::new(completions::projects))]
+        project: String,
+        /// The stretch as `<start>-<end>` epoch seconds, as `audit --json`
+        /// prints them
+        #[arg(value_name = "START-END", value_parser = parse_idle)]
+        span: IdleInterval,
+        /// Why it was not work, recorded verbatim
+        reason: Option<String>,
+    },
     /// Hook-only activity ledger, hidden from `--help` — never called by the
-    /// model. See docs/decisions/0001-agent-activity-tracking.md.
+    /// model.
     #[command(hide = true, subcommand)]
     Activity(ActivityCommands),
     /// Reconcile the activity ledger against marks and logged entries,
@@ -256,10 +295,17 @@ pub enum AgentCommands {
     Audit {
         /// Write a fixed-phase `#auto` entry for every window that has also
         /// passed `agent.auto_log_after_minutes`. A no-op unless that setting
-        /// is configured — see
-        /// docs/decisions/0002-auto-logging-unaccounted-activity.md.
+        /// is configured, and it writes only what the audit warns about.
         #[arg(long)]
         auto_log: bool,
+        /// Print the remaining rows as a JSON array — exact epochs and the
+        /// session id each row is addressed by — instead of the text block.
+        #[arg(long)]
+        json: bool,
+        /// Only rows of this project, matched on the whole sanitised project
+        /// name the way a mark's project is
+        #[arg(long, value_name = "NAME", add = ArgValueCandidates::new(completions::projects))]
+        project: Option<String>,
     },
 }
 
@@ -293,7 +339,7 @@ pub enum ActivityCommands {
         session_id: String,
         /// Also auto-log this session's own unaccounted window, per
         /// `agent.auto_log_on_stop` — a no-op unless that setting is
-        /// configured. See docs/decisions/0003-auto-log-on-stop.md.
+        /// configured.
         #[arg(long)]
         auto_log: bool,
     },
@@ -320,12 +366,16 @@ impl AgentCommands {
             AgentCommands::Begin { .. }
             | AgentCommands::Touch { .. }
             | AgentCommands::Cancel { .. }
-            | AgentCommands::List { .. } => false,
+            | AgentCommands::List { .. }
+            // Writes only the dismissal ledger, never an entry.
+            | AgentCommands::Dismiss { .. } => false,
             AgentCommands::Activity(command) => command.touches_store(),
             // Only `--auto-log` actually writes; a plain audit stays on the
             // fast, no-preamble path like `list` and `report`.
-            AgentCommands::Audit { auto_log } => *auto_log,
-            AgentCommands::Item { .. } | AgentCommands::End { .. } => true,
+            AgentCommands::Audit { auto_log, .. } => *auto_log,
+            AgentCommands::Item { .. }
+            | AgentCommands::End { .. }
+            | AgentCommands::Resolve { .. } => true,
         }
     }
 }

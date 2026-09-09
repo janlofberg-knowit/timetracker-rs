@@ -226,6 +226,9 @@ pub struct LogRequest {
     pub ended_at: Option<DateTime<Local>>,
     /// Custom JSON data, already validated by [`crate::entry_data::parse`].
     pub data: Option<serde_json::Value>,
+    /// Print the confirmation on stderr, for a caller whose stdout carries
+    /// machine-readable output.
+    pub confirm_on_stderr: bool,
 }
 
 /// Record a finished entry, back-dated from its end. `ended_at` pins the
@@ -241,6 +244,7 @@ pub fn log(request: LogRequest) -> Result<()> {
         trim,
         ended_at,
         data: custom_data,
+        confirm_on_stderr,
     } = request;
     let end_time = ended_at.unwrap_or_else(Local::now);
     let start_time = end_time - time;
@@ -285,7 +289,7 @@ pub fn log(request: LogRequest) -> Result<()> {
         Ok(time)
     })?;
 
-    println!(
+    let confirmation = format!(
         "{} Logged: \"{}\"{}{} - Duration: {}",
         icons::logged(),
         desc,
@@ -293,6 +297,10 @@ pub fn log(request: LogRequest) -> Result<()> {
         tags_display(&tags),
         duration::format(stored)
     );
+    match confirm_on_stderr {
+        true => eprintln!("{confirmation}"),
+        false => println!("{confirmation}"),
+    }
     Ok(())
 }
 
@@ -446,6 +454,7 @@ mod tests {
                 trim,
                 ended_at: None,
                 data,
+                confirm_on_stderr: false,
             })
             .unwrap(),
             _ => panic!("parse_log produced something other than a Log command"),

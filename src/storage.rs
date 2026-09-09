@@ -120,9 +120,9 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Points `HOME`, `TT_DATA_DIR`, `TT_MARK_DIR`, `TT_ACTIVITY_DIR` and
-/// `TT_CONFIG_FILE` at a fresh scratch directory named after `name`. Callers
-/// hold [`env_guard`].
+/// Points `HOME`, `TT_DATA_DIR`, `TT_MARK_DIR`, `TT_ACTIVITY_DIR`,
+/// `TT_DISMISSED_DIR` and `TT_CONFIG_FILE` at a fresh scratch directory named
+/// after `name`. Callers hold [`env_guard`].
 #[cfg(test)]
 pub(crate) fn env_sandbox(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tt-sandbox-{name}"));
@@ -132,6 +132,7 @@ pub(crate) fn env_sandbox(name: &str) -> PathBuf {
     unsafe { std::env::set_var("TT_DATA_DIR", dir.join("store")) };
     unsafe { std::env::set_var("TT_MARK_DIR", dir.join("marks")) };
     unsafe { std::env::set_var("TT_ACTIVITY_DIR", dir.join("activity")) };
+    unsafe { std::env::set_var("TT_DISMISSED_DIR", dir.join("dismissed")) };
     // Left unwritten: config::load() then falls back to defaults.
     unsafe { std::env::set_var("TT_CONFIG_FILE", dir.join("config.toml")) };
     let path = get_data_path().unwrap();
@@ -143,6 +144,11 @@ pub(crate) fn env_sandbox(name: &str) -> PathBuf {
     assert!(
         marks.starts_with(&dir),
         "sandbox TT_MARK_DIR not in effect: {marks:?}"
+    );
+    let dismissed = crate::dismissed::dismissed_dir().expect("a dismissed dir");
+    assert!(
+        dismissed.starts_with(&dir),
+        "sandbox TT_DISMISSED_DIR not in effect: {dismissed:?}"
     );
     dir
 }
