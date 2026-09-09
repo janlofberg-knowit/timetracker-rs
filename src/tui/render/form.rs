@@ -99,14 +99,61 @@ const FIELDS: &[FormField] = &[
     ),
 ];
 
-/// The chunk the help row sits in: straight after the last field.
-const HELP_CHUNK: usize = FIELDS.len();
+/// A field block is a border, one line of text and a border. Always — a
+/// squeezed box loses its label or its text, so when the form is taller than
+/// the area it scrolls instead, a whole field at a time.
+const FIELD_HEIGHT: u16 = 3;
 
-/// One three-line chunk per field, then the help row, then the slack.
-fn form_constraints() -> Vec<Constraint> {
-    let mut constraints = vec![Constraint::Length(3); FIELDS.len() + 1];
-    constraints.push(Constraint::Min(0));
-    constraints
+/// Which slice of [`FIELDS`] the area has room for, and where to put it.
+#[derive(Debug, PartialEq, Eq)]
+struct FormViewport {
+    /// Rows left blank above and below the form, dropped as the area shrinks.
+    margin: u16,
+    /// Index of the first field drawn.
+    first: usize,
+    /// How many fields are drawn, always at least one.
+    count: usize,
+    /// Whether the pinned help row at the bottom still fits.
+    show_help: bool,
+}
+
+impl FormViewport {
+    /// True while some field is off-screen in either direction.
+    fn scrolls(&self) -> bool {
+        self.first > 0 || self.first + self.count < FIELDS.len()
+    }
+}
+
+/// Fit the form into `height` rows, keeping the active field on screen. The
+/// scroll offset is derived from the cursor rather than stored: the active
+/// field is the only thing that moves the view, so there is no state to keep
+/// in sync with a resize.
+fn form_viewport(height: u16, active: usize) -> FormViewport {
+    let full = FIELD_HEIGHT * (FIELDS.len() as u16 + 1);
+    let margin = match height {
+        h if h >= full + 4 => 2,
+        h if h >= full + 2 => 1,
+        _ => 0,
+    };
+    let inner = height.saturating_sub(margin * 2);
+
+    // The help row is the last thing to go: below two blocks' worth of rows
+    // there is no room for both it and a field, and the field wins.
+    let show_help = inner >= FIELD_HEIGHT * 2;
+    let for_fields = if show_help {
+        inner - FIELD_HEIGHT
+    } else {
+        inner
+    };
+    let count = ((for_fields / FIELD_HEIGHT) as usize).clamp(1, FIELDS.len());
+    let first = active.saturating_sub(count - 1).min(FIELDS.len() - count);
+
+    FormViewport {
+        margin,
+        first,
+        count,
+        show_help,
+    }
 }
 
 pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
@@ -125,11 +172,25 @@ pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints(form_constraints())
-        .split(area);
+    let active = app.input_field;
+    let active_index = FIELDS
+        .iter()
+        .position(|(field, _, _)| *field == active)
+        .unwrap_or(0);
+    let view = form_viewport(area.height, active_index);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + view.margin,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(view.margin * 2),
+    };
+    let field_area = |slot: usize| Rect {
+        x: inner.x,
+        y: inner.y + slot as u16 * FIELD_HEIGHT,
+        width: inner.width,
+        height: FIELD_HEIGHT,
+    };
 
     fn field_block(label: &'static str, active: bool) -> Block<'static> {
         Block::default()
@@ -149,14 +210,16 @@ pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
             ))
     }
 
-    let active = app.input_field;
-
-    for (i, (field, label, input)) in FIELDS.iter().copied().enumerate() {
+    for (slot, (field, label, input)) in FIELDS[view.first..view.first + view.count]
+        .iter()
+        .copied()
+        .enumerate()
+    {
         f.render_widget(
             Paragraph::new(input(app).value())
                 .style(Style::default().fg(Color::White))
                 .block(field_block(label, active == field)),
-            chunks[i],
+            field_area(slot),
         );
     }
 
@@ -173,6 +236,13 @@ pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::border()),
         ),
     };
+    // Scrolled, the form no longer shows how far through it the cursor is, so
+    // the title says so.
+    let title = if view.scrolls() {
+        format!("{}({}/{}) ", form_title, active_index + 1, FIELDS.len())
+    } else {
+        form_title
+    };
     let help = Paragraph::new(Line::from(vec![
         Span::styled("Tab", Style::default().fg(theme::accent())),
         Span::styled(": switch field | ", Style::default().fg(theme::inactive())),
@@ -186,21 +256,19 @@ pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::border()))
-            .title(Span::styled(
-                form_title,
-                Style::default().fg(theme::highlight()),
-            )),
+            .title(Span::styled(title, Style::default().fg(theme::highlight()))),
     );
-    f.render_widget(help, chunks[HELP_CHUNK]);
+    // Straight under the last drawn field, as it sits in a form that fits.
+    if view.show_help {
+        f.render_widget(help, field_area(view.count));
+    }
 
-    if let Some((i, (_, _, input))) = FIELDS
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, (field, _, _))| *field == active)
-    {
+    // The viewport always keeps the active field on screen, so the cursor is
+    // always in one of the drawn slots.
+    if let Some((_, _, input)) = FIELDS.get(active_index).copied() {
+        let slot = field_area(active_index - view.first);
         let width = Line::from(input(app).before_cursor()).width() as u16;
-        f.set_cursor_position((chunks[i].x + width + 1, chunks[i].y + 1));
+        f.set_cursor_position((slot.x + width + 1, slot.y + 1));
     }
 }
 
@@ -208,17 +276,74 @@ pub(super) fn render_entry_form(f: &mut Frame, app: &App, area: Rect) {
 mod tests {
     use super::*;
 
+    /// The height that fits every field, the help row and the full margin.
+    fn roomy() -> u16 {
+        FIELD_HEIGHT * (FIELDS.len() as u16 + 1) + 4
+    }
+
     #[test]
-    fn the_constraints_follow_the_field_table() {
-        let constraints = form_constraints();
-        // one chunk per field, then help, then the slack
-        assert_eq!(constraints.len(), FIELDS.len() + 2);
-        assert!(
-            constraints[..=HELP_CHUNK]
-                .iter()
-                .all(|c| *c == Constraint::Length(3))
+    fn a_tall_area_shows_the_whole_form_unscrolled() {
+        let view = form_viewport(roomy(), 0);
+        assert_eq!(
+            view,
+            FormViewport {
+                margin: 2,
+                first: 0,
+                count: FIELDS.len(),
+                show_help: true,
+            }
         );
-        assert_eq!(constraints[constraints.len() - 1], Constraint::Min(0));
+        assert!(!view.scrolls());
+
+        // Extra rows are slack, not more fields.
+        assert_eq!(form_viewport(roomy() + 20, 6), view);
+    }
+
+    #[test]
+    fn the_margin_gives_way_before_any_field_does() {
+        for (height, margin) in [(roomy(), 2), (roomy() - 2, 1), (roomy() - 4, 0)] {
+            let view = form_viewport(height, 0);
+            assert_eq!(view.margin, margin, "at {height} rows");
+            assert_eq!(view.count, FIELDS.len(), "at {height} rows");
+            assert!(!view.scrolls(), "at {height} rows");
+        }
+    }
+
+    #[test]
+    fn a_short_area_scrolls_the_active_field_into_view() {
+        // Room for the help row and three fields, nothing more.
+        let height = FIELD_HEIGHT * 4;
+
+        // The cursor near the top keeps the form at the top.
+        for active in 0..3 {
+            let view = form_viewport(height, active);
+            assert_eq!((view.first, view.count), (0, 3), "field {active}");
+            assert!(view.scrolls());
+        }
+
+        // Past the last visible slot the view follows it down, one field at a
+        // time, and stops at the end of the table.
+        assert_eq!(form_viewport(height, 3).first, 1);
+        assert_eq!(form_viewport(height, 4).first, 2);
+        assert_eq!(
+            form_viewport(height, FIELDS.len() - 1).first,
+            FIELDS.len() - 3
+        );
+    }
+
+    #[test]
+    fn the_help_row_is_dropped_before_the_last_field() {
+        let two = form_viewport(FIELD_HEIGHT * 2, 6);
+        assert_eq!((two.count, two.show_help), (1, true));
+
+        let one = form_viewport(FIELD_HEIGHT, 6);
+        assert_eq!((one.count, one.show_help), (1, false));
+        assert_eq!(one.first, FIELDS.len() - 1, "the active field is drawn");
+
+        // Even with no room at all the slice stays non-empty rather than
+        // panicking on an empty range.
+        let none = form_viewport(0, 0);
+        assert_eq!((none.first, none.count), (0, 1));
     }
 
     #[test]

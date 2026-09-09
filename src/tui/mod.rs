@@ -2363,6 +2363,30 @@ mod tests {
         );
     }
 
+    /// A terminal too short for the whole form scrolls it rather than
+    /// squeezing the boxes: every drawn field keeps its three rows.
+    #[test]
+    fn a_short_terminal_scrolls_the_entry_form_to_the_active_field() {
+        let _guard = env_guard();
+        sandbox("entry-form-short");
+        seed(vec![], 1);
+
+        let mut app = App::new().unwrap();
+        app.start_adding();
+        let screen = frame_lines(&mut app, 100, 20).join("\n");
+        assert!(screen.contains(" Description "), "top of form:\n{screen}");
+        assert!(!screen.contains(" Data (optional"), "form did not clip");
+
+        // Tabbing past the last visible field brings it into view, and the
+        // first field goes.
+        app.input_field = InputField::Data;
+        let scrolled = frame_lines(&mut app, 100, 20).join("\n");
+        assert!(scrolled.contains(" Data (optional"), "scrolled:\n{scrolled}");
+        assert!(!scrolled.contains(" Description "), "top field scrolled off");
+        assert!(scrolled.contains(": switch field"), "help row kept");
+        assert!(scrolled.contains("(7/7)"), "position marker:\n{scrolled}");
+    }
+
     #[test]
     fn the_form_cursor_lands_on_the_active_field() {
         let _guard = env_guard();
