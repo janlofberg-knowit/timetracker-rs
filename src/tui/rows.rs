@@ -145,6 +145,10 @@ impl App {
     /// On a header the selected index is **left alone** — expanding inserts
     /// rows after the header, so the cursor stays on it. On a member the group
     /// collapses and the cursor follows onto the header that replaces it.
+    #[allow(
+        clippy::collapsible_match,
+        reason = "`remove` is the toggle's first half; a match guard would hide it"
+    )]
     pub(crate) fn toggle_group_at_cursor(&mut self) {
         match self.selected_row() {
             Some(VisibleRow::GroupHeader(header)) => {

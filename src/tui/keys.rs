@@ -24,6 +24,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+// Collapsing these `if`s into match guards is what clippy suggests, but the
+// conditions here call into `app` and change it — a guard that both dispatches
+// and acts, and silently falls through to the next arm when it is false, hides
+// the fallback these arms exist to spell out.
+#[allow(
+    clippy::collapsible_match,
+    reason = "the conditions have side effects; a match guard would hide them"
+)]
 fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {

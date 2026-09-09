@@ -245,8 +245,11 @@ impl App {
 
     // ── Time resolution ──────────────────────────────────────────────────────
 
-    /// Resolve start/end from the three fields, in priority order: Start+Duration,
-    /// Start+End, End+Duration, Duration only (ends now), Start only (still active).
+    /// Resolve start/end from the three fields. When both Start and End are
+    /// present they are authoritative and Duration is ignored; otherwise
+    /// Duration derives the missing endpoint. In priority order: Start+End,
+    /// Start+Duration, End+Duration, Duration only (ends now), Start only
+    /// (still active).
     pub(crate) fn resolve_times(&self) -> Option<(DateTime<Local>, Option<DateTime<Local>>)> {
         let start = if !self.input_start_time.is_empty() {
             self.parse_time_str(self.input_start_time.value())
@@ -264,11 +267,7 @@ impl App {
             crate::duration::parse(self.input_duration.value()).filter(|d| d.num_seconds() > 0);
 
         match (start, end, dur) {
-            /// Resolve start/end from the three fields.
-            ///
-            /// When both Start and End are present, they are authoritative and Duration
-            /// is derived from them. Otherwise Duration is used to derive the missing
-            /// endpoint.
+            // Both endpoints given: Duration is whatever they say it is.
             (Some(s), Some(e), _) => Some((s, Some(e))),
 
             // Start + Duration derives End.
