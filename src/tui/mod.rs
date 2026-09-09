@@ -2676,7 +2676,6 @@ mod tests {
         let widest_total = footer(&mut app);
         assert!(widest_total.contains("12h 30m"), "{widest_total}");
         assert!(widest_total.contains("t: today"), "{widest_total}");
-        assert!(widest_total.contains("g: toggle"), "{widest_total}");
         assert!(widest_total.ends_with("?: help│"), "{widest_total}");
 
         // `Filtered: ` is three cells wider than `Total: `.
@@ -2684,18 +2683,17 @@ mod tests {
         let filtered = footer(&mut app);
         assert!(filtered.contains("Filtered: "), "{filtered}");
         assert!(filtered.contains("t: today"), "{filtered}");
-        assert!(filtered.contains("g: toggle"), "{filtered}");
         assert!(filtered.ends_with("?: help│"), "{filtered}");
     }
 
     #[test]
-    fn the_group_key_is_listed_in_the_footer_and_in_the_help_overlay() {
+    fn the_group_key_is_listed_in_the_help_overlay_but_not_the_footer() {
         let _guard = env_guard();
         sandbox("group-key-hints");
         let mut app = seed_grouped();
 
         let footer = frame_lines(&mut app, 200, 30).join("\n");
-        assert!(footer.contains("g: toggle"), "footer legend:\n{footer}");
+        assert!(!footer.contains("g: toggle"), "footer legend:\n{footer}");
         assert!(footer.contains("Total: "), "footer total:\n{footer}");
         assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
 
