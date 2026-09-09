@@ -23,11 +23,6 @@ issue number, or `-`. `<phase>` is one of:
 | open-ended exploration with no specific question | `explore` |
 | tooling, config, environment, release | `ops` |
 
-**If the `Stop` hook or an audit names unaccounted activity, sweep it:**
-`tt agent audit --json --project <project>`, then one `tt agent resolve` or
-`tt agent dismiss` per row until it reports none — see [Sweeping the unaccounted
-list](#sweeping-the-unaccounted-list).
-
 Everything below is detail on those three commands.
 
 > **Maintainers:** this file is mirrored by `skills/tt-time-logging/SKILL.md`,
@@ -320,8 +315,7 @@ the plain begin → touch → end flow is enough.
 ## Auto-logged entries
 
 `tt agent audit --auto-log` can write a fallback entry for a window that has
-sat unaccounted for well past the normal warning threshold — see
-`docs/decisions/0002-auto-logging-unaccounted-activity.md`. It is opt-in
+sat unaccounted for well past the normal warning threshold. It is opt-in
 (`agent.auto_log_after_minutes`, unset by default — most operators will
 never see one of these) and, when it does run, it never guesses:
 
@@ -339,14 +333,14 @@ whether to split or re-tag it by hand.
 itself: when set, `tt-activity-hook.mjs`'s `tt agent activity check --auto-log`
 call auto-logs the ending session's own unaccounted window instead of only
 warning about it — same fixed phase/summary/tags, same idempotency. It
-requires `agent.auto_log_after_minutes` to already be set (a config error
-otherwise) — see `docs/decisions/0003-auto-log-on-stop.md`.
+requires `agent.auto_log_after_minutes` to already be set: without it, `tt`
+warns and ignores `auto_log_on_stop` rather than auto-logging anything.
 
 ## Sweeping the unaccounted list
 
-The list's default state is **empty**. When the `Stop` hook or an audit names
-unaccounted activity, clear it rather than letting rows pile up until the list
-stops meaning anything:
+**If the `Stop` hook or an audit names unaccounted activity, sweep it** rather
+than letting rows pile up until the list stops meaning anything. The list's
+default state is **empty**:
 
 ```sh
 tt agent audit --json --project <project>   # this project's rows, with their addresses

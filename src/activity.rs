@@ -4,7 +4,6 @@
 //! keyed by the harness's own session id. Written only by hooks (see
 //! `skills/tt-time-logging/scripts/`), never by the model, so its presence
 //! proves a session was active even if `tt agent begin` was never called.
-//! See `docs/decisions/0001-agent-activity-tracking.md`.
 
 use chrono::Local;
 use std::ffi::OsString;

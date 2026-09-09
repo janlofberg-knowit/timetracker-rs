@@ -287,7 +287,7 @@ pub enum AgentCommands {
         reason: Option<String>,
     },
     /// Hook-only activity ledger, hidden from `--help` — never called by the
-    /// model. See docs/decisions/0001-agent-activity-tracking.md.
+    /// model.
     #[command(hide = true, subcommand)]
     Activity(ActivityCommands),
     /// Reconcile the activity ledger against marks and logged entries,
@@ -295,8 +295,7 @@ pub enum AgentCommands {
     Audit {
         /// Write a fixed-phase `#auto` entry for every window that has also
         /// passed `agent.auto_log_after_minutes`. A no-op unless that setting
-        /// is configured — see
-        /// docs/decisions/0002-auto-logging-unaccounted-activity.md.
+        /// is configured, and it writes only what the audit warns about.
         #[arg(long)]
         auto_log: bool,
         /// Print the remaining rows as a JSON array — exact epochs and the
@@ -340,7 +339,7 @@ pub enum ActivityCommands {
         session_id: String,
         /// Also auto-log this session's own unaccounted window, per
         /// `agent.auto_log_on_stop` — a no-op unless that setting is
-        /// configured. See docs/decisions/0003-auto-log-on-stop.md.
+        /// configured.
         #[arg(long)]
         auto_log: bool,
     },

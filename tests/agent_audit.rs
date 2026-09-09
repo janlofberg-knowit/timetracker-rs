@@ -1,7 +1,5 @@
 //! `tt agent audit` and `tt agent audit --auto-log`, end to end through the
-//! real binary and a sandboxed store/marks/activity directory. See
-//! docs/decisions/0001-agent-activity-tracking.md and
-//! docs/decisions/0002-auto-logging-unaccounted-activity.md.
+//! real binary and a sandboxed store/marks/activity/dismissed directory.
 
 mod common;
 use common::{Case, StoreRow, clock, now};
