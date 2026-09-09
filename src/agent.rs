@@ -330,7 +330,7 @@ fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -
     let rows = unaccounted_at(Local::now())?;
     let Some(row) = rows
         .iter()
-        .find(|row| row.session == session && row.start.timestamp() == start)
+        .find(|row| row.session_id == session && row.start.timestamp() == start)
     else {
         eprintln!("tt: no unaccounted row for session {session} starting at {start}");
         eprintln!("tt: run tt agent audit --json to list the rows and the addresses they take.");
@@ -366,7 +366,7 @@ fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&st
             project: project.to_string(),
             // The ledger matches an activity session by its file name, which is the
             // sanitised id; a raw id that sanitises differently would match no row.
-            session: crate::paths::sanitise_key(session),
+            session_id: crate::paths::sanitise_key(session),
             start: span.start.timestamp(),
             end: span.end.timestamp(),
             reason: reason.map(str::to_string),
@@ -711,7 +711,7 @@ fn record_remainder(mark: MarkRef, session: Option<&str>, remainder: &[(i64, i64
     for &(start, end) in remainder {
         let record = crate::dismissed::Dismissal {
             project: mark.project.to_string(),
-            session: crate::paths::sanitise_key(session),
+            session_id: crate::paths::sanitise_key(session),
             start,
             end,
             reason: Some(format!("not billed by the close of {}", phase_name(mark))),

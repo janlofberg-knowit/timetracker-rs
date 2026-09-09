@@ -108,9 +108,7 @@ pub struct Thresholds {
     pub unvouched: i64,
 }
 
-/// How long a lease or an activity session keeps vouching past its last evidence
-/// of life, in minutes: `gap` with evidence, `unvouched` without, plus the one
-/// minute [`gaps_over`]'s floor-minutes-and-strictly-greater rule adds.
+/// Grace in minutes past the last evidence of life: gap with it, unvouched without, plus one.
 pub fn grace_minutes(lively: bool, thresholds: Thresholds) -> i64 {
     let allowed = if lively {
         thresholds.gap

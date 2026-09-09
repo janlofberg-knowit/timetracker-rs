@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dismissal {
     pub project: String,
-    /// The activity session id the stretch belongs to, never a mark key: rows
-    /// are per session, and several `--agent` marks share one session's id.
-    pub session: String,
+    pub session_id: String,
     pub start: i64,
     pub end: i64,
     pub reason: Option<String>,
@@ -47,7 +45,7 @@ fn dismissal_key(dismissal: &Dismissal) -> String {
     format!(
         "{}.{}.{}-{}",
         crate::marks::project_key(&dismissal.project),
-        segment(&dismissal.session),
+        segment(&dismissal.session_id),
         dismissal.start,
         dismissal.end
     )
@@ -64,7 +62,7 @@ pub fn write_in(dir: &Path, dismissal: &Dismissal) -> io::Result<()> {
         Err(err) => return Err(err),
     };
     writeln!(file, "project={}", dismissal.project)?;
-    writeln!(file, "session={}", dismissal.session)?;
+    writeln!(file, "session={}", dismissal.session_id)?;
     writeln!(file, "start={}", dismissal.start)?;
     writeln!(file, "end={}", dismissal.end)?;
     if let Some(reason) = &dismissal.reason {
@@ -73,8 +71,7 @@ pub fn write_in(dir: &Path, dismissal: &Dismissal) -> io::Result<()> {
     Ok(())
 }
 
-/// Every dismissal in `dir`; a missing directory reads as none. A file without
-/// all four required fields is skipped.
+/// Returns every dismissal in dir; skips a file missing any of project, session, start, end.
 pub fn read_all_in(dir: &Path) -> Vec<Dismissal> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -117,7 +114,7 @@ fn read_dismissal(path: &Path) -> Option<Dismissal> {
 
     Some(Dismissal {
         project: project?,
-        session: session?,
+        session_id: session?,
         start: start?,
         end: end?,
         reason,
@@ -138,7 +135,7 @@ mod tests {
     fn dismissal() -> Dismissal {
         Dismissal {
             project: "my proj".to_string(),
-            session: "sess-1".to_string(),
+            session_id: "sess-1".to_string(),
             start: 1_000_000,
             end: 1_003_600,
             reason: Some("a break".to_string()),

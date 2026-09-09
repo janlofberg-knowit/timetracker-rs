@@ -1,17 +1,13 @@
 //! Reconciles the hook-only activity ledger against marks and logged
-//! entries — the `tt agent audit` command. See
-//! `docs/decisions/0001-agent-activity-tracking.md`.
+//! entries — the `tt agent audit` command.
 //!
 //! An activity window counts as accounted for once every part of it falls inside
 //! a same-project mark's lease or a same-project `#agent`- or `#auto`-tagged entry
-//! — both subtract, so they compose (see
-//! `docs/decisions/0002-auto-logging-unaccounted-activity.md` for the
-//! latter). Neither is **unaccounted agent activity**: real work that never
-//! got tracked at all.
+//! — both subtract, so they compose. Neither is **unaccounted agent activity**:
+//! real work that never got tracked at all.
 //!
-//! Reconciliation runs per session, and an open one is bounded at its own last
-//! evidence of life — see
-//! `docs/decisions/0006-bounding-an-abandoned-activity-session.md`.
+//! Reconciliation runs per session, and an open one is measured to its own last
+//! evidence of life plus the lease's grace, clamped to now.
 
 use chrono::{DateTime, Local};
 
@@ -28,7 +24,8 @@ pub struct Unaccounted {
     pub project: String,
     /// The activity session this stretch came from — with `start`, the address
     /// `tt agent resolve` and `tt agent dismiss` match a row on.
-    pub session: String,
+    #[serde(rename = "session")]
+    pub session_id: String,
     /// Serialised as epoch seconds: `start` is half of a row's address, and a
     /// caller must never have to read it back out of a formatted time.
     #[serde(serialize_with = "as_epoch")]
@@ -42,13 +39,7 @@ pub struct Unaccounted {
 }
 
 impl Unaccounted {
-    /// `<project> - since HH:MM (Xh Ym)`, with a trailing subagent-dispatch
-    /// count when there were any, then the session hint that tells two rows of
-    /// one project apart, and a trailing ` [abandoned]` for a bounded session's
-    /// last row. The hint is for the eye; the address is the full `session`.
-    /// Shared by the CLI (`tt agent audit`,
-    /// `tt agent activity check`) and the TUI's Agents panel, so the two
-    /// cannot disagree on how this reads.
+    /// The row as the CLI and the TUI both print it; the address is the full session id, the hint is for the eye.
     pub fn describe(&self) -> String {
         let subagents = match self.subagents {
             0 => String::new(),
@@ -75,7 +66,7 @@ impl Unaccounted {
     /// The leading characters of the session id, enough to read two rows apart.
     /// Never an address: the full id is what a command is given.
     fn session_hint(&self) -> String {
-        self.session.chars().take(8).collect()
+        self.session_id.chars().take(8).collect()
     }
 }
 
@@ -103,18 +94,15 @@ pub fn max_gap_minutes() -> i64 {
     )
 }
 
-/// Whether the `Stop` hook should auto-log a session's own unaccounted
-/// window, per `agent.auto_log_on_stop` — see
-/// docs/decisions/0003-auto-log-on-stop.md. `config::load` already resets
-/// this to `None` if `auto_log_after_minutes` is not also set, so a bare
-/// read here is enough; no need to re-check the precondition.
+/// Whether the `Stop` hook should auto-log a session's own unaccounted window,
+/// per `agent.auto_log_on_stop`. `config::load` already resets this to `None` if
+/// `auto_log_after_minutes` is not also set, so a bare read here is enough.
 pub fn auto_log_on_stop_enabled() -> bool {
     crate::config::load().agent.auto_log_on_stop == Some(true)
 }
 
 /// How long a window must stay unaccounted for before `tt agent audit
-/// --auto-log` (see docs/decisions/0002-auto-logging-unaccounted-activity.md)
-/// writes a fallback `#auto` entry for it, in minutes.
+/// --auto-log` writes a fallback `#auto` entry for it, in minutes.
 /// `TT_AUTO_LOG_AFTER_MINUTES`, else `agent.auto_log_after_minutes`.
 ///
 /// `None` disables auto-logging outright — both when neither is set (the
@@ -216,7 +204,7 @@ pub fn unaccounted(
 
                     Some(Unaccounted {
                         project: project.to_string(),
-                        session: session.id.clone(),
+                        session_id: session.id.clone(),
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
@@ -237,13 +225,13 @@ pub fn unaccounted(
 pub fn over_floor(rows: &[Unaccounted], thresholds: Thresholds) -> Vec<&Unaccounted> {
     let mut totals: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
     for row in rows {
-        *totals.entry(row.session.as_str()).or_default() +=
+        *totals.entry(row.session_id.as_str()).or_default() +=
             row.end.signed_duration_since(row.start).num_minutes();
     }
     rows.iter()
         .filter(|row| {
             totals
-                .get(row.session.as_str())
+                .get(row.session_id.as_str())
                 .is_some_and(|total| *total >= thresholds.unvouched)
         })
         .collect()
@@ -310,7 +298,7 @@ fn uncovered_by_dismissals(
 ) -> Vec<(i64, i64)> {
     let mut remaining = stretches;
     for dismissal in dismissals.iter().filter(|dismissal| {
-        dismissal.session == session && marks::same_project(&dismissal.project, project)
+        dismissal.session_id == session && marks::same_project(&dismissal.project, project)
     }) {
         if dismissal.end <= dismissal.start {
             continue;
@@ -516,7 +504,7 @@ mod tests {
     fn dismissal(project: &str, session: &str, start: i64, end: i64) -> Dismissal {
         Dismissal {
             project: project.to_string(),
-            session: session.to_string(),
+            session_id: session.to_string(),
             start,
             end,
             reason: None,
@@ -907,7 +895,7 @@ mod tests {
         assert_eq!(
             flagged
                 .iter()
-                .map(|u| u.session.as_str())
+                .map(|u| u.session_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["sess-1", "sess-2"],
             "each row names the session it came from"
@@ -962,7 +950,7 @@ mod tests {
         assert_eq!(
             flagged
                 .iter()
-                .map(|u| u.session.as_str())
+                .map(|u| u.session_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["sess-2"]
         );
@@ -997,7 +985,7 @@ mod tests {
         assert_eq!(
             flagged
                 .iter()
-                .map(|u| u.session.as_str())
+                .map(|u| u.session_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["sess-2"],
             "a concurrent session's row over the same minutes must survive"
