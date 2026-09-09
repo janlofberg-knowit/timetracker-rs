@@ -49,8 +49,10 @@ With [mise](https://mise.jdx.dev) installed:
 ```sh
 mise run fmt         # rustfmt the tree
 mise run fmt:check   # fail instead of rewriting — what CI and the hook ask
+mise run lint        # clippy, with every warning an error
+mise run lint:fix    # apply clippy's machine-applicable suggestions
 mise run test        # cargo test --all-targets
-mise run check       # both gates, formatting first
+mise run check       # all three gates, cheapest first
 mise run hooks       # install the git hooks (one-off, per clone)
 ```
 
@@ -59,7 +61,9 @@ so hooks stay under version control and reach everyone on their next pull.
 The `pre-commit` hook formats the staged Rust files and re-stages them, so a
 `cargo fmt` diff never lands as its own follow-up commit. A file that is both
 staged and dirty is not rewritten — re-staging it would sweep the unstaged half
-into the commit — so the hook reports it instead. Skip a hook once with
+into the commit — so the hook reports it instead. Clippy is deliberately not in
+the hook: it costs a compile, and `mise run check` before a push is the place
+for it. Skip a hook once with
 `git commit --no-verify`; uninstall with `git config --unset core.hooksPath`.
 
 ## Releasing

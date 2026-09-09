@@ -27,17 +27,28 @@ run = "cargo fmt --all"
 description = "Fail if anything is unformatted, without rewriting it"
 run = "cargo fmt --all -- --check"
 
+[tasks.lint]
+description = "Fail on any clippy warning"
+run = "cargo clippy --all-targets -- -D warnings"
+
+# Only the lints clippy can rewrite on its own; the rest it still reports.
+# `--allow-dirty --allow-staged` because the point is to run this mid-edit —
+# git is the undo here, so check the diff before committing it.
+[tasks."lint:fix"]
+description = "Apply clippy's machine-applicable suggestions"
+run = "cargo clippy --fix --all-targets --allow-dirty --allow-staged"
+
 [tasks.test]
 description = "Run the whole test suite"
 run = "cargo test --all-targets"
 
-# The check to run before pushing. `depends` runs in parallel, so the test task
-# is invoked from `run` instead: a formatting-only failure then reports on its
-# own rather than scrolling past under a full test run.
+# The check to run before pushing. `depends` runs in parallel, so the slower
+# gates are invoked from `run` instead, cheapest first: a formatting-only
+# failure then reports on its own rather than scrolling past under a test run.
 [tasks.check]
-description = "Format check, then tests"
+description = "Format check, then clippy, then tests"
 depends = ["fmt:check"]
-run = "mise run test"
+run = ["mise run lint", "mise run test"]
 
 # Points git at the tracked hooks in scripts/githooks rather than copying them
 # into .git/hooks, so an updated hook reaches everyone on their next pull and
