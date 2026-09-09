@@ -2381,8 +2381,14 @@ mod tests {
         // first field goes.
         app.input_field = InputField::Data;
         let scrolled = frame_lines(&mut app, 100, 20).join("\n");
-        assert!(scrolled.contains(" Data (optional"), "scrolled:\n{scrolled}");
-        assert!(!scrolled.contains(" Description "), "top field scrolled off");
+        assert!(
+            scrolled.contains(" Data (optional"),
+            "scrolled:\n{scrolled}"
+        );
+        assert!(
+            !scrolled.contains(" Description "),
+            "top field scrolled off"
+        );
         assert!(scrolled.contains(": switch field"), "help row kept");
         assert!(scrolled.contains("(7/7)"), "position marker:\n{scrolled}");
     }

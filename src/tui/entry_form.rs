@@ -320,8 +320,7 @@ impl App {
                 if let (Some(s), Some(e)) = (start, end) {
                     let diff = e.signed_duration_since(s);
                     if diff.num_seconds() > 0 {
-                        self.input_duration
-                            .set_from(&crate::duration::format(diff));
+                        self.input_duration.set_from(&crate::duration::format(diff));
                     }
                 } else if let (Some(s), Some(d)) = (start, dur) {
                     self.input_end_time
@@ -332,8 +331,7 @@ impl App {
                 if let (Some(s), Some(e)) = (start, end) {
                     let diff = e.signed_duration_since(s);
                     if diff.num_seconds() > 0 {
-                        self.input_duration
-                            .set_from(&crate::duration::format(diff));
+                        self.input_duration.set_from(&crate::duration::format(diff));
                     }
                 } else if let (None, Some(e), Some(d)) = (start, end, dur) {
                     self.input_start_time
