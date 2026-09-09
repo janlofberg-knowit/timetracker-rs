@@ -16,3 +16,32 @@ rust = "1.95.0"
 [tasks.bump]
 description = "Bump the crate version in Cargo.toml and Cargo.lock: mise bump <major|minor|patch>"
 run = "cargo set-version --bump"
+
+[tasks.fmt]
+description = "Rewrite the source in rustfmt's shape"
+run = "cargo fmt --all"
+
+# What the pre-commit hook and CI ask: report, change nothing. A formatting
+# difference is an error here, so it can gate a commit.
+[tasks."fmt:check"]
+description = "Fail if anything is unformatted, without rewriting it"
+run = "cargo fmt --all -- --check"
+
+[tasks.test]
+description = "Run the whole test suite"
+run = "cargo test --all-targets"
+
+# The check to run before pushing. `depends` runs in parallel, so the test task
+# is invoked from `run` instead: a formatting-only failure then reports on its
+# own rather than scrolling past under a full test run.
+[tasks.check]
+description = "Format check, then tests"
+depends = ["fmt:check"]
+run = "mise run test"
+
+# Points git at the tracked hooks in scripts/githooks rather than copying them
+# into .git/hooks, so an updated hook reaches everyone on their next pull and
+# `git config --unset core.hooksPath` is the whole uninstall.
+[tasks.hooks]
+description = "Install the repo's git hooks (format before every commit)"
+run = "git config core.hooksPath scripts/githooks"

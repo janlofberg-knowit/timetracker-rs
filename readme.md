@@ -42,6 +42,26 @@ tt today
 See [docs/usage.md](docs/usage.md) for the full command reference, duration
 format, tags, data storage location, and configuration file options.
 
+## Development
+
+With [mise](https://mise.jdx.dev) installed:
+
+```sh
+mise run fmt         # rustfmt the tree
+mise run fmt:check   # fail instead of rewriting — what CI and the hook ask
+mise run test        # cargo test --all-targets
+mise run check       # both gates, formatting first
+mise run hooks       # install the git hooks (one-off, per clone)
+```
+
+`mise run hooks` points `core.hooksPath` at [scripts/githooks](scripts/githooks),
+so hooks stay under version control and reach everyone on their next pull.
+The `pre-commit` hook formats the staged Rust files and re-stages them, so a
+`cargo fmt` diff never lands as its own follow-up commit. A file that is both
+staged and dirty is not rewritten — re-staging it would sweep the unstaged half
+into the commit — so the hook reports it instead. Skip a hook once with
+`git commit --no-verify`; uninstall with `git config --unset core.hooksPath`.
+
 ## Releasing
 
 Releases are cut from `Cargo.toml`: pushing a version to `main` that has no

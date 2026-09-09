@@ -1,0 +1,26 @@
+#!/bin/sh
+# Formats the tree before a commit is written, so `cargo fmt` diffs never land
+# as their own follow-up commit. Install with `mise run hooks`; skip once with
+# `git commit --no-verify`.
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+[ -n "$staged" ] || exit 0
+
+# A file that is staged *and* dirty cannot be formatted safely: re-adding it
+# would sweep the unstaged half of the file into the commit. Report instead.
+partial=$(git diff --name-only -- $staged)
+if [ -n "$partial" ]; then
+	if ! cargo fmt --all -- --check; then
+		echo "pre-commit: unformatted, and these files have unstaged changes:" >&2
+		echo "$partial" >&2
+		echo "Stage or stash them, then run 'mise run fmt'." >&2
+		exit 1
+	fi
+	exit 0
+fi
+
+cargo fmt --all
+# Only what was already staged: formatting may have touched other files, and
+# those are the author's to commit when they choose.
+git add -- $staged
