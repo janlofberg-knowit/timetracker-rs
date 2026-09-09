@@ -252,22 +252,6 @@ fn json_carries_each_row_s_session_and_exact_epochs() {
 }
 
 #[test]
-fn json_tells_two_overlapping_sessions_apart_by_their_ids() {
-    let case = Case::new("audit-json-twins");
-    let start = now() - 3 * HOUR;
-    case.write_session("sess-1", "twin", start, Some(now()));
-    case.write_session("sess-2", "twin", start, Some(now()));
-
-    let rows = rows(&case.run(&["audit", "--json"]));
-    let mut ids: Vec<&str> = rows
-        .iter()
-        .map(|row| row["session"].as_str().unwrap())
-        .collect();
-    ids.sort();
-    assert_eq!(ids, vec!["sess-1", "sess-2"]);
-}
-
-#[test]
 fn json_is_an_empty_array_when_nothing_is_unaccounted() {
     let case = Case::new("audit-json-clean");
     let run = case.run(&["audit", "--json"]);
@@ -335,7 +319,86 @@ fn a_session_under_the_floor_is_silent_in_text_but_listed_in_json() {
     assert_eq!(rows(&case.run(&["audit", "--json"])).len(), 0);
 }
 
-/// `--project` bounds what a run may **write**, not only what it prints./// `--project` bounds what a run may **write**, not only what it prints.
+/// An auto-logged entry names the session it was written for, so it cannot
+/// silence a concurrent same-project session's row.
+#[test]
+fn auto_log_covers_only_the_session_it_wrote_for() {
+    let case = Case::new("audit-auto-log-session");
+    case.write_config("[agent]\nauto_log_after_minutes = 180\n");
+    let end = now();
+    // Over the threshold, so it is auto-logged; and under it, so it is not.
+    case.write_session("sess-1", "twin", end - 4 * HOUR, Some(end));
+    case.write_session("sess-2", "twin", end - 3 * HOUR, Some(end));
+
+    let run = case.run(&["audit", "--auto-log"]);
+    run.assert_status(0);
+    assert_eq!(case.store().entries.len(), 1, "only the longer window");
+
+    let left = rows(&case.run(&["audit", "--json"]));
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0]["session"], "sess-2");
+}
+
+/// `--json` promises one array on stdout, so a write's confirmation cannot
+/// share the stream.
+#[test]
+fn json_stays_parseable_when_auto_log_writes_in_the_same_run() {
+    let case = Case::new("audit-json-auto-log");
+    case.write_config("[agent]\nauto_log_after_minutes = 180\n");
+    let start = now() - 4 * HOUR;
+    case.write_session("sess-1", "smoke", start, Some(now()));
+
+    let run = case.run(&["audit", "--json", "--auto-log"]);
+    run.assert_status(0);
+    assert_eq!(run.stdout.trim(), "[]", "stdout: {:?}", run.stdout);
+    assert!(
+        run.stderr.contains("Logged:"),
+        "the confirmation belongs on stderr: {:?}",
+        run.stderr
+    );
+    assert_eq!(case.store().entries.len(), 1);
+}
+
+/// A row is addressed by the sanitised key its session file is named with,
+/// whichever form the caller holds.
+#[test]
+fn resolve_matches_a_session_whose_id_needed_sanitising() {
+    let case = Case::new("audit-resolve-sanitised");
+    let start = now() - 3 * HOUR;
+    case.write_session("weird_id", "smoke", start, Some(now()));
+
+    let run = case.run(&[
+        "resolve",
+        "--session",
+        "weird/id",
+        &start.to_string(),
+        "-",
+        "impl",
+        "the same row",
+    ]);
+    run.assert_status(0);
+    assert_eq!(case.store().entries.len(), 1);
+}
+
+#[test]
+fn dismiss_refuses_a_span_that_ends_where_it_starts() {
+    let case = Case::new("audit-dismiss-empty-span");
+    let start = now() - 3 * HOUR;
+    case.write_session("sess-1", "smoke", start, Some(now()));
+
+    let run = case.run(&[
+        "dismiss",
+        "--session",
+        "sess-1",
+        "smoke",
+        &format!("{start}-{start}"),
+    ]);
+    run.assert_status(64);
+    assert_eq!(common::count_files(&case.dismissed), 0);
+    assert!(!run.stdout.contains("dismissed"), "{:?}", run.stdout);
+}
+
+/// `--project` bounds what a run may **write**, not only what it prints.
 #[test]
 fn auto_log_with_a_project_never_writes_another_project_s_window() {
     let case = Case::new("audit-auto-log-project");

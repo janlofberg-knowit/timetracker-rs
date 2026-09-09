@@ -88,6 +88,7 @@ fn main() -> Result<()> {
             trim,
             ended_at: None,
             data,
+            confirm_on_stderr: false,
         }),
         Commands::Today => commands::today(),
         Commands::Report {

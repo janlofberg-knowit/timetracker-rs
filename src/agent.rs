@@ -171,7 +171,7 @@ fn check_session(dir: &std::path::Path, session_id: &str, auto_log: bool) -> Res
     for item in audit::over_floor(&flagged, thresholds) {
         let minutes = item.end.signed_duration_since(item.start).num_minutes();
         if threshold.is_some_and(|threshold| minutes > threshold) {
-            write_auto_log(item)?;
+            write_auto_log(item, false)?;
             println!("{} (auto-logged)", item.describe());
         } else {
             println!("{}", item.describe());
@@ -327,6 +327,8 @@ fn unaccounted_at(now: DateTime<Local>) -> Result<Vec<audit::Unaccounted>> {
 /// the matched row's, never an argument, and the span is logged unrounded: a rounded
 /// duration reaches back past the row's start. A pair matching no row writes nothing.
 fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -> Result<()> {
+    // A row is addressed by the sanitised key its session file is named with.
+    let session = crate::paths::sanitise_key(session);
     let rows = unaccounted_at(Local::now())?;
     let Some(row) = rows
         .iter()
@@ -350,7 +352,8 @@ fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -
         ended_at: Some(row.end),
         // Names the session, so this entry covers that agent's row and not a
         // concurrent agent's row over the same minutes.
-        data: Some(stamp_session(None, session)),
+        data: Some(stamp_session(None, &session)),
+        confirm_on_stderr: false,
     })
 }
 
@@ -358,6 +361,11 @@ fn resolve(session: &str, start: i64, issue: &str, phase: &str, summary: &str) -
 /// one session's stretch of clock time was not work. Records the span as given and
 /// matches no row: it is a statement about clock time, not an operation on a row.
 fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&str>) -> Result<()> {
+    let (from, until) = (span.start.timestamp(), span.end.timestamp());
+    if until <= from {
+        eprintln!("tt: a dismissal needs a span that ends after it starts, got {from}-{until}");
+        std::process::exit(64);
+    }
     let dir = crate::dismissed::dismissed_dir()
         .context("could not determine a cache directory for the dismissals")?;
     crate::dismissed::write_in(
@@ -367,8 +375,8 @@ fn dismiss(session: &str, project: &str, span: &IdleInterval, reason: Option<&st
             // The ledger matches an activity session by its file name, which is the
             // sanitised id; a raw id that sanitises differently would match no row.
             session_id: crate::paths::sanitise_key(session),
-            start: span.start.timestamp(),
-            end: span.end.timestamp(),
+            start: from,
+            end: until,
             reason: reason.map(str::to_string),
         },
     )?;
@@ -405,7 +413,9 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
         for item in audit::over_floor(&flagged, thresholds) {
             let minutes = item.end.signed_duration_since(item.start).num_minutes();
             if minutes > threshold {
-                write_auto_log(item)?;
+                // `--json` promises one array on stdout, so the confirmation
+                // goes to stderr.
+                write_auto_log(item, json)?;
                 wrote_any = true;
             }
         }
@@ -439,7 +449,7 @@ fn run_audit(auto_log: bool, json: bool, project: Option<&str>) -> Result<()> {
 
 /// `--auto-log`: write one fixed-phase `#auto` entry for an unaccounted window, the way
 /// `tt agent item` would but **never** tagged `#agent`; phase and summary are literal text.
-fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
+fn write_auto_log(item: &audit::Unaccounted, quiet: bool) -> Result<()> {
     let minutes = item.end.signed_duration_since(item.start).num_minutes();
     commands::log(commands::LogRequest {
         description: "unattended activity #auto".to_string(),
@@ -452,7 +462,10 @@ fn write_auto_log(item: &audit::Unaccounted) -> Result<()> {
         // The row is one contiguous active stretch; nothing here may cut it again.
         trim: false,
         ended_at: Some(item.end),
-        data: None,
+        // Names the row's session, or this entry would silence a concurrent
+        // same-project session's row as well.
+        data: Some(stamp_session(None, &item.session_id)),
+        confirm_on_stderr: quiet,
     })
 }
 
@@ -532,6 +545,7 @@ fn log_entry(
         trim: span.trim,
         ended_at: span.ended_at,
         data,
+        confirm_on_stderr: false,
     })
 }
 
@@ -579,7 +593,7 @@ fn end(mark: MarkRef, close: Close) -> Result<()> {
 
     let mut idle = Vec::new();
     let mut split_at_idle = false;
-    // Stays `None` on the explicit-minutes path, which reads no timestamps.
+    // Stays `None` on the explicit-minutes path.
     let mut anchor = None;
 
     // What this close leaves for the audit: the mark's head on the explicit-minutes

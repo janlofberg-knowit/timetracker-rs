@@ -152,7 +152,7 @@ pub fn unaccounted(
             let Some(project) = session.project.as_deref() else {
                 return Vec::new();
             };
-            let (end, bounded) = session_end(session, now_epoch, thresholds);
+            let (end, bounded_at) = session_end(session, now_epoch, thresholds);
 
             let stretches =
                 uncovered_by_marks(project, session.start, end, leases, now_epoch, thresholds);
@@ -208,7 +208,10 @@ pub fn unaccounted(
                         start: instant(from)?,
                         end: instant(to)?,
                         subagents,
-                        abandoned: bounded && to == end,
+                        // The trailing row of a bounded session: it ends at the bound,
+                        // or at the last evidence when the grace was cut as idle.
+                        abandoned: bounded_at
+                            .is_some_and(|last_evidence| to == end || to == last_evidence),
                     })
                 })
                 .collect()
@@ -239,12 +242,13 @@ pub fn over_floor(rows: &[Unaccounted], thresholds: Thresholds) -> Vec<&Unaccoun
 
 /// Where a session is measured to: its own `end=`, else [`marks::grace_minutes`]
 /// past its last evidence of life — its last dispatch, or its start with none —
-/// clamped to `now`, plus whether that bound has fallen. Reads no file mtime and
-/// no lease: the mtime equals the last parsed line, and a lease's covered stretch
-/// is subtracted downstream.
-fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> (i64, bool) {
+/// clamped to `now`. The second value is that evidence's own instant, and `None`
+/// while the grace still has time left. Reads no file mtime and no lease: the mtime
+/// equals the last parsed line, and a lease's covered stretch is subtracted
+/// downstream.
+fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> (i64, Option<i64>) {
     if let Some(end) = session.end {
-        return (end, false);
+        return (end, None);
     }
     let lively = !session.subagent_at.is_empty();
     let last = session
@@ -255,7 +259,7 @@ fn session_end(session: &Session, now: i64, thresholds: Thresholds) -> (i64, boo
         .unwrap_or(session.start)
         .max(session.start);
     let bound = last + marks::grace_minutes(lively, thresholds) * 60;
-    (bound.min(now), bound <= now)
+    (bound.min(now), (bound <= now).then_some(last))
 }
 
 /// What is left of `start → end` after removing every same-project lease's covered
@@ -333,8 +337,8 @@ fn subtract(stretch: (i64, i64), cut: (i64, i64)) -> Vec<(i64, i64)> {
 /// Subtraction of what the leases left, so the two coverage sources compose.
 ///
 /// An entry carrying `agent.session` covers **that session only**, which is what lets
-/// two agents resolve their own row of the same minutes; one naming no session covers
-/// every session of the project.
+/// two agents clear their own row of the same minutes; one naming no session — `item`,
+/// or a hand-written row — covers every session of the project.
 fn uncovered_by_entries(
     project: &str,
     session: &str,
@@ -854,6 +858,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(at(61 * 60), true), (at(30 * 60), false)]
         );
+        assert!(
+            flagged[0].describe().ends_with(" [abandoned]"),
+            "{}",
+            flagged[0].describe()
+        );
+    }
+
+    /// The bound sits a grace past the last dispatch and `gaps_over` cuts that
+    /// grace, so the trailing row ends at the dispatch — and is still the row
+    /// the session was abandoned at.
+    #[test]
+    fn the_trailing_row_of_a_bounded_session_with_dispatches_is_marked_abandoned() {
+        let sessions = vec![session_with_subagents("tt", 0, None, vec![30 * 60])];
+        let flagged = unaccounted(&sessions, &[], &[], at(200 * HOUR), 30);
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].end, at(30 * 60));
         assert!(
             flagged[0].describe().ends_with(" [abandoned]"),
             "{}",
