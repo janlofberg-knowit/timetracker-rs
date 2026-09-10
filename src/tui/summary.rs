@@ -106,6 +106,12 @@ impl App {
         marker
     }
 
+    /// Whether `j`/`k` and the focused border belong to the Summary. Visibility is
+    /// half the answer, so focus can never read as resting on a hidden surface.
+    pub(crate) fn summary_is_focused(&self) -> bool {
+        self.focus == Focus::Summary && self.show_summary
+    }
+
     /// `Shift-S`: show or hide the surface. Opening it focuses it, as `P`/`T` do
     /// for their panes; hiding it while focused falls back off the surface.
     pub(crate) fn toggle_summary(&mut self) {

@@ -3462,6 +3462,28 @@ mod tests {
         assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
     }
 
+    /// Focus never reads as resting on a hidden surface, however `focus` was set.
+    #[test]
+    fn the_summary_reads_as_focused_only_while_it_is_visible() {
+        let _guard = env_guard();
+        sandbox("summary-is-focused");
+        let mut app = seed_summary();
+        assert!(!app.summary_is_focused());
+
+        app.focus = Focus::Summary;
+        assert!(!app.summary_is_focused(), "hidden: focus does not count");
+
+        app.toggle_summary();
+        assert!(app.summary_is_focused());
+
+        app.focus = Focus::Table;
+        assert!(!app.summary_is_focused(), "visible but not focused");
+
+        app.focus = Focus::Summary;
+        app.toggle_summary();
+        assert!(!app.summary_is_focused(), "hidden again");
+    }
+
     #[test]
     fn s_focuses_the_summary_it_opens_and_falls_back_when_it_hides() {
         let _guard = env_guard();

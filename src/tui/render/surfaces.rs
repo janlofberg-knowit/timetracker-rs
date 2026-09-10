@@ -116,12 +116,21 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     const COUNT_WIDTH: usize = 5;
     const SHARE_WIDTH: usize = 6;
 
+    let focused = app.summary_is_focused();
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(if focused {
+            theme::accent()
+        } else {
+            theme::border()
+        }))
         .title(Span::styled(
             " Summary (S) ",
-            Style::default().fg(theme::title()),
+            Style::default().fg(if focused {
+                theme::highlight()
+            } else {
+                theme::title()
+            }),
         ));
     let inner = block.inner(area);
 
