@@ -230,7 +230,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(footer_block, footer);
 
     // Hand-counted against the spans below — update it when they change.
-    const KEYS_WIDTH: u16 = 24; // " | P/T/A | Tab | ?: help"
+    const KEYS_WIDTH: u16 = 26; // " | P/T/A/S | Tab | ?: help"
     let hints_width = footer_inner.width.saturating_sub(KEYS_WIDTH);
     let footer_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -284,6 +284,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("T", key_style(app.show_tags)),
         Span::styled("/", Style::default().fg(theme::border())),
         Span::styled("A", key_style(app.show_marks)),
+        Span::styled("/", Style::default().fg(theme::border())),
+        Span::styled("S", key_style(app.show_summary)),
         Span::styled(" | ", Style::default().fg(theme::border())),
         Span::styled("Tab", key_style(panes_open)),
         Span::styled(" | ", Style::default().fg(theme::border())),

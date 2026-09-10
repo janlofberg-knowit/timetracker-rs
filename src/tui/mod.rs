@@ -1871,7 +1871,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} missing:\n{}", lines.join("\n")))
         };
         let first = column("previous period");
-        for needle in ["stop active entry", "focus panes in reverse", "quit"] {
+        for needle in [
+            "stop active entry",
+            "focus the same ring in reverse",
+            "quit",
+        ] {
             assert_eq!(column(needle), first, "{needle}");
         }
         let screen = lines.join("\n");
@@ -2371,6 +2375,55 @@ mod tests {
         terminal.draw(|f| render::ui(f, app)).unwrap();
         let pos = terminal.get_cursor_position().unwrap();
         (pos.x, pos.y)
+    }
+
+    /// The legend names every surface key, and `KEYS_WIDTH` still fits it: the
+    /// zone never clips, so an undercount eats the end of the legend.
+    #[test]
+    fn the_footer_legend_names_the_summary_key_without_clipping() {
+        let _guard = env_guard();
+        sandbox("footer-legend");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        let screen = frame_lines(&mut app, 140, 20);
+        let footer = screen
+            .iter()
+            .rev()
+            .find(|line| line.contains("?: help"))
+            .unwrap_or_else(|| panic!("no footer:\n{}", screen.join("\n")));
+        assert!(
+            footer.contains(" | P/T/A/S | Tab | ?: help"),
+            "footer legend clipped or missing `S`: {footer}"
+        );
+        assert!(footer.contains("s: stop"), "the hints zone was clipped");
+    }
+
+    /// The help popup's ring rows name the Summary, not the panes alone.
+    #[test]
+    fn the_help_popup_names_the_summary_in_the_focus_ring() {
+        let _guard = env_guard();
+        sandbox("help-ring-rows");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.input_mode = InputMode::Help;
+        let screen = frame_lines(&mut app, 100, 60);
+        let row = |key: &str| {
+            screen
+                .iter()
+                .find(|line| line.contains(key))
+                .unwrap_or_else(|| panic!("no {key} row:\n{}", screen.join("\n")))
+                .clone()
+        };
+        assert!(row("Shift-Tab").contains("reverse"));
+        assert!(
+            screen
+                .iter()
+                .any(|line| line.contains("Tab") && line.contains("summary")),
+            "no Tab row names the summary:\n{}",
+            screen.join("\n")
+        );
     }
 
     #[test]
