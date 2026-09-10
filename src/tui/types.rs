@@ -165,11 +165,13 @@ impl LayoutSurface {
     }
 }
 
-/// What `j`/`k` move in `InputMode::Normal`; `Tab` cycles through it.
+/// What `Tab` cycles through in `InputMode::Normal`. `j`/`k` move the table or
+/// the focused pane; the Summary has no rows of its own to move.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Table,
     Pane(Pane),
+    Summary,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

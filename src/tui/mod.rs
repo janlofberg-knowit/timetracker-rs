@@ -1468,6 +1468,44 @@ mod tests {
         assert_eq!(app.focus, Focus::Table);
     }
 
+    /// The Summary sits last in the ring, below the panes, and only while it is open.
+    #[test]
+    fn tab_reaches_the_summary_only_while_it_is_open() {
+        let _guard = env_guard();
+        sandbox("summary-focus-ring");
+        let mut app = seed_panes();
+
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "closed: the ring skips it");
+
+        app.toggle_summary();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary, "after every visible pane");
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_summary();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        app.cycle_focus();
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "hidden again: two panes only");
+    }
+
     /// Opening a pane focuses it, so `j`/`k`/`Enter` drive it with no `Tab` first.
     #[test]
     fn opening_a_pane_focuses_it() {
@@ -1509,13 +1547,22 @@ mod tests {
         assert_eq!(app.pane_cursor(Pane::Tags), 2);
     }
 
-    /// `Shift-Tab` undoes `Tab` for every pane-visibility combination.
+    /// `Shift-Tab` undoes `Tab` for every surface-visibility combination.
     #[test]
     fn shift_tab_cycles_focus_in_the_exact_reverse_order() {
         let _guard = env_guard();
         sandbox("pane-focus-back");
 
-        for (projects, tags) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (projects, tags, summary) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (false, false, true),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
             let mut app = seed_panes();
             if projects {
                 app.toggle_pane(Pane::Projects);
@@ -1523,9 +1570,12 @@ mod tests {
             if tags {
                 app.toggle_pane(Pane::Tags);
             }
+            if summary {
+                app.toggle_summary();
+            }
             app.focus = Focus::Table;
 
-            let ring_len = 1 + app.visible_panes().len();
+            let ring_len = 1 + app.visible_panes().len() + usize::from(app.show_summary);
             let mut forward = Vec::new();
             for _ in 0..ring_len {
                 app.cycle_focus();
@@ -1548,7 +1598,7 @@ mod tests {
             assert_eq!(
                 backward, expected,
                 "reverse cycling is not the inverse of forward for \
-                 projects={projects} tags={tags}"
+                 projects={projects} tags={tags} summary={summary}"
             );
 
             for _ in 0..ring_len {

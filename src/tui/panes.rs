@@ -276,7 +276,7 @@ impl App {
         self.persist_layout();
     }
 
-    /// `Tab`: entries table → each visible pane, left to right → back.
+    /// `Tab`: entries table → each visible pane, left to right → Summary → back.
     pub(crate) fn cycle_focus(&mut self) {
         self.shift_focus(1);
     }
@@ -286,11 +286,15 @@ impl App {
         self.shift_focus(-1);
     }
 
-    /// Walk the ring — table then visible panes, left to right — by `delta`, wrapping.
+    /// Walk the ring by `delta`, wrapping: table, visible panes left to right,
+    /// then the Summary — screen order, panes above the content and Summary below.
     /// A focus off the ring reads as the table, so both directions recover.
     fn shift_focus(&mut self, delta: isize) {
         let mut order = vec![Focus::Table];
         order.extend(self.visible_panes().into_iter().map(Focus::Pane));
+        if self.show_summary {
+            order.push(Focus::Summary);
+        }
         let current = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
         let len = order.len() as isize;
         self.focus = order[(current + delta).rem_euclid(len) as usize];
