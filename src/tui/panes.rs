@@ -267,13 +267,19 @@ impl App {
         if self.pane_is_visible(pane) {
             self.focus = Focus::Pane(pane);
         } else if self.focus == Focus::Pane(pane) {
-            self.focus = self
-                .visible_panes()
-                .first()
-                .copied()
-                .map_or(Focus::Table, Focus::Pane);
+            self.focus = self.focus_after_hiding();
         }
         self.persist_layout();
+    }
+
+    /// Where focus lands when the focused surface is hidden: the first visible
+    /// pane, else the table. Never the Summary — hiding one surface must not
+    /// jump focus onto another.
+    pub(crate) fn focus_after_hiding(&self) -> Focus {
+        self.visible_panes()
+            .first()
+            .copied()
+            .map_or(Focus::Table, Focus::Pane)
     }
 
     /// `Tab`: entries table → each visible pane, left to right → Summary → back.

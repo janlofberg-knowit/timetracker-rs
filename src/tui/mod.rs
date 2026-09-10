@@ -3463,7 +3463,7 @@ mod tests {
     }
 
     #[test]
-    fn toggling_the_summary_surface_leaves_focus_and_the_table_alone() {
+    fn s_focuses_the_summary_it_opens_and_falls_back_when_it_hides() {
         let _guard = env_guard();
         sandbox("summary-focus");
         let mut app = seed_summary();
@@ -3473,13 +3473,25 @@ mod tests {
 
         app.toggle_summary();
         assert!(app.show_summary);
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focus, Focus::Summary);
         assert_eq!(app.table_state.selected(), Some(1));
 
         app.toggle_summary();
         assert!(!app.show_summary);
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "back to the pane");
         assert_eq!(app.table_state.selected(), Some(1));
+
+        // Hiding a pane never jumps focus to the Summary.
+        app.toggle_summary();
+        app.focus = Focus::Pane(Pane::Projects);
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Table);
+
+        let mut app = seed_summary();
+        app.toggle_summary();
+        assert_eq!(app.focus, Focus::Summary);
+        app.toggle_summary();
+        assert_eq!(app.focus, Focus::Table, "no pane to fall back to");
     }
 
     #[test]

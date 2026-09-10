@@ -10,6 +10,7 @@ use chrono::Duration;
 
 use super::App;
 use super::panes::surface_count;
+use super::types::Focus;
 
 /// Most project rows the surface shows before the rest live in the border count.
 const MAX_VISIBLE_PROJECTS: usize = 6;
@@ -105,9 +106,15 @@ impl App {
         marker
     }
 
-    /// `Shift-S`: show or hide the surface.
+    /// `Shift-S`: show or hide the surface. Opening it focuses it, as `P`/`T` do
+    /// for their panes; hiding it while focused falls back off the surface.
     pub(crate) fn toggle_summary(&mut self) {
         self.show_summary = !self.show_summary;
+        if self.show_summary {
+            self.focus = Focus::Summary;
+        } else if self.focus == Focus::Summary {
+            self.focus = self.focus_after_hiding();
+        }
         self.persist_layout();
     }
 }
