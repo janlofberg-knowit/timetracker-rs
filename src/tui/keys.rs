@@ -43,14 +43,15 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.should_quit = true;
             }
         }
-        // j/k move in the focused pane, else the table.
+        // j/k move in the focused pane, else the table — but the Summary has no
+        // rows, so with it focused they must not move the table under it.
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.pane_next() {
+            if !app.pane_next() && !app.summary_is_focused() {
                 app.next();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if !app.pane_previous() {
+            if !app.pane_previous() && !app.summary_is_focused() {
                 app.previous();
             }
         }
@@ -507,6 +508,49 @@ mod tests {
         press(&mut app, KeyCode::Char('k'));
         assert_eq!(app.table_state.selected(), Some(0));
         assert!(app.selected_entry().is_none(), "`k` left the header");
+    }
+
+    /// The Summary has no rows, so `j`/`k` must move nothing while it has focus.
+    #[test]
+    fn j_and_k_are_inert_while_the_summary_has_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-inert");
+        // Three rows, so two presses in one direction cannot wrap back to the start.
+        seed(
+            vec![
+                tagged(0, "first", &["impl"], 4),
+                tagged(1, "second", &["ops"], 3),
+                tagged(2, "third", &["plan"], 2),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        press(&mut app, KeyCode::Char('P'));
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            app.pane_cursor(Pane::Tags),
+            1,
+            "the Tags cursor moved first"
+        );
+
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.focus, Focus::Summary);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.table_state.selected(), Some(0), "`j` moved the table");
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.table_state.selected(), Some(0), "`k` moved the table");
+        assert_eq!(app.pane_cursor(Pane::Tags), 1);
+        assert_eq!(app.pane_cursor(Pane::Projects), 0);
+
+        // The table moves again as soon as focus leaves the surface.
+        app.focus = Focus::Table;
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(1));
     }
 
     /// Every key the Normal-mode map claims, asserted to still land on its
