@@ -1964,6 +1964,44 @@ mod tests {
         );
     }
 
+    /// Every key sits under the surface it acts on, so a reader looking for a
+    /// pane's keys finds them under the pane's own name.
+    #[test]
+    fn the_help_popup_groups_every_key_under_its_surface() {
+        let _guard = env_guard();
+        sandbox("help-sections");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::Help;
+
+        let screen = frame_lines(&mut app, 100, 60);
+        let heading = |name: &str| {
+            let needle = format!("\u{2502}  {name}");
+            screen
+                .iter()
+                .position(|line| line.contains(&needle))
+                .unwrap_or_else(|| panic!("no {name} heading:\n{}", screen.join("\n")))
+        };
+        let order: Vec<usize> = [
+            "Navigation",
+            "Entries",
+            "Projects & Tags",
+            "Agents",
+            "Summary",
+        ]
+        .iter()
+        .map(|name| heading(name))
+        .collect();
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "sections out of order: {order:?}"
+        );
+        assert!(
+            !screen.iter().any(|line| line.contains("\u{2502}  Other")),
+            "the Other bucket survived:\n{}",
+            screen.join("\n")
+        );
+    }
+
     #[test]
     fn a_short_help_popup_scrolls_and_clamps() {
         let _guard = env_guard();
@@ -1971,14 +2009,16 @@ mod tests {
         let mut app = seed_panes();
         app.input_mode = InputMode::Help;
 
+        // The last row of the last section: only ever on the last page.
+        const LAST_ROW: &str = "follow the filters";
         let top = frame_lines(&mut app, 100, 20).join("\n");
         assert!(top.contains("▾ more"), "{top}");
         assert!(top.contains("j/k scroll"), "{top}");
-        assert!(!top.contains("q / Esc"), "{top}");
+        assert!(!top.contains(LAST_ROW), "{top}");
 
         app.help_scroll = 1000;
         let bottom = frame_lines(&mut app, 100, 20).join("\n");
-        assert!(bottom.contains("q / Esc"), "{bottom}");
+        assert!(bottom.contains(LAST_ROW), "{bottom}");
         assert!(!bottom.contains("▾ more"), "{bottom}");
         assert!(app.help_scroll < 1000, "render clamps the offset");
 

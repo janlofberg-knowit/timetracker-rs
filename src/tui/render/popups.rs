@@ -16,6 +16,8 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("k / ↑", "select previous entry"),
             ("t", "go to today"),
             ("1 / 2 / 3 / 4", "day / week / all / overview"),
+            ("?", "toggle this help"),
+            ("q / Esc", "quit"),
         ],
     ),
     (
@@ -29,12 +31,14 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Enter", "detail, or toggle a group"),
             // A path, not a key: the trim is live only while the popover is open.
             ("Enter, t", "trim idle from the entry (asks first)"),
+            ("/", "search any field"),
+            ("o", "toggle sort order"),
+            ("r", "reload data from disk"),
         ],
     ),
     (
-        "Search & Filter",
+        "Projects & Tags",
         &[
-            ("/", "search any field"),
             ("Shift-P", "Projects pane on / off"),
             ("Shift-T", "Tags pane on / off"),
             ("Tab", "focus table / panes / summary"),
@@ -43,17 +47,13 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("-", "cycle the pane value back"),
         ],
     ),
+    ("Agents", &[("Shift-A", "agent phases on / off")]),
     (
-        "Other",
+        "Summary",
         &[
-            ("Shift-A", "agent phases on / off"),
             ("Shift-S", "project summary on / off"),
             ("v", "human / agent split (Summary focused)"),
             ("f", "follow the filters (Summary focused)"),
-            ("o", "toggle sort order"),
-            ("r", "reload data from disk"),
-            ("?", "toggle this help"),
-            ("q / Esc", "quit"),
         ],
     ),
 ];
