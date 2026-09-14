@@ -4005,6 +4005,93 @@ mod tests {
         assert!(!app.summary_is_focused(), "visible but not focused");
     }
 
+    /// The row carrying the panes' bottom borders. Side by side, both boxes
+    /// close on the same row.
+    fn pane_bottom_border(app: &mut App, width: u16, height: u16) -> String {
+        let screen = frame_lines(app, width, height);
+        let top = screen
+            .iter()
+            .position(|line| line.contains("Projects (P)"))
+            .unwrap_or_else(|| panic!("no Projects pane:\n{}", screen.join("\n")));
+        screen[top..]
+            .iter()
+            .find(|line| line.contains('\u{2518}'))
+            .cloned()
+            .unwrap_or_else(|| panic!("no bottom border:\n{}", screen.join("\n")))
+    }
+
+    /// Both panes open, so the equal-ratio split decides each legend's width.
+    fn seed_both_panes() -> App {
+        let mut app = seed_panes();
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        assert_eq!(app.visible_panes().len(), 2, "both panes must be open");
+        app
+    }
+
+    /// Each pane names its own keys, so `Enter` and `-` stop being invisible.
+    #[test]
+    fn both_panes_name_their_keys_on_their_bottom_border() {
+        let _guard = env_guard();
+        sandbox("pane-legend");
+        let mut app = seed_both_panes();
+
+        let border = pane_bottom_border(&mut app, 140, 40);
+        assert_eq!(
+            border
+                .matches(" Enter: filter \u{b7} -: back \u{b7} j/k: move ")
+                .count(),
+            2,
+            "one legend per pane: {border}"
+        );
+
+        // 80 columns split in two leave 38 inner cells; the legend is 37.
+        let border = pane_bottom_border(&mut app, 80, 40);
+        assert!(
+            border.contains(" Enter: filter \u{b7} -: back \u{b7} j/k: move "),
+            "the legend must survive a split pane at 80 columns: {border}"
+        );
+    }
+
+    /// Narrowing sheds the least useful key first, then the whole legend, and
+    /// never leaves a fragment that would name a key wrong.
+    #[test]
+    fn a_narrow_pane_sheds_the_move_key_and_then_the_whole_legend() {
+        let _guard = env_guard();
+        sandbox("pane-legend-narrow");
+        let mut app = seed_both_panes();
+
+        let border = pane_bottom_border(&mut app, 76, 40);
+        assert!(
+            border.contains(" Enter: filter \u{b7} -: back "),
+            "the head of the legend must stay: {border}"
+        );
+        assert!(!border.contains("j/k"), "`j/k` must shed first: {border}");
+
+        let border = pane_bottom_border(&mut app, 32, 40);
+        assert!(!border.contains("Enter"), "no legend at all: {border}");
+        assert!(
+            !border.contains(':'),
+            "a clipped legend was drawn: {border}"
+        );
+    }
+
+    /// The pane has no mode of its own, so focus is the whole accent rule.
+    #[test]
+    fn the_pane_legend_accents_only_the_focused_pane() {
+        let _guard = env_guard();
+        sandbox("pane-legend-colour");
+        let mut app = seed_both_panes();
+        app.focus = Focus::Pane(Pane::Projects);
+
+        let keys = drawn_fg(&mut app, "Enter: filter", 140, 40);
+        assert_eq!(keys, vec![theme::accent(), theme::inactive()]);
+
+        app.focus = Focus::Pane(Pane::Tags);
+        let keys = drawn_fg(&mut app, "Enter: filter", 140, 40);
+        assert_eq!(keys, vec![theme::inactive(), theme::accent()]);
+    }
+
     /// The Summary box's bottom border, where its key legend sits.
     fn summary_bottom_border(app: &mut App, width: u16, height: u16) -> String {
         let screen = frame_lines(app, width, height);

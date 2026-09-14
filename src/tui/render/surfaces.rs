@@ -287,6 +287,18 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         );
     }
 
+    // Ordered most useful first: the helper sheds from the end.
+    if let Some(keys) = legend(
+        &[
+            ("Enter", "filter", focused),
+            ("-", "back", focused),
+            ("j/k", "move", focused),
+        ],
+        inner.width,
+    ) {
+        block = block.title_bottom(keys.right_aligned());
+    }
+
     // The marker is a gutter on every row, so it comes off the rows' layout width.
     let width = (inner.width as usize).saturating_sub(CURSOR_MARKER.len());
     let items: Vec<ListItem> = if values.is_empty() {
