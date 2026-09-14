@@ -16,8 +16,11 @@ use super::types::Focus;
 /// Most project rows the surface shows before the rest live in the border count.
 const MAX_VISIBLE_PROJECTS: usize = 6;
 
-/// The standing statement on the title bar, after the scope word.
+/// The scope-only statement on the title bar, after the scope word.
 const ALL_PROJECTS: &str = "all projects";
+
+/// The follow-mode statement in its place.
+const FILTERED: &str = "filtered";
 
 /// The label for entries with no project; counted so the rows sum to the scope.
 pub(crate) const NO_PROJECT: &str = "(no project)";
@@ -104,7 +107,7 @@ impl App {
             return 0;
         }
         let rows = self.project_summary().len();
-        // The empty box says `nothing in scope` and heads no columns.
+        // The empty box says why it is empty and heads no columns.
         let header = u16::from(rows > 0);
         2 + header + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
@@ -124,11 +127,17 @@ impl App {
         surface_count(None, total, visible_rows)
     }
 
-    /// The title bar's right half: `day · all projects`, plus `· 6/9` when rows are
-    /// off screen and `· split` while the split is on. Present in **both** filter
-    /// states — only its colour changes.
+    /// The title bar's right half: `day · all projects`, or `day · filtered`
+    /// while following, plus `· 6/9` when rows are off screen and `· split`
+    /// while the split is on. The word says the mode, not the filter state;
+    /// only its colour follows the filter.
     pub(crate) fn summary_marker(&self, visible_rows: usize) -> String {
-        let mut marker = format!("{} · {}", self.view_mode.label(), ALL_PROJECTS);
+        let mode = if self.summary_follows_filters {
+            FILTERED
+        } else {
+            ALL_PROJECTS
+        };
+        let mut marker = format!("{} · {mode}", self.view_mode.label());
         if let Some(count) = self.summary_count(visible_rows) {
             marker.push_str(" · ");
             marker.push_str(&count);

@@ -104,9 +104,9 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The `Summary` surface: how the current scope split across projects. The title
-/// bar's `all projects` marker keeps its words in both filter states and changes
-/// only colour, off the same predicate the footer's total uses.
+/// The `Summary` surface: how the folded entries split across projects. The
+/// title bar's marker names the mode and takes its colour from the same
+/// predicate the footer's total uses.
 pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     /// The header over the project column, and the column's floor.
     const LABEL_HEADER: &str = "project";
@@ -156,9 +156,15 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         .right_aligned(),
     );
 
+    // Both conditions: an empty day must not blame a filter nobody set.
+    let empty_text = if app.summary_follows_filters && app.total_is_filtered() {
+        " nothing matches the filter"
+    } else {
+        " nothing in scope"
+    };
     let lines: Vec<Line> = if !scoped {
         vec![Line::from(Span::styled(
-            " nothing in scope",
+            empty_text,
             Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {

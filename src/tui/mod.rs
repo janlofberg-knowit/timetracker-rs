@@ -3952,7 +3952,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_marker_names_the_scope_and_always_says_all_projects() {
+    fn the_title_marker_says_all_projects_in_scope_only_mode() {
         let _guard = env_guard();
         sandbox("summary-marker");
         let mut app = seed_summary();
@@ -3980,6 +3980,85 @@ mod tests {
         );
         app.toggle_summary_split();
         assert_eq!(app.summary_marker(6), unfiltered);
+    }
+
+    #[test]
+    fn the_title_marker_says_filtered_while_the_summary_follows() {
+        let _guard = env_guard();
+        sandbox("summary-marker-follow");
+        let mut app = seed_summary();
+        app.toggle_summary();
+        app.toggle_summary_follows_filters();
+
+        for (mode, word) in scopes() {
+            app.set_view_mode(mode);
+            assert_eq!(app.summary_marker(6), format!("{word} \u{b7} filtered"));
+        }
+
+        // The word says the mode, so an unset filter does not take it away.
+        app.set_view_mode(ViewMode::Day);
+        assert!(!app.total_is_filtered());
+        assert_eq!(app.summary_marker(6), "day \u{b7} filtered");
+
+        // The count and the split keep their places after the word.
+        app.toggle_summary_split();
+        assert_eq!(
+            app.summary_marker(1),
+            "day \u{b7} filtered \u{b7} 1/3 \u{b7} split"
+        );
+
+        app.toggle_summary_follows_filters();
+        assert_eq!(
+            app.summary_marker(1),
+            "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
+        );
+    }
+
+    /// The empty box blames a filter only when one is set and the mode reads it.
+    #[test]
+    fn a_filtered_to_empty_summary_says_the_filter_emptied_it() {
+        let _guard = env_guard();
+        sandbox("summary-empty-follow");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        app.toggle_summary_follows_filters();
+
+        // Three projects in the day, each row plus a header and two borders.
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // A filter that removes projects shrinks the box.
+        app.project_filter.cycle("tt", true);
+        assert_eq!(app.summary_surface_height(), 4);
+        let one = summary_box(&mut app, 100, 40);
+        assert!(one[1].contains("tt"), "{one:#?}");
+
+        // A filter that removes every entry leaves the 3-row empty box.
+        app.project_filter.clear();
+        app.search_term.set_from("nothing matches this");
+        assert_eq!(app.summary_surface_height(), 3);
+        let empty = summary_box(&mut app, 100, 40);
+        assert!(
+            empty[0].starts_with("\u{2502} nothing matches the filter"),
+            "the empty box does not blame the filter: {}",
+            empty[0]
+        );
+
+        // Scope-only mode never empties, however the filter is set.
+        app.toggle_summary_follows_filters();
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // Following with nothing set says the scope is empty, not the filter.
+        app.search_term.clear();
+        app.toggle_summary_follows_filters();
+        app.selected_date -= chrono::Duration::days(400);
+        assert!(!app.total_is_filtered());
+        let bare = summary_box(&mut app, 100, 40);
+        assert!(
+            bare[0].starts_with("\u{2502} nothing in scope"),
+            "an unfiltered empty scope blamed a filter: {}",
+            bare[0]
+        );
     }
 
     /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.
