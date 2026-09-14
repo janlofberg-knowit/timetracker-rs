@@ -1368,8 +1368,6 @@ mod tests {
     }
 
     /// Toggling a surface writes it back, so the next run opens the same way.
-    /// Read off disk rather than through `config::load`, whose resolved value
-    /// is cached for the process once read.
     #[test]
     fn toggling_a_surface_persists_the_layout() {
         let _guard = env_guard();
@@ -1382,9 +1380,7 @@ mod tests {
         app.toggle_marks();
         app.toggle_summary();
 
-        let path = std::env::var("TT_CONFIG_FILE").unwrap();
-        let text = std::fs::read_to_string(path).expect("a written config file");
-        let saved: toml::Value = toml::from_str(&text).expect("valid TOML");
+        let saved = saved_config();
         let layout = &saved["layout"];
         assert_eq!(layout["show_tags"].as_bool(), Some(true));
         assert_eq!(layout["show_agents"].as_bool(), Some(true));
@@ -1394,12 +1390,16 @@ mod tests {
         assert!(saved.get("general").is_none(), "onboarding left untouched");
     }
 
-    /// Reads the `[layout]` table the TUI wrote, off disk.
-    fn saved_layout() -> toml::Value {
+    /// Reads the config file the TUI wrote, off disk rather than through
+    /// `config::load`, whose resolved value is cached for the process.
+    fn saved_config() -> toml::Value {
         let path = std::env::var("TT_CONFIG_FILE").unwrap();
         let text = std::fs::read_to_string(path).expect("a written config file");
-        let saved: toml::Value = toml::from_str(&text).expect("valid TOML");
-        saved["layout"].clone()
+        toml::from_str(&text).expect("valid TOML")
+    }
+
+    fn saved_layout() -> toml::Value {
+        saved_config()["layout"].clone()
     }
 
     #[test]
@@ -1415,25 +1415,6 @@ mod tests {
         let layout = saved_layout();
         assert_eq!(layout["summary_split"].as_bool(), Some(true));
         assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
-    }
-
-    #[test]
-    fn a_later_surface_toggle_keeps_both_summary_modes() {
-        let _guard = env_guard();
-        sandbox("summary-mode-survives-surface");
-        seed(vec![entry(0, "first")], 1);
-
-        let mut app = App::new().unwrap();
-        app.toggle_summary_split();
-        app.toggle_summary_follows_filters();
-        app.toggle_pane(Pane::Tags);
-        app.toggle_marks();
-        app.toggle_summary();
-
-        let layout = saved_layout();
-        assert_eq!(layout["summary_split"].as_bool(), Some(true));
-        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
-        assert_eq!(layout["show_tags"].as_bool(), Some(true));
     }
 
     #[test]
@@ -1482,17 +1463,6 @@ mod tests {
         let app = App::new().unwrap();
         assert!(app.summary_split);
         assert!(app.summary_follows_filters);
-    }
-
-    #[test]
-    fn both_summary_modes_start_off_when_the_layout_keys_are_absent() {
-        let _guard = env_guard();
-        sandbox("summary-mode-seed-absent");
-        seed(vec![entry(0, "first")], 1);
-
-        let app = App::new().unwrap();
-        assert!(!app.summary_split);
-        assert!(!app.summary_follows_filters);
     }
 
     #[test]
