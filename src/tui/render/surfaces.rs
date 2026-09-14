@@ -1,6 +1,7 @@
+use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
-use crate::tui::summary::visible_project_summary;
+use crate::tui::summary::{SUMMARY_TOTAL_LINES, summary_total, visible_project_summary};
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
 use ratatui::{
@@ -140,9 +141,13 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
 
     // One fold for the whole frame: the marker and the rows read the same list.
     let summary = app.project_summary();
-    // Budget excludes the header; see `summary_surface_height`.
+    // Budget excludes the header and total lines; see `summary_surface_height`.
     let scoped = !summary.is_empty();
-    let visible_rows = (inner.height as usize).saturating_sub(usize::from(scoped));
+    let visible_rows = if scoped {
+        (inner.height as usize).saturating_sub(1 + SUMMARY_TOTAL_LINES as usize)
+    } else {
+        inner.height as usize
+    };
 
     let marker_style = Style::default().fg(if app.total_is_filtered() {
         theme::highlight()
@@ -157,13 +162,65 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         .right_aligned(),
     );
 
+    // A key stays accented off-focus while its own mode is on, as `S` does.
+    let mut keys = vec![("f", "filter", focused || app.summary_follows_filters)];
+    if app.show_summary {
+        keys.insert(0, ("v", "split", focused || app.summary_split));
+    }
+    if let Some(keys) = legend(&keys, inner.width) {
+        block = block.title_bottom(keys.right_aligned());
+    }
+
     // Both conditions: an empty day must not blame a filter nobody set.
     let empty_text = if app.summary_follows_filters && app.total_is_filtered() {
         " nothing matches the filter"
     } else {
         " nothing in scope"
     };
-    let lines: Vec<Line> = if !scoped {
+    let total_line = |label_width: usize| {
+        let sum = summary_total(&summary);
+        let mut spans = vec![
+            Span::styled(
+                format!(" {:<label_width$}", sum.project),
+                Style::default().fg(theme::title()),
+            ),
+            Span::styled(
+                format!("{:>TOTAL_WIDTH$}", crate::duration::format(sum.total)),
+                Style::default().fg(Color::White).bold(),
+            ),
+        ];
+        if app.summary_split {
+            spans.push(Span::styled(
+                format!("{:>HUMAN_WIDTH$}", crate::duration::format(sum.human)),
+                Style::default().fg(theme::active()).bold(),
+            ));
+            spans.push(Span::styled(
+                format!("{:>AGENT_WIDTH$}", crate::duration::format(sum.agent)),
+                Style::default().fg(theme::highlight()).bold(),
+            ));
+        }
+        spans.push(Span::styled(
+            format!("{:>COUNT_WIDTH$}", sum.entries),
+            Style::default().fg(theme::inactive()),
+        ));
+        Line::from(spans)
+    };
+
+    let lines: Vec<Line> = if !app.show_summary {
+        // The footer's old total, one line: label, sum, nothing else.
+        let label = if app.summary_follows_filters && app.total_is_filtered() {
+            " Filtered total: "
+        } else {
+            " Total: "
+        };
+        vec![Line::from(vec![
+            Span::styled(label, Style::default().fg(theme::title())),
+            Span::styled(
+                crate::duration::format(summary_total(&summary).total),
+                Style::default().fg(theme::highlight()).bold(),
+            ),
+        ])]
+    } else if !scoped {
         vec![Line::from(Span::styled(
             empty_text,
             Style::default().fg(theme::inactive()).italic(),
@@ -199,17 +256,17 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(
                     format!("{:>TOTAL_WIDTH$}", crate::duration::format(row.total)),
-                    Style::default().fg(theme::highlight()),
+                    Style::default().fg(Color::White),
                 ),
             ];
             if app.summary_split {
                 spans.push(Span::styled(
                     format!("{:>HUMAN_WIDTH$}", crate::duration::format(row.human)),
-                    Style::default().fg(theme::title()),
+                    Style::default().fg(theme::active()),
                 ));
                 spans.push(Span::styled(
                     format!("{:>AGENT_WIDTH$}", crate::duration::format(row.agent)),
-                    Style::default().fg(theme::active()),
+                    Style::default().fg(theme::highlight()),
                 ));
             }
             spans.push(Span::styled(
@@ -222,6 +279,20 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
             ));
             Line::from(spans)
         }));
+
+        // The rule sits under the number columns only, as a hand sum does.
+        let mut numbers_width = TOTAL_WIDTH + COUNT_WIDTH + SHARE_WIDTH;
+        if app.summary_split {
+            numbers_width += HUMAN_WIDTH + AGENT_WIDTH;
+        }
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(label_width + 1)),
+            Span::styled(
+                "─".repeat(numbers_width),
+                Style::default().fg(theme::border()),
+            ),
+        ]));
+        lines.push(total_line(label_width));
         lines
     };
 
@@ -273,6 +344,18 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
             ))
             .right_aligned(),
         );
+    }
+
+    // Ordered most useful first: the helper sheds from the end.
+    if let Some(keys) = legend(
+        &[
+            ("Enter", "filter", focused),
+            ("-", "back", focused),
+            ("j/k", "move", focused),
+        ],
+        inner.width,
+    ) {
+        block = block.title_bottom(keys.right_aligned());
     }
 
     // The marker is a gutter on every row, so it comes off the rows' layout width.
