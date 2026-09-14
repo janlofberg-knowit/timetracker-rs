@@ -108,6 +108,9 @@ pub(crate) struct App {
     pub(crate) show_tags: bool,
     pub(crate) show_marks: bool,
     pub(crate) show_summary: bool,
+    /// Whether the Summary splits each row into human and agent time. Runtime
+    /// only: nothing persists it.
+    pub(crate) summary_split: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -197,6 +200,7 @@ impl App {
             show_tags: layout.show_tags.unwrap_or(false),
             show_marks: layout.show_agents.unwrap_or(false),
             show_summary: layout.show_summary.unwrap_or(false),
+            summary_split: false,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -2417,6 +2421,17 @@ mod tests {
                 .clone()
         };
         assert!(row("Shift-Tab").contains("reverse"));
+        let split_row = row("human / agent split");
+        assert!(
+            split_row
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2502}')
+                .starts_with("v "),
+            "the split row's key column is not `v`: {split_row}"
+        );
+        assert!(
+            split_row.contains("Summary focused"),
+            "the split row does not say the key is focus-gated: {split_row}"
+        );
         assert!(
             screen
                 .iter()

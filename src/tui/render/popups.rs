@@ -48,6 +48,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Shift-A", "agent phases on / off"),
             ("Shift-S", "project summary on / off"),
+            ("v", "human / agent split (Summary focused)"),
             ("o", "toggle sort order"),
             ("r", "reload data from disk"),
             ("?", "toggle this help"),

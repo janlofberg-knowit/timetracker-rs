@@ -129,6 +129,12 @@ impl App {
         self.focus == Focus::Summary && self.show_summary
     }
 
+    /// `v`: show or hide the human / agent columns. Runtime state only, so this
+    /// writes nothing to disk.
+    pub(crate) fn toggle_summary_split(&mut self) {
+        self.summary_split = !self.summary_split;
+    }
+
     /// `Shift-S`: show or hide the surface. Opening it focuses it, as `P`/`T` do
     /// for their panes; hiding it while focused falls back off the surface.
     pub(crate) fn toggle_summary(&mut self) {

@@ -71,6 +71,12 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('A') => app.toggle_marks(),
         // Capital `S` only; lowercase `s` stops the entry.
         KeyCode::Char('S') => app.toggle_summary(),
+        // Only the Summary owns `v`; every other focus leaves it inert.
+        KeyCode::Char('v') => {
+            if app.summary_is_focused() {
+                app.toggle_summary_split();
+            }
+        }
         KeyCode::Tab => app.cycle_focus(),
         // crossterm reports Shift-Tab as its own code.
         KeyCode::BackTab => app.cycle_focus_back(),
@@ -553,6 +559,48 @@ mod tests {
         assert_eq!(app.table_state.selected(), Some(1));
     }
 
+    /// `v` belongs to the Summary, so every other focus state must ignore it.
+    #[test]
+    fn v_splits_the_summary_only_while_it_has_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-split");
+        let mut with_project = entry(0, "has a project");
+        with_project.project = Some("acme".to_string());
+        seed(vec![with_project], 1);
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        // Hidden: the surface is not there to split.
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(!app.summary_split, "`v` split a hidden surface");
+
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.focus, Focus::Summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` did not reach the split");
+        press(&mut app, KeyCode::Char('v'));
+        assert!(!app.summary_split, "`v` did not flip back");
+
+        // Visible, but focus rests elsewhere.
+        app.summary_split = true;
+        app.focus = Focus::Table;
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired with the table focused");
+
+        press(&mut app, KeyCode::Char('P'));
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired with a pane focused");
+
+        // Hiding the surface takes the key away again, and leaves the bool alone.
+        app.focus = Focus::Summary;
+        press(&mut app, KeyCode::Char('S'));
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired on a hidden surface");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]
@@ -632,6 +680,12 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Focus::Table, "BackTab should cycle focus");
+
+        // `v` needs the Summary focused, so `S` opens it first.
+        let mut app = App::new().unwrap();
+        press(&mut app, KeyCode::Char('S'));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` should reach the summary split");
 
         // `t` returns from wherever `h` left the cursor.
         let mut app = App::new().unwrap();
