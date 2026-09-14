@@ -3,13 +3,11 @@
 use crate::tui::theme;
 use ratatui::prelude::*;
 
-/// Between two entries. Also the whole separator grammar: one character,
-/// so a shed entry frees exactly its own width plus three.
+/// Between two entries.
 const SEPARATOR: &str = " \u{b7} ";
 
 /// The keys a surface owns, as `(key, label, accented)`, most useful first.
-/// The tail sheds while the line is wider than `width`; `None` rather than a
-/// clipped line, because half a legend teaches a wrong key.
+/// The tail sheds while the line is wider than `width`; never a clipped line.
 pub(super) fn legend(entries: &[(&str, &str, bool)], width: u16) -> Option<Line<'static>> {
     (1..=entries.len())
         .rev()
