@@ -3,6 +3,7 @@
 
 mod entries;
 mod form;
+mod legend;
 mod onboarding;
 mod overlay;
 mod popups;

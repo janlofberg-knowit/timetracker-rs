@@ -4005,6 +4005,106 @@ mod tests {
         assert!(!app.summary_is_focused(), "visible but not focused");
     }
 
+    /// The Summary box's bottom border, where its key legend sits.
+    fn summary_bottom_border(app: &mut App, width: u16, height: u16) -> String {
+        let screen = frame_lines(app, width, height);
+        let top = screen
+            .iter()
+            .position(|line| line.contains("Summary (S)"))
+            .unwrap_or_else(|| panic!("no Summary box:\n{}", screen.join("\n")));
+        screen[top..]
+            .iter()
+            .find(|line| line.contains('\u{2518}'))
+            .cloned()
+            .unwrap_or_else(|| panic!("no bottom border:\n{}", screen.join("\n")))
+    }
+
+    /// The foreground of the first cell of every drawn `needle`, in reading
+    /// order: two side-by-side panes put their legends on the same row.
+    fn drawn_fg(
+        app: &mut App,
+        needle: &str,
+        width: u16,
+        height: u16,
+    ) -> Vec<ratatui::style::Color> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut found = Vec::new();
+        for y in 0..height {
+            let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            for (byte, _) in row.match_indices(needle) {
+                let column = row[..byte].chars().count() as u16;
+                found.push(buffer[(column, y)].fg);
+            }
+        }
+        assert!(!found.is_empty(), "nothing drawn carries {needle}");
+        found
+    }
+
+    /// The keys the Summary owns are named on its own border, not only in the
+    /// help popup, and the border keeps its corner.
+    #[test]
+    fn the_summary_names_its_keys_on_its_bottom_border() {
+        let _guard = env_guard();
+        sandbox("summary-legend");
+        let mut app = seed_summary();
+        app.toggle_summary();
+
+        let border = summary_bottom_border(&mut app, 100, 40);
+        assert!(
+            border.contains(" v: split \u{b7} f: filter "),
+            "no legend on the border: {border}"
+        );
+        assert!(
+            border.ends_with('\u{2518}'),
+            "the legend ate the corner: {border}"
+        );
+    }
+
+    /// Focus accents both keys; away from focus, a key stays accented only
+    /// while its own mode is on — the rule the footer's `S` follows.
+    #[test]
+    fn the_summary_legend_accents_a_key_while_its_own_mode_is_on() {
+        let _guard = env_guard();
+        sandbox("summary-legend-colour");
+        let mut app = seed_summary();
+        app.toggle_summary();
+        app.focus = Focus::Table;
+
+        assert_eq!(
+            drawn_fg(&mut app, "v: split", 100, 40)[0],
+            theme::inactive(),
+            "unfocused with the split off"
+        );
+
+        app.toggle_summary_split();
+        assert_eq!(
+            drawn_fg(&mut app, "v: split", 100, 40)[0],
+            theme::accent(),
+            "the split is on"
+        );
+        assert_eq!(
+            drawn_fg(&mut app, "f: filter", 100, 40)[0],
+            theme::inactive(),
+            "`f` follows its own mode, not `v`"
+        );
+
+        app.toggle_summary_follows_filters();
+        assert_eq!(drawn_fg(&mut app, "f: filter", 100, 40)[0], theme::accent());
+
+        app.toggle_summary_split();
+        app.toggle_summary_follows_filters();
+        app.focus = Focus::Summary;
+        assert_eq!(
+            drawn_fg(&mut app, "v: split", 100, 40)[0],
+            theme::accent(),
+            "focus alone accents every key"
+        );
+        assert_eq!(drawn_fg(&mut app, "f: filter", 100, 40)[0], theme::accent());
+    }
+
     #[test]
     fn s_focuses_the_summary_it_opens_and_falls_back_when_it_hides() {
         let _guard = env_guard();

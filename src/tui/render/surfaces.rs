@@ -1,3 +1,4 @@
+use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
 use crate::tui::summary::visible_project_summary;
@@ -156,6 +157,17 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         ))
         .right_aligned(),
     );
+
+    // A key stays accented off-focus while its own mode is on, as `S` does.
+    if let Some(keys) = legend(
+        &[
+            ("v", "split", focused || app.summary_split),
+            ("f", "filter", focused || app.summary_follows_filters),
+        ],
+        inner.width,
+    ) {
+        block = block.title_bottom(keys.right_aligned());
+    }
 
     // Both conditions: an empty day must not blame a filter nobody set.
     let empty_text = if app.summary_follows_filters && app.total_is_filtered() {
