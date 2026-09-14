@@ -349,7 +349,7 @@ fn uncovered_by_entries(
     let mut remaining = stretches;
     for entry in entries
         .iter()
-        .filter(|entry| entry.has_tag("agent") || entry.has_tag("auto"))
+        .filter(|entry| entry.is_agent())
         .filter(|entry| {
             crate::entry_data::agent_session(entry.data.as_ref()).is_none_or(|its| its == session)
         })
