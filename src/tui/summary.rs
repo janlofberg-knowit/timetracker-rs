@@ -52,7 +52,7 @@ impl App {
         } else {
             self.scope_entries()
         };
-        // (total, human, agent, entries) in one fold, so the parts cannot drift.
+        // (total, human, agent, entries)
         let mut totals: HashMap<&str, (Duration, Duration, Duration, usize)> = HashMap::new();
         for entry in &entries {
             // Empty-after-trim counts as absent, as the form and `pane_values` do.
@@ -100,8 +100,8 @@ impl App {
     }
 
     /// Height including borders, or 0 while hidden so the layout drops the row.
-    /// The header row is counted here and subtracted from the renderer's row
-    /// budget; the two must stay in step or the marker outruns the rows drawn.
+    /// Counts the header row that the renderer subtracts from its row budget;
+    /// the two must stay in step.
     pub(crate) fn summary_surface_height(&self) -> u16 {
         if !self.show_summary {
             return 0;
@@ -112,33 +112,18 @@ impl App {
         2 + header + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
 
-    pub(crate) fn visible_project_summary(&self, visible_rows: usize) -> Vec<ProjectTotal> {
-        let mut rows = self.project_summary();
-        rows.truncate(visible_rows);
-        rows
-    }
-
-    /// `shown/total` once more projects exist than fit, else `None`.
-    pub(crate) fn summary_count(&self, visible_rows: usize) -> Option<String> {
-        let total = self.project_summary().len();
-        if total <= visible_rows {
-            return None;
-        }
-        surface_count(None, total, visible_rows)
-    }
-
     /// The title bar's right half: `day · all projects`, or `day · filtered`
     /// while following, plus `· 6/9` when rows are off screen and `· split`
-    /// while the split is on. The word says the mode, not the filter state;
-    /// only its colour follows the filter.
-    pub(crate) fn summary_marker(&self, visible_rows: usize) -> String {
+    /// while the split is on. The word says the mode; only its colour follows
+    /// the filter state.
+    pub(crate) fn summary_marker(&self, rows: &[ProjectTotal], visible_rows: usize) -> String {
         let mode = if self.summary_follows_filters {
             FILTERED
         } else {
             ALL_PROJECTS
         };
         let mut marker = format!("{} · {mode}", self.view_mode.label());
-        if let Some(count) = self.summary_count(visible_rows) {
+        if let Some(count) = summary_count(rows, visible_rows) {
             marker.push_str(" · ");
             marker.push_str(&count);
         }
@@ -175,6 +160,23 @@ impl App {
         }
         self.persist_layout();
     }
+}
+
+/// The leading rows the box has room for. Takes what `project_summary` folded,
+/// so one frame folds the scope once.
+pub(crate) fn visible_project_summary(
+    rows: &[ProjectTotal],
+    visible_rows: usize,
+) -> &[ProjectTotal] {
+    &rows[..visible_rows.min(rows.len())]
+}
+
+/// `shown/total` once more projects exist than fit, else `None`.
+pub(crate) fn summary_count(rows: &[ProjectTotal], visible_rows: usize) -> Option<String> {
+    if rows.len() <= visible_rows {
+        return None;
+    }
+    surface_count(None, rows.len(), visible_rows)
 }
 
 /// `part` as a whole-percent share of `whole`, in seconds; a zero `whole` is 0%.

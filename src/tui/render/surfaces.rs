@@ -1,5 +1,6 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
+use crate::tui::summary::visible_project_summary;
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
 use ratatui::{
@@ -111,12 +112,11 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     /// The header over the project column, and the column's floor.
     const LABEL_HEADER: &str = "project";
     /// The right-flushed number columns. Fixed, not content-derived, so a
-    /// re-scope that widens one figure cannot shift them. Every header word is
-    /// five characters, so none of them has to widen.
-    const TOTAL_WIDTH: usize = 8;
-    const HUMAN_WIDTH: usize = 8;
-    const AGENT_WIDTH: usize = 8;
-    // Six, not five: `count` is five characters and would touch `total`.
+    /// re-scope that widens one figure cannot shift them.
+    const TOTAL_WIDTH: usize = 9;
+    const HUMAN_WIDTH: usize = 9;
+    const AGENT_WIDTH: usize = 9;
+    // 6, not 5: `count` would touch `total`.
     const COUNT_WIDTH: usize = 6;
     const SHARE_WIDTH: usize = 6;
 
@@ -138,9 +138,10 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         ));
     let inner = block.inner(area);
 
-    // The header takes one row off the budget, and `summary_surface_height` adds
-    // the same row back. Change one of them only with the other.
-    let scoped = !app.project_summary().is_empty();
+    // One fold for the whole frame: the marker and the rows read the same list.
+    let summary = app.project_summary();
+    // Budget excludes the header; see `summary_surface_height`.
+    let scoped = !summary.is_empty();
     let visible_rows = (inner.height as usize).saturating_sub(usize::from(scoped));
 
     let marker_style = Style::default().fg(if app.total_is_filtered() {
@@ -150,7 +151,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     });
     block = block.title_top(
         Line::from(Span::styled(
-            format!(" {} ", app.summary_marker(visible_rows)),
+            format!(" {} ", app.summary_marker(&summary, visible_rows)),
             marker_style,
         ))
         .right_aligned(),
@@ -168,7 +169,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
-        let rows = app.visible_project_summary(visible_rows);
+        let rows = visible_project_summary(&summary, visible_rows);
         // One project column for the whole box, so the numbers read as columns.
         let label_width = rows
             .iter()

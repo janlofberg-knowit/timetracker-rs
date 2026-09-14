@@ -70,7 +70,6 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('A') => app.toggle_marks(),
         // Capital `S` only; lowercase `s` stops the entry.
         KeyCode::Char('S') => app.toggle_summary(),
-        // Only the Summary owns `v`; every other focus leaves it inert.
         KeyCode::Char('v') => {
             if app.summary_is_focused() {
                 app.toggle_summary_split();

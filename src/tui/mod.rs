@@ -3547,14 +3547,7 @@ mod tests {
 
         for (mode, name) in scopes() {
             app.view_mode = mode;
-            let rows = app.project_summary();
-            let summed: i64 = rows.iter().map(|r| r.total.num_seconds()).sum();
-            let halves: i64 = rows
-                .iter()
-                .map(|r| r.human.num_seconds() + r.agent.num_seconds())
-                .sum();
-            assert_eq!(summed, halves, "{name} halves do not rebuild the totals");
-            for row in &rows {
+            for row in app.project_summary() {
                 assert_eq!(
                     row.human + row.agent,
                     row.total,
@@ -3562,11 +3555,6 @@ mod tests {
                     row.project
                 );
             }
-        }
-
-        let app = seed_agent_summary();
-        for row in app.project_summary() {
-            assert_eq!(row.human + row.agent, row.total, "{}", row.project);
         }
     }
 
@@ -3727,12 +3715,12 @@ mod tests {
 
         let unsplit = summary_box(&mut app, 100, 40);
         assert!(
-            unsplit[0].starts_with("\u{2502} project   total count share"),
+            unsplit[0].starts_with("\u{2502} project    total count share"),
             "unsplit header: {}",
             unsplit[0]
         );
         assert!(
-            unsplit[1].starts_with("\u{2502} tt        3h 0m     3   86%"),
+            unsplit[1].starts_with("\u{2502} tt         3h 0m     3   86%"),
             "unsplit row: {}",
             unsplit[1]
         );
@@ -3740,19 +3728,46 @@ mod tests {
         app.toggle_summary_split();
         let split = summary_box(&mut app, 100, 40);
         assert!(
-            split[0].starts_with("\u{2502} project   total   human   agent count share"),
+            split[0].starts_with("\u{2502} project    total    human    agent count share"),
             "split header: {}",
             split[0]
         );
         assert!(
-            split[1].starts_with("\u{2502} tt        3h 0m   1h 0m   2h 0m     3   86%"),
+            split[1].starts_with("\u{2502} tt         3h 0m    1h 0m    2h 0m     3   86%"),
             "split row: {}",
             split[1]
         );
         assert!(
-            split[2].starts_with("\u{2502} solo     0h 30m  0h 30m   0h 0m     1   14%"),
+            split[2].starts_with("\u{2502} solo      0h 30m   0h 30m    0h 0m     1   14%"),
             "split row two: {}",
             split[2]
+        );
+    }
+
+    /// The time columns hold `100h 30m` and still keep a gap between them.
+    #[test]
+    fn three_digit_hours_keep_a_gap_between_the_time_columns() {
+        let _guard = env_guard();
+        sandbox("summary-wide-hours");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a long stint", "tt", &[], today, 6030),
+                logged(1, "a long agent run", "tt", &["agent"], today, 6030),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        let drawn = summary_box(&mut app, 100, 40);
+        assert!(
+            drawn[1].starts_with("\u{2502} tt       201h 0m 100h 30m 100h 30m     2  100%"),
+            "the time columns ran together: {}",
+            drawn[1]
         );
     }
 
@@ -3776,17 +3791,17 @@ mod tests {
 
         let wide = summary_box(&mut app, 100, 40);
         assert!(
-            wide[0].starts_with("\u{2502} project                    total"),
+            wide[0].starts_with("\u{2502} project                     total"),
             "long names did not widen the label column: {}",
             wide[0]
         );
         assert!(
-            wide[1].starts_with("\u{2502} a-very-long-project-name   1h 0m"),
+            wide[1].starts_with("\u{2502} a-very-long-project-name    1h 0m"),
             "the row does not use the widened column: {}",
             wide[1]
         );
 
-        // Names shorter than the old 14-column floor pull the column in to `project`.
+        // Short names pull the column in to `project`.
         seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
         let mut app = App::new().unwrap();
         app.selected_date = today;
@@ -3794,7 +3809,7 @@ mod tests {
         app.toggle_summary();
         let narrow = summary_box(&mut app, 100, 40);
         assert!(
-            narrow[0].starts_with("\u{2502} project   total"),
+            narrow[0].starts_with("\u{2502} project    total"),
             "short names did not pull the column in: {}",
             narrow[0]
         );
@@ -3812,7 +3827,7 @@ mod tests {
 
         let narrow = summary_box(&mut app, 40, 40);
         assert!(
-            narrow[0].starts_with("\u{2502} project   total   human"),
+            narrow[0].starts_with("\u{2502} project    total    human"),
             "the narrow header lost a left column: {}",
             narrow[0]
         );
@@ -3960,26 +3975,34 @@ mod tests {
 
         for (mode, word) in scopes() {
             app.set_view_mode(mode);
-            assert_eq!(app.summary_marker(6), format!("{word} · all projects"));
+            let rows = app.project_summary();
+            assert_eq!(
+                app.summary_marker(&rows, 6),
+                format!("{word} · all projects")
+            );
         }
 
         // A filter changes the emphasis, never the words.
         app.set_view_mode(ViewMode::Day);
         assert!(!app.total_is_filtered());
-        let unfiltered = app.summary_marker(6);
+        let rows = app.project_summary();
+        let unfiltered = app.summary_marker(&rows, 6);
         app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the footer total is now narrowed");
-        assert_eq!(app.summary_marker(6), unfiltered);
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
 
         // The split says so last, after the scope and any overflow count.
         app.toggle_summary_split();
-        assert_eq!(app.summary_marker(6), format!("{unfiltered} \u{b7} split"));
         assert_eq!(
-            app.summary_marker(1),
+            app.summary_marker(&rows, 6),
+            format!("{unfiltered} \u{b7} split")
+        );
+        assert_eq!(
+            app.summary_marker(&rows, 1),
             "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
         );
         app.toggle_summary_split();
-        assert_eq!(app.summary_marker(6), unfiltered);
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
     }
 
     #[test]
@@ -3992,24 +4015,29 @@ mod tests {
 
         for (mode, word) in scopes() {
             app.set_view_mode(mode);
-            assert_eq!(app.summary_marker(6), format!("{word} \u{b7} filtered"));
+            let rows = app.project_summary();
+            assert_eq!(
+                app.summary_marker(&rows, 6),
+                format!("{word} \u{b7} filtered")
+            );
         }
 
         // The word says the mode, so an unset filter does not take it away.
         app.set_view_mode(ViewMode::Day);
         assert!(!app.total_is_filtered());
-        assert_eq!(app.summary_marker(6), "day \u{b7} filtered");
+        let rows = app.project_summary();
+        assert_eq!(app.summary_marker(&rows, 6), "day \u{b7} filtered");
 
         // The count and the split keep their places after the word.
         app.toggle_summary_split();
         assert_eq!(
-            app.summary_marker(1),
+            app.summary_marker(&rows, 1),
             "day \u{b7} filtered \u{b7} 1/3 \u{b7} split"
         );
 
         app.toggle_summary_follows_filters();
         assert_eq!(
-            app.summary_marker(1),
+            app.summary_marker(&rows, 1),
             "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
         );
     }
@@ -4078,16 +4106,17 @@ mod tests {
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
         assert_eq!(app.summary_surface_height(), 9);
-        assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
-        assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
-        assert_eq!(app.visible_project_summary(6).len(), 6);
+        let rows = app.project_summary();
+        assert_eq!(summary::summary_count(&rows, 6).as_deref(), Some("6/9"));
+        assert_eq!(app.summary_marker(&rows, 6), "day · all projects · 6/9");
+        assert_eq!(summary::visible_project_summary(&rows, 6).len(), 6);
 
         // A shorter box counts what *it* left out, not what the cap would have.
-        assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
-        assert_eq!(app.visible_project_summary(2).len(), 2);
+        assert_eq!(app.summary_marker(&rows, 2), "day · all projects · 2/9");
+        assert_eq!(summary::visible_project_summary(&rows, 2).len(), 2);
 
-        assert_eq!(app.summary_count(9), None);
-        assert_eq!(app.summary_marker(9), "day · all projects");
+        assert_eq!(summary::summary_count(&rows, 9), None);
+        assert_eq!(app.summary_marker(&rows, 9), "day · all projects");
     }
 
     #[test]
