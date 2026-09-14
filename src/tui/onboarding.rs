@@ -5,7 +5,6 @@ use anyhow::Result;
 
 use super::App;
 use super::types::{Focus, InputMode, LayoutSurface, OnboardingStep};
-use crate::config::LayoutConfig;
 
 impl App {
     pub(crate) fn onboarding_move(&mut self, delta: isize) {
@@ -44,15 +43,7 @@ impl App {
 
     /// Persists the checklist answer and returns to normal use.
     pub(crate) fn onboarding_finish(&mut self) -> Result<()> {
-        let [projects, agents, summary, tags] = self.onboarding_checked;
-        // Every other key comes from `layout_config`, so none is erased here.
-        crate::config::save_onboarding(&LayoutConfig {
-            show_projects: Some(projects),
-            show_agents: Some(agents),
-            show_summary: Some(summary),
-            show_tags: Some(tags),
-            ..self.layout_config()
-        })?;
+        crate::config::save_onboarding(&self.layout_config())?;
         self.input_mode = InputMode::Normal;
         Ok(())
     }
