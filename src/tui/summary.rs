@@ -102,27 +102,12 @@ impl App {
         2 + header + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
 
-    pub(crate) fn visible_project_summary(&self, visible_rows: usize) -> Vec<ProjectTotal> {
-        let mut rows = self.project_summary();
-        rows.truncate(visible_rows);
-        rows
-    }
-
-    /// `shown/total` once more projects exist than fit, else `None`.
-    pub(crate) fn summary_count(&self, visible_rows: usize) -> Option<String> {
-        let total = self.project_summary().len();
-        if total <= visible_rows {
-            return None;
-        }
-        surface_count(None, total, visible_rows)
-    }
-
     /// The title bar's right half: `day · all projects`, plus `· 6/9` when rows are
     /// off screen and `· split` while the split is on. Present in **both** filter
     /// states — only its colour changes.
-    pub(crate) fn summary_marker(&self, visible_rows: usize) -> String {
+    pub(crate) fn summary_marker(&self, rows: &[ProjectTotal], visible_rows: usize) -> String {
         let mut marker = format!("{} · {}", self.view_mode.label(), ALL_PROJECTS);
-        if let Some(count) = self.summary_count(visible_rows) {
+        if let Some(count) = summary_count(rows, visible_rows) {
             marker.push_str(" · ");
             marker.push_str(&count);
         }
@@ -153,6 +138,23 @@ impl App {
         }
         self.persist_layout();
     }
+}
+
+/// The leading rows the box has room for. Takes what `project_summary` folded,
+/// so one frame folds the scope once.
+pub(crate) fn visible_project_summary(
+    rows: &[ProjectTotal],
+    visible_rows: usize,
+) -> &[ProjectTotal] {
+    &rows[..visible_rows.min(rows.len())]
+}
+
+/// `shown/total` once more projects exist than fit, else `None`.
+pub(crate) fn summary_count(rows: &[ProjectTotal], visible_rows: usize) -> Option<String> {
+    if rows.len() <= visible_rows {
+        return None;
+    }
+    surface_count(None, rows.len(), visible_rows)
 }
 
 /// `part` as a whole-percent share of `whole`, in seconds; a zero `whole` is 0%.

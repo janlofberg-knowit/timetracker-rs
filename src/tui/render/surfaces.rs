@@ -1,5 +1,6 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
+use crate::tui::summary::visible_project_summary;
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
 use ratatui::{
@@ -137,8 +138,10 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         ));
     let inner = block.inner(area);
 
+    // One fold for the whole frame: the marker and the rows read the same list.
+    let summary = app.project_summary();
     // Budget excludes the header; see `summary_surface_height`.
-    let scoped = !app.project_summary().is_empty();
+    let scoped = !summary.is_empty();
     let visible_rows = (inner.height as usize).saturating_sub(usize::from(scoped));
 
     let marker_style = Style::default().fg(if app.total_is_filtered() {
@@ -148,7 +151,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     });
     block = block.title_top(
         Line::from(Span::styled(
-            format!(" {} ", app.summary_marker(visible_rows)),
+            format!(" {} ", app.summary_marker(&summary, visible_rows)),
             marker_style,
         ))
         .right_aligned(),
@@ -160,7 +163,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
-        let rows = app.visible_project_summary(visible_rows);
+        let rows = visible_project_summary(&summary, visible_rows);
         // One project column for the whole box, so the numbers read as columns.
         let label_width = rows
             .iter()

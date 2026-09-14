@@ -3931,26 +3931,34 @@ mod tests {
 
         for (mode, word) in scopes() {
             app.set_view_mode(mode);
-            assert_eq!(app.summary_marker(6), format!("{word} · all projects"));
+            let rows = app.project_summary();
+            assert_eq!(
+                app.summary_marker(&rows, 6),
+                format!("{word} · all projects")
+            );
         }
 
         // A filter changes the emphasis, never the words.
         app.set_view_mode(ViewMode::Day);
         assert!(!app.total_is_filtered());
-        let unfiltered = app.summary_marker(6);
+        let rows = app.project_summary();
+        let unfiltered = app.summary_marker(&rows, 6);
         app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the footer total is now narrowed");
-        assert_eq!(app.summary_marker(6), unfiltered);
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
 
         // The split says so last, after the scope and any overflow count.
         app.toggle_summary_split();
-        assert_eq!(app.summary_marker(6), format!("{unfiltered} \u{b7} split"));
         assert_eq!(
-            app.summary_marker(1),
+            app.summary_marker(&rows, 6),
+            format!("{unfiltered} \u{b7} split")
+        );
+        assert_eq!(
+            app.summary_marker(&rows, 1),
             "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
         );
         app.toggle_summary_split();
-        assert_eq!(app.summary_marker(6), unfiltered);
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
     }
 
     /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.
@@ -3970,16 +3978,17 @@ mod tests {
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
         assert_eq!(app.summary_surface_height(), 9);
-        assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
-        assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
-        assert_eq!(app.visible_project_summary(6).len(), 6);
+        let rows = app.project_summary();
+        assert_eq!(summary::summary_count(&rows, 6).as_deref(), Some("6/9"));
+        assert_eq!(app.summary_marker(&rows, 6), "day · all projects · 6/9");
+        assert_eq!(summary::visible_project_summary(&rows, 6).len(), 6);
 
         // A shorter box counts what *it* left out, not what the cap would have.
-        assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
-        assert_eq!(app.visible_project_summary(2).len(), 2);
+        assert_eq!(app.summary_marker(&rows, 2), "day · all projects · 2/9");
+        assert_eq!(summary::visible_project_summary(&rows, 2).len(), 2);
 
-        assert_eq!(app.summary_count(9), None);
-        assert_eq!(app.summary_marker(9), "day · all projects");
+        assert_eq!(summary::summary_count(&rows, 9), None);
+        assert_eq!(app.summary_marker(&rows, 9), "day · all projects");
     }
 
     #[test]
