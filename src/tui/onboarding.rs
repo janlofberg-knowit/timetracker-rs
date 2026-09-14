@@ -50,6 +50,7 @@ impl App {
             show_agents: Some(agents),
             show_summary: Some(summary),
             show_tags: Some(tags),
+            ..Default::default()
         })?;
         self.input_mode = InputMode::Normal;
         Ok(())
@@ -63,6 +64,7 @@ impl App {
             show_agents: Some(self.show_marks),
             show_summary: Some(self.show_summary),
             show_tags: Some(self.show_tags),
+            ..Default::default()
         })?;
         self.input_mode = InputMode::Normal;
         Ok(())

@@ -249,6 +249,7 @@ impl App {
             show_agents: Some(self.show_marks),
             show_summary: Some(self.show_summary),
             show_tags: Some(self.show_tags),
+            ..Default::default()
         }
     }
 
