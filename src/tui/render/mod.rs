@@ -86,10 +86,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         plan.push((LayoutRow::Search, Constraint::Length(3)));
     }
     plan.push((LayoutRow::Content, Constraint::Min(10)));
-    let summary_height = app.summary_surface_height();
-    if summary_height > 0 {
-        plan.push((LayoutRow::Summary, Constraint::Length(summary_height)));
-    }
+    plan.push((
+        LayoutRow::Summary,
+        Constraint::Length(app.summary_surface_height()),
+    ));
     plan.push((LayoutRow::Footer, Constraint::Length(3)));
     let rows = LayoutRows::split(f.area(), plan);
 
@@ -198,31 +198,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_entries_table(f, app, content);
     }
 
-    if let Some(area) = rows.get(LayoutRow::Summary) {
-        render_summary_surface(f, app, area);
-    }
+    render_summary_surface(f, app, rows.area(LayoutRow::Summary));
 
     // Footer: left = hints (clips), right = the key legend (never clips).
-    let (total, total_label) = if app.total_is_filtered() {
-        (app.filtered_total(), "Filtered: ")
-    } else {
-        let t = match app.view_mode {
-            ViewMode::All => app.data.today_total(),
-            ViewMode::Day => app.data.total_for_date(app.selected_date),
-            ViewMode::Week => {
-                let week_start = TimeData::week_start(app.selected_date);
-                app.data.total_for_week(week_start)
-            }
-            ViewMode::Overview => app
-                .data
-                .year_breakdown(app.selected_date.year())
-                .values()
-                .fold(Duration::zero(), |acc, d| acc + *d),
-        };
-        (t, "Total: ")
-    };
-
-    let total_str = crate::duration::format(total);
     let footer = rows.area(LayoutRow::Footer);
     let footer_block = Block::default()
         .borders(Borders::ALL)
@@ -242,16 +220,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(footer_inner);
 
     let hint_spans = vec![
-        Span::styled(
-            format!(" {}", total_label),
-            Style::default().fg(theme::title()),
-        ),
-        Span::styled(total_str, Style::default().fg(theme::highlight()).bold()),
-        Span::styled(" | ", Style::default().fg(theme::border())),
-        // This zone clips from the right, and both the label and the total are
-        // variable-width, so the hint that changes what the list shows comes
-        // first and `Enter: detail` is the first to go.
-        Span::styled("t", Style::default().fg(theme::accent())),
+        // This zone clips from the right, so the hint that changes what the
+        // list shows comes first and `Enter: detail` is the first to go.
+        Span::styled(" t", Style::default().fg(theme::accent())),
         Span::styled(": today | ", Style::default().fg(theme::inactive())),
         Span::styled("Enter", Style::default().fg(theme::accent())),
         Span::styled(": detail | ", Style::default().fg(theme::inactive())),

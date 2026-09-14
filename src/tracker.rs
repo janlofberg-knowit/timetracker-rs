@@ -345,7 +345,7 @@ impl TimeData {
             .collect()
     }
 
-    /// Get total duration for a specific week
+    #[cfg(test)]
     pub fn total_for_week(&self, week_start: NaiveDate) -> Duration {
         self.entries_for_week(week_start)
             .iter()

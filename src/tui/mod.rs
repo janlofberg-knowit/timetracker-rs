@@ -2505,7 +2505,7 @@ mod tests {
         seed(vec![entry(0, "first")], 1);
 
         let mut app = App::new().unwrap();
-        let screen = frame_lines(&mut app, 140, 20);
+        let screen = frame_lines(&mut app, 140, 30);
         let footer = screen
             .iter()
             .rev()
@@ -3000,17 +3000,18 @@ mod tests {
             lines[lines.len() - 2].clone()
         };
 
-        let widest_total = footer(&mut app);
-        assert!(widest_total.contains("12h 30m"), "{widest_total}");
-        assert!(widest_total.contains("t: today"), "{widest_total}");
-        assert!(widest_total.ends_with("?: help│"), "{widest_total}");
+        let plain = footer(&mut app);
+        assert!(
+            !plain.contains("Total"),
+            "the total lives in the Summary: {plain}"
+        );
+        assert!(plain.starts_with("│ t: today"), "{plain}");
+        assert!(plain.ends_with("?: help│"), "{plain}");
 
-        // `Filtered: ` is three cells wider than `Total: `.
+        // A filter changes the Summary marker, never the footer.
         app.tag_filter.cycle("tt/174", true);
         let filtered = footer(&mut app);
-        assert!(filtered.contains("Filtered: "), "{filtered}");
-        assert!(filtered.contains("t: today"), "{filtered}");
-        assert!(filtered.ends_with("?: help│"), "{filtered}");
+        assert_eq!(filtered, plain);
     }
 
     #[test]
@@ -3021,7 +3022,6 @@ mod tests {
 
         let footer = frame_lines(&mut app, 200, 30).join("\n");
         assert!(!footer.contains("g: toggle"), "footer legend:\n{footer}");
-        assert!(footer.contains("Total: "), "footer total:\n{footer}");
         assert!(footer.contains("s: stop"), "footer legend:\n{footer}");
 
         app.input_mode = InputMode::Help;
@@ -3258,8 +3258,12 @@ mod tests {
             "the prompt did not state what it removes:\n{screen}"
         );
         assert!(screen.contains("t / y yes"), "hint row:\n{screen}");
+        let prompt: String = screen
+            .lines()
+            .filter(|line| !line.contains("v: split"))
+            .collect();
         assert!(
-            !screen.contains("split"),
+            !prompt.contains("split"),
             "the user-facing verb is trim, never split:\n{screen}"
         );
     }
@@ -3815,6 +3819,58 @@ mod tests {
             .collect()
     }
 
+    /// Collapsed, the box is `Total: …` alone; `S` opens the breakdown over a
+    /// rule, and the total row sums what it shows.
+    #[test]
+    fn the_summary_total_row_is_the_collapsed_box_and_the_expanded_foot() {
+        let _guard = env_guard();
+        sandbox("summary-total-row");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a", "tt", &[], today, 60),
+                logged(1, "b", "tt", &[], today, 30),
+                logged(2, "c", "vinge", &["agent"], today, 45),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+
+        let collapsed = summary_box(&mut app, 100, 40);
+        assert_eq!(collapsed.len(), 1, "{collapsed:#?}");
+        assert!(
+            collapsed[0].starts_with("│ Total: 2h 15m"),
+            "{}",
+            collapsed[0]
+        );
+        assert!(
+            !collapsed[0].contains(" 3 "),
+            "no count while collapsed: {}",
+            collapsed[0]
+        );
+
+        app.toggle_summary();
+        let expanded = summary_box(&mut app, 100, 40);
+        // header, two projects, rule, total
+        assert_eq!(expanded.len(), 5, "{expanded:#?}");
+        assert!(
+            expanded[3].contains("\u{2500}\u{2500}"),
+            "no rule: {}",
+            expanded[3]
+        );
+        assert!(
+            !expanded[3].contains("total"),
+            "the rule carries no text: {}",
+            expanded[3]
+        );
+        let foot = &expanded[4];
+        assert!(foot.contains(" total"), "{foot}");
+        assert!(foot.contains("2h 15m"), "{foot}");
+        assert!(foot.contains(" 3 "), "the count sums too: {foot}");
+    }
+
     /// The header names the columns in both modes, and `v` adds the two halves
     /// between `total` and `count`.
     #[test]
@@ -3949,7 +4005,7 @@ mod tests {
         );
         assert!(!narrow[1].contains('%'), "the share column survived");
         // One line per project still, so nothing wrapped onto a second row.
-        assert_eq!(narrow.len(), 3, "{narrow:#?}");
+        assert_eq!(narrow.len(), 5, "{narrow:#?}");
     }
 
     /// `nothing in scope` keeps the box it has: no header over an empty surface.
@@ -3986,10 +4042,10 @@ mod tests {
         app.view_mode = ViewMode::Day;
         app.toggle_summary();
 
-        // Two borders, the header and the six-project cap.
-        assert_eq!(app.summary_surface_height(), 9);
+        // Two borders, the header, the six-project cap, the rule and the total.
+        assert_eq!(app.summary_surface_height(), 11);
         let drawn = summary_box(&mut app, 100, 40);
-        assert_eq!(drawn.len(), 7, "header plus rows: {drawn:#?}");
+        assert_eq!(drawn.len(), 9, "header, rows, rule and total: {drawn:#?}");
         let screen = frame_lines(&mut app, 100, 40);
         let title = screen
             .iter()
@@ -3999,23 +4055,25 @@ mod tests {
         assert!(title.contains("6/9"), "the marker miscounted: {title}");
     }
 
-    /// Hidden, the surface has no height, so `ui` leaves its row out of the plan.
+    /// Collapsed, the surface is the total row between its borders; `S` opens
+    /// the breakdown above it.
     #[test]
-    fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
+    fn the_summary_surface_is_three_rows_until_it_is_toggled_on() {
         let _guard = env_guard();
         sandbox("summary-height");
         let mut app = seed_summary();
         app.view_mode = ViewMode::Day;
 
         assert!(!app.show_summary);
-        assert_eq!(app.summary_surface_height(), 0, "hidden: no row at all");
+        assert_eq!(app.summary_surface_height(), 3, "collapsed: the total row");
 
-        // Two borders, the header row, and one row per project: the day has three.
+        // Two borders, the header, the rule, the total, and one row per project:
+        // the day has three.
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(), 6);
+        assert_eq!(app.summary_surface_height(), 8);
         // Re-scoping re-sizes it: the week has four projects, all entries too.
         app.view_mode = ViewMode::Week;
-        assert_eq!(app.summary_surface_height(), 7);
+        assert_eq!(app.summary_surface_height(), 9);
 
         // An empty scope still gets one row, so the box can say it is empty.
         app.view_mode = ViewMode::Day;
@@ -4024,7 +4082,7 @@ mod tests {
         assert_eq!(app.summary_surface_height(), 3);
 
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
+        assert_eq!(app.summary_surface_height(), 3, "collapsed again");
     }
 
     /// Focus never reads as resting on a hidden surface, however `focus` was set.
@@ -4350,12 +4408,12 @@ mod tests {
         app.toggle_summary();
         app.toggle_summary_follows_filters();
 
-        // Three projects in the day, each row plus a header and two borders.
-        assert_eq!(app.summary_surface_height(), 6);
+        // Three projects in the day, each row plus header, rule, total, two borders.
+        assert_eq!(app.summary_surface_height(), 8);
 
         // A filter that removes projects shrinks the box.
         app.project_filter.cycle("tt", true);
-        assert_eq!(app.summary_surface_height(), 4);
+        assert_eq!(app.summary_surface_height(), 6);
         let one = summary_box(&mut app, 100, 40);
         assert!(one[1].contains("tt"), "{one:#?}");
 
@@ -4372,7 +4430,7 @@ mod tests {
 
         // Scope-only mode never empties, however the filter is set.
         app.toggle_summary_follows_filters();
-        assert_eq!(app.summary_surface_height(), 6);
+        assert_eq!(app.summary_surface_height(), 8);
 
         // Following with nothing set says the scope is empty, not the filter.
         app.search_term.clear();
@@ -4414,7 +4472,7 @@ mod tests {
         app.toggle_summary();
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
-        assert_eq!(app.summary_surface_height(), 9);
+        assert_eq!(app.summary_surface_height(), 11);
         let rows = app.project_summary();
         assert_eq!(summary::summary_count(&rows, 6).as_deref(), Some("6/9"));
         assert_eq!(app.summary_marker(&rows, 6), "day · all projects · 6/9");

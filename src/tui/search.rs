@@ -1,6 +1,7 @@
 use super::App;
 use super::cache::FilterKey;
 use super::types::{InputMode, SortOrder};
+#[cfg(test)]
 use chrono::Duration;
 use std::collections::HashMap;
 
@@ -78,6 +79,7 @@ impl App {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn filtered_total(&self) -> Duration {
         self.filtered_entries()
             .iter()

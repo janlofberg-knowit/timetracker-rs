@@ -336,10 +336,10 @@ round_minutes = 0           # 0 logs the actual minutes; N rounds `tt agent end`
                             # `tt agent audit --auto-log` never rounds.
 
 [layout]
-show_projects = true   # whether the Projects, Agent, Summary, and Tags panels
-show_agents = false    # start open. Pressing their toggle keys (P/A/S/T) writes
-show_summary = false   # this section back, so the panels come back next run the
-show_tags = true       # way you left them.
+show_projects = true   # whether the Projects, Agent, and Tags panels start open,
+show_agents = false    # and whether the Summary starts with its project
+show_summary = false   # breakdown open above its total row. Pressing their toggle
+show_tags = true       # keys (P/A/S/T) writes this section back.
 summary_split = false           # whether the Summary starts split into human and
                                 # agent columns (v). Off by default.
 summary_follows_filters = false # whether the Summary starts folding the filtered

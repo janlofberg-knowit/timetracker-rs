@@ -16,6 +16,9 @@ use super::types::Focus;
 /// Most project rows the surface shows before the rest live in the border count.
 const MAX_VISIBLE_PROJECTS: usize = 6;
 
+/// The rule and the total row under the project rows.
+pub(crate) const SUMMARY_TOTAL_LINES: u16 = 2;
+
 /// The scope-only statement on the title bar, after the scope word.
 const ALL_PROJECTS: &str = "all projects";
 
@@ -99,17 +102,17 @@ impl App {
         rows
     }
 
-    /// Height including borders, or 0 while hidden so the layout drops the row.
-    /// Counts the header row that the renderer subtracts from its row budget;
-    /// the two must stay in step.
+    /// Height including borders. Collapsed, the box is the total row alone;
+    /// expanded, the header and the capped rows sit over the rule and the total.
     pub(crate) fn summary_surface_height(&self) -> u16 {
         if !self.show_summary {
-            return 0;
+            return 3;
         }
         let rows = self.project_summary().len();
-        // The empty box says why it is empty and heads no columns.
+        // The empty box says why it is empty, heads no columns and sums nothing.
         let header = u16::from(rows > 0);
-        2 + header + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
+        let total = if rows > 0 { SUMMARY_TOTAL_LINES } else { 0 };
+        2 + header + total + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
 
     /// The title bar's right half: `day · all projects`, or `day · filtered`
@@ -160,6 +163,27 @@ impl App {
         }
         self.persist_layout();
     }
+}
+
+/// One row over **every** project row, on screen or not; `share` is unused.
+pub(crate) fn summary_total(rows: &[ProjectTotal]) -> ProjectTotal {
+    rows.iter().fold(
+        ProjectTotal {
+            project: "total".to_string(),
+            total: Duration::zero(),
+            human: Duration::zero(),
+            agent: Duration::zero(),
+            entries: 0,
+            share: 0,
+        },
+        |mut acc, row| {
+            acc.total += row.total;
+            acc.human += row.human;
+            acc.agent += row.agent;
+            acc.entries += row.entries;
+            acc
+        },
+    )
 }
 
 /// The leading rows the box has room for. Takes what `project_summary` folded,
