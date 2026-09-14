@@ -94,6 +94,10 @@ pub struct LayoutConfig {
     pub show_agents: Option<bool>,
     pub show_summary: Option<bool>,
     pub show_tags: Option<bool>,
+    /// Whether the Summary starts split into human and agent time.
+    pub summary_split: Option<bool>,
+    /// Whether the Summary starts folding the filtered entries.
+    pub summary_follows_filters: Option<bool>,
 }
 
 /// Cross-cutting settings. The first-run popup shows until it has run once,
@@ -345,6 +349,8 @@ fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
         show_agents: o.show_agents.or(b.show_agents),
         show_summary: o.show_summary.or(b.show_summary),
         show_tags: o.show_tags.or(b.show_tags),
+        summary_split: o.summary_split.or(b.summary_split),
+        summary_follows_filters: o.summary_follows_filters.or(b.summary_follows_filters),
     }
 }
 
@@ -535,6 +541,7 @@ mod tests {
             show_agents: Some(false),
             show_summary: Some(false),
             show_tags: Some(true),
+            ..Default::default()
         });
         assert!(
             result.is_ok(),
@@ -559,6 +566,7 @@ mod tests {
             show_agents: Some(true),
             show_summary: Some(false),
             show_tags: Some(false),
+            ..Default::default()
         })
         .unwrap();
 
@@ -642,6 +650,31 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(agent.auto_log_on_stop, None);
+    }
+
+    /// A field missing from `merge_layout` is dropped only for an `include`
+    /// chain, so a single-file test would not catch it.
+    #[test]
+    fn an_include_chain_keeps_base_summary_layout_keys() {
+        let _guard = crate::storage::env_guard();
+        let dir = crate::storage::env_sandbox("config-include-summary-layout");
+        fs::write(
+            dir.join("base.toml"),
+            "[layout]\nsummary_split = true\nsummary_follows_filters = true\n",
+        )
+        .unwrap();
+        let path = config_path().expect("a config path");
+        fs::write(
+            &path,
+            "include = \"base.toml\"\n[layout]\nshow_projects = true\n",
+        )
+        .unwrap();
+
+        let saved = load();
+        assert_eq!(saved.layout.summary_split, Some(true));
+        assert_eq!(saved.layout.summary_follows_filters, Some(true));
+        assert_eq!(saved.layout.show_projects, Some(true));
+        drop(dir);
     }
 
     /// Unrelated sections (e.g. `[theme]`) must survive a round trip through

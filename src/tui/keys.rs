@@ -43,14 +43,14 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.should_quit = true;
             }
         }
-        // j/k move in the focused pane, else the table.
+        // Summary has no rows: j/k must not move the table.
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.pane_next() {
+            if !app.pane_next() && !app.summary_is_focused() {
                 app.next();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if !app.pane_previous() {
+            if !app.pane_previous() && !app.summary_is_focused() {
                 app.previous();
             }
         }
@@ -70,6 +70,17 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('A') => app.toggle_marks(),
         // Capital `S` only; lowercase `s` stops the entry.
         KeyCode::Char('S') => app.toggle_summary(),
+        KeyCode::Char('v') => {
+            if app.summary_is_focused() {
+                app.toggle_summary_split();
+            }
+        }
+        // Only the Summary owns `f`; every other focus leaves it inert.
+        KeyCode::Char('f') => {
+            if app.summary_is_focused() {
+                app.toggle_summary_follows_filters();
+            }
+        }
         KeyCode::Tab => app.cycle_focus(),
         // crossterm reports Shift-Tab as its own code.
         KeyCode::BackTab => app.cycle_focus_back(),
@@ -509,6 +520,139 @@ mod tests {
         assert!(app.selected_entry().is_none(), "`k` left the header");
     }
 
+    /// The Summary has no rows, so `j`/`k` must move nothing while it has focus.
+    #[test]
+    fn j_and_k_are_inert_while_the_summary_has_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-inert");
+        // Three rows, so two presses in one direction cannot wrap back to the start.
+        seed(
+            vec![
+                tagged(0, "first", &["impl"], 4),
+                tagged(1, "second", &["ops"], 3),
+                tagged(2, "third", &["plan"], 2),
+            ],
+            3,
+        );
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        press(&mut app, KeyCode::Char('P'));
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            app.pane_cursor(Pane::Tags),
+            1,
+            "the Tags cursor moved first"
+        );
+
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.focus, Focus::Summary);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.table_state.selected(), Some(0), "`j` moved the table");
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.table_state.selected(), Some(0), "`k` moved the table");
+        assert_eq!(app.pane_cursor(Pane::Tags), 1);
+        assert_eq!(app.pane_cursor(Pane::Projects), 0);
+
+        // The table moves again as soon as focus leaves the surface.
+        app.focus = Focus::Table;
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    /// `v` belongs to the Summary, so every other focus state must ignore it.
+    #[test]
+    fn v_splits_the_summary_only_while_it_has_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-split");
+        let mut with_project = entry(0, "has a project");
+        with_project.project = Some("acme".to_string());
+        seed(vec![with_project], 1);
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        // Hidden: the surface is not there to split.
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(!app.summary_split, "`v` split a hidden surface");
+
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.focus, Focus::Summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` did not reach the split");
+        press(&mut app, KeyCode::Char('v'));
+        assert!(!app.summary_split, "`v` did not flip back");
+
+        // Visible, but focus rests elsewhere.
+        app.summary_split = true;
+        app.focus = Focus::Table;
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired with the table focused");
+
+        press(&mut app, KeyCode::Char('P'));
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired with a pane focused");
+
+        // Hiding the surface takes the key away again, and leaves the bool alone.
+        app.focus = Focus::Summary;
+        press(&mut app, KeyCode::Char('S'));
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` fired on a hidden surface");
+    }
+
+    /// `f` belongs to the Summary, so every other focus state must ignore it.
+    #[test]
+    fn f_follows_the_filters_only_while_the_summary_has_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-follow");
+        let mut with_project = entry(0, "has a project");
+        with_project.project = Some("acme".to_string());
+        seed(vec![with_project], 1);
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        // Hidden: the surface is not there to follow anything.
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(
+            !app.summary_follows_filters,
+            "`f` fired on a hidden surface"
+        );
+
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.focus, Focus::Summary);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(app.summary_follows_filters, "`f` did not reach the mode");
+        press(&mut app, KeyCode::Char('f'));
+        assert!(!app.summary_follows_filters, "`f` did not flip back");
+
+        // Visible, but focus rests elsewhere.
+        app.summary_follows_filters = true;
+        app.focus = Focus::Table;
+        press(&mut app, KeyCode::Char('f'));
+        assert!(
+            app.summary_follows_filters,
+            "`f` fired with the table focused"
+        );
+
+        press(&mut app, KeyCode::Char('P'));
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        press(&mut app, KeyCode::Char('f'));
+        assert!(app.summary_follows_filters, "`f` fired with a pane focused");
+
+        // Hiding the surface takes the key away again, and leaves the bool alone.
+        app.focus = Focus::Summary;
+        press(&mut app, KeyCode::Char('S'));
+        assert!(!app.show_summary);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(app.summary_follows_filters, "`f` fired on a hidden surface");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]
@@ -588,6 +732,17 @@ mod tests {
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Focus::Table, "BackTab should cycle focus");
+
+        // `v` needs the Summary focused, so `S` opens it first.
+        let mut app = App::new().unwrap();
+        press(&mut app, KeyCode::Char('S'));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.summary_split, "`v` should reach the summary split");
+        press(&mut app, KeyCode::Char('f'));
+        assert!(
+            app.summary_follows_filters,
+            "`f` should reach the follow mode"
+        );
 
         // `t` returns from wherever `h` left the cursor.
         let mut app = App::new().unwrap();

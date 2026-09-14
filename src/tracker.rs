@@ -156,6 +156,11 @@ impl TimeEntry {
         self.tags.iter().any(|t| t.to_lowercase() == tag_lower)
     }
 
+    /// The only spelling of the agent tags.
+    pub fn is_agent(&self) -> bool {
+        self.has_tag("agent") || self.has_tag("auto")
+    }
+
     /// Whether the entry's project is `name` (trim, case-insensitive). An entry
     /// with no project matches nothing.
     pub fn is_project(&self, name: &str) -> bool {
@@ -489,6 +494,21 @@ mod tests {
             idle: Vec::new(),
             data: None,
         }
+    }
+
+    /// `#agent` and `#auto` both mark agent time, in any case.
+    #[test]
+    fn is_agent_reads_both_agent_tags_in_any_case() {
+        assert!(entry(1, None, &["agent"]).is_agent());
+        assert!(entry(2, None, &["auto"]).is_agent());
+        assert!(entry(3, None, &["Agent"]).is_agent());
+        assert!(entry(4, None, &["AUTO"]).is_agent());
+        assert!(entry(5, None, &["agent", "auto"]).is_agent());
+        assert!(entry(6, Some("tt"), &["impl", "auto"]).is_agent());
+        assert!(!entry(7, Some("tt"), &["impl"]).is_agent());
+        assert!(!entry(8, None, &[]).is_agent());
+        // Neither tag is a prefix match.
+        assert!(!entry(9, None, &["agentic", "automation"]).is_agent());
     }
 
     #[test]

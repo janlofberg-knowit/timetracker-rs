@@ -340,6 +340,11 @@ show_projects = true   # whether the Projects, Agent, Summary, and Tags panels
 show_agents = false    # start open. Pressing their toggle keys (P/A/S/T) writes
 show_summary = false   # this section back, so the panels come back next run the
 show_tags = true       # way you left them.
+summary_split = false           # whether the Summary starts split into human and
+                                # agent columns (v). Off by default.
+summary_follows_filters = false # whether the Summary starts folding the filtered
+                                # entries instead of the whole scope (f). Off
+                                # by default.
 
 [general]
 onboarding = true          # shown until answered; the app then sets this to false
@@ -348,7 +353,7 @@ auto_check_updates = true  # startup check for a newer release; see `tt update`
 
 `[layout]` and `[general].onboarding` are written automatically the first time
 the TUI runs and its onboarding popup is answered (`s` to move on, `Esc` to
-skip); `[layout]` is rewritten on every later `P`/`A`/`S`/`T` toggle too, which
+skip); `[layout]` is rewritten on every later `P`/`A`/`S`/`T`/`v`/`f` toggle too, which
 leaves `onboarding` alone. Neither needs to be hand-edited, though both can be.
 Onboarding's
 second screen offers to run `npx skills add linus-skold/timetracker-rs`,

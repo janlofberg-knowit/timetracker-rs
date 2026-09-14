@@ -1,5 +1,6 @@
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
+use crate::tui::summary::visible_project_summary;
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
 use ratatui::{
@@ -104,26 +105,44 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The `Summary` surface: how the current scope split across projects. The title
-/// bar's `all projects` marker keeps its words in both filter states and changes
-/// only colour, off the same predicate the footer's total uses.
+/// The `Summary` surface: how the folded entries split across projects. The
+/// title bar's marker names the mode and takes its colour from the same
+/// predicate the footer's total uses.
 pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
-    /// Narrowest the project column gets, so short names still line their totals up.
-    const LABEL_WIDTH: usize = 14;
-    /// The three right-flushed number columns. Fixed, not content-derived, so a
+    /// The header over the project column, and the column's floor.
+    const LABEL_HEADER: &str = "project";
+    /// The right-flushed number columns. Fixed, not content-derived, so a
     /// re-scope that widens one figure cannot shift them.
-    const TOTAL_WIDTH: usize = 8;
-    const COUNT_WIDTH: usize = 5;
+    const TOTAL_WIDTH: usize = 9;
+    const HUMAN_WIDTH: usize = 9;
+    const AGENT_WIDTH: usize = 9;
+    // 6, not 5: `count` would touch `total`.
+    const COUNT_WIDTH: usize = 6;
     const SHARE_WIDTH: usize = 6;
 
+    let focused = app.summary_is_focused();
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
+        .border_style(Style::default().fg(if focused {
+            theme::accent()
+        } else {
+            theme::border()
+        }))
         .title(Span::styled(
             " Summary (S) ",
-            Style::default().fg(theme::title()),
+            Style::default().fg(if focused {
+                theme::highlight()
+            } else {
+                theme::title()
+            }),
         ));
     let inner = block.inner(area);
+
+    // One fold for the whole frame: the marker and the rows read the same list.
+    let summary = app.project_summary();
+    // Budget excludes the header; see `summary_surface_height`.
+    let scoped = !summary.is_empty();
+    let visible_rows = (inner.height as usize).saturating_sub(usize::from(scoped));
 
     let marker_style = Style::default().fg(if app.total_is_filtered() {
         theme::highlight()
@@ -132,50 +151,78 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     });
     block = block.title_top(
         Line::from(Span::styled(
-            format!(" {} ", app.summary_marker(inner.height as usize)),
+            format!(" {} ", app.summary_marker(&summary, visible_rows)),
             marker_style,
         ))
         .right_aligned(),
     );
 
-    let rows = app.visible_project_summary(inner.height as usize);
-    // One project column for the whole box, so the numbers read as columns.
-    let label_width = rows
-        .iter()
-        .map(|row| row.project.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(LABEL_WIDTH);
-
-    let lines: Vec<Line> = if rows.is_empty() {
+    // Both conditions: an empty day must not blame a filter nobody set.
+    let empty_text = if app.summary_follows_filters && app.total_is_filtered() {
+        " nothing matches the filter"
+    } else {
+        " nothing in scope"
+    };
+    let lines: Vec<Line> = if !scoped {
         vec![Line::from(Span::styled(
-            " nothing in scope",
+            empty_text,
             Style::default().fg(theme::inactive()).italic(),
         ))]
     } else {
-        rows.iter()
-            .map(|row| {
-                let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {}{}", row.project, pad),
-                        Style::default().fg(Color::White),
-                    ),
-                    Span::styled(
-                        format!("{:>TOTAL_WIDTH$}", crate::duration::format(row.total)),
-                        Style::default().fg(theme::highlight()),
-                    ),
-                    Span::styled(
-                        format!("{:>COUNT_WIDTH$}", row.entries),
-                        Style::default().fg(theme::inactive()),
-                    ),
-                    Span::styled(
-                        format!("{:>SHARE_WIDTH$}", format!("{}%", row.share)),
-                        Style::default().fg(theme::accent()),
-                    ),
-                ])
-            })
-            .collect()
+        let rows = visible_project_summary(&summary, visible_rows);
+        // One project column for the whole box, so the numbers read as columns.
+        let label_width = rows
+            .iter()
+            .map(|row| row.project.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(LABEL_HEADER.chars().count());
+
+        let mut header = format!(" {LABEL_HEADER:<label_width$}{:>TOTAL_WIDTH$}", "total");
+        if app.summary_split {
+            header.push_str(&format!("{:>HUMAN_WIDTH$}", "human"));
+            header.push_str(&format!("{:>AGENT_WIDTH$}", "agent"));
+        }
+        header.push_str(&format!("{:>COUNT_WIDTH$}", "count"));
+        header.push_str(&format!("{:>SHARE_WIDTH$}", "share"));
+
+        let mut lines = vec![Line::from(Span::styled(
+            header,
+            Style::default().fg(theme::inactive()).italic(),
+        ))];
+        lines.extend(rows.iter().map(|row| {
+            let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
+            let mut spans = vec![
+                Span::styled(
+                    format!(" {}{}", row.project, pad),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("{:>TOTAL_WIDTH$}", crate::duration::format(row.total)),
+                    Style::default().fg(theme::highlight()),
+                ),
+            ];
+            if app.summary_split {
+                spans.push(Span::styled(
+                    format!("{:>HUMAN_WIDTH$}", crate::duration::format(row.human)),
+                    Style::default().fg(theme::title()),
+                ));
+                spans.push(Span::styled(
+                    format!("{:>AGENT_WIDTH$}", crate::duration::format(row.agent)),
+                    Style::default().fg(theme::active()),
+                ));
+            }
+            spans.push(Span::styled(
+                format!("{:>COUNT_WIDTH$}", row.entries),
+                Style::default().fg(theme::inactive()),
+            ));
+            spans.push(Span::styled(
+                format!("{:>SHARE_WIDTH$}", format!("{}%", row.share)),
+                Style::default().fg(theme::accent()),
+            ));
+            Line::from(spans)
+        }));
+        lines
     };
 
     f.render_widget(Paragraph::new(lines).block(block), area);

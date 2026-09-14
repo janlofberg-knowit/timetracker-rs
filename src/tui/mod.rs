@@ -108,6 +108,10 @@ pub(crate) struct App {
     pub(crate) show_tags: bool,
     pub(crate) show_marks: bool,
     pub(crate) show_summary: bool,
+    /// Whether the Summary splits each row into human and agent time.
+    pub(crate) summary_split: bool,
+    /// Whether the Summary folds `filtered_entries()` instead of the scope.
+    pub(crate) summary_follows_filters: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -197,6 +201,8 @@ impl App {
             show_tags: layout.show_tags.unwrap_or(false),
             show_marks: layout.show_agents.unwrap_or(false),
             show_summary: layout.show_summary.unwrap_or(false),
+            summary_split: layout.summary_split.unwrap_or(false),
+            summary_follows_filters: layout.summary_follows_filters.unwrap_or(false),
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -241,6 +247,8 @@ impl App {
             show_agents: Some(self.show_marks),
             show_summary: Some(self.show_summary),
             show_tags: Some(self.show_tags),
+            summary_split: Some(self.summary_split),
+            summary_follows_filters: Some(self.summary_follows_filters),
         }
     }
 
@@ -1360,8 +1368,6 @@ mod tests {
     }
 
     /// Toggling a surface writes it back, so the next run opens the same way.
-    /// Read off disk rather than through `config::load`, whose resolved value
-    /// is cached for the process once read.
     #[test]
     fn toggling_a_surface_persists_the_layout() {
         let _guard = env_guard();
@@ -1374,9 +1380,7 @@ mod tests {
         app.toggle_marks();
         app.toggle_summary();
 
-        let path = std::env::var("TT_CONFIG_FILE").unwrap();
-        let text = std::fs::read_to_string(path).expect("a written config file");
-        let saved: toml::Value = toml::from_str(&text).expect("valid TOML");
+        let saved = saved_config();
         let layout = &saved["layout"];
         assert_eq!(layout["show_tags"].as_bool(), Some(true));
         assert_eq!(layout["show_agents"].as_bool(), Some(true));
@@ -1384,6 +1388,81 @@ mod tests {
         assert_eq!(layout["show_projects"].as_bool(), Some(false));
         // A toggle is not an onboarding answer.
         assert!(saved.get("general").is_none(), "onboarding left untouched");
+    }
+
+    /// Reads the config file the TUI wrote, off disk rather than through
+    /// `config::load`, whose resolved value is cached for the process.
+    fn saved_config() -> toml::Value {
+        let path = std::env::var("TT_CONFIG_FILE").unwrap();
+        let text = std::fs::read_to_string(path).expect("a written config file");
+        toml::from_str(&text).expect("valid TOML")
+    }
+
+    fn saved_layout() -> toml::Value {
+        saved_config()["layout"].clone()
+    }
+
+    #[test]
+    fn toggling_a_summary_mode_persists_it() {
+        let _guard = env_guard();
+        sandbox("summary-mode-persist");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.toggle_summary_split();
+        app.toggle_summary_follows_filters();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn answering_onboarding_keeps_both_summary_modes() {
+        let _guard = env_guard();
+        sandbox("summary-mode-onboarding-finish");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.summary_split = true;
+        app.summary_follows_filters = true;
+        app.onboarding_finish().unwrap();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn skipping_onboarding_keeps_both_summary_modes() {
+        let _guard = env_guard();
+        sandbox("summary-mode-onboarding-skip");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.summary_split = true;
+        app.summary_follows_filters = true;
+        app.onboarding_skip().unwrap();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn the_layout_keys_seed_each_summary_mode() {
+        let _guard = env_guard();
+        let dir = sandbox("summary-mode-seed");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\nsummary_split = true\nsummary_follows_filters = true\n",
+        )
+        .unwrap();
+
+        let app = App::new().unwrap();
+        assert!(app.summary_split);
+        assert!(app.summary_follows_filters);
     }
 
     #[test]
@@ -1468,6 +1547,44 @@ mod tests {
         assert_eq!(app.focus, Focus::Table);
     }
 
+    /// The Summary sits last in the ring, below the panes, and only while it is open.
+    #[test]
+    fn tab_reaches_the_summary_only_while_it_is_open() {
+        let _guard = env_guard();
+        sandbox("summary-focus-ring");
+        let mut app = seed_panes();
+
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "closed: the ring skips it");
+
+        app.toggle_summary();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary);
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_pane(Pane::Projects);
+        app.toggle_pane(Pane::Tags);
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Pane(Pane::Tags));
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary, "after every visible pane");
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.toggle_summary();
+        app.focus = Focus::Table;
+        app.cycle_focus();
+        app.cycle_focus();
+        app.cycle_focus();
+        assert_eq!(app.focus, Focus::Table, "hidden again: two panes only");
+    }
+
     /// Opening a pane focuses it, so `j`/`k`/`Enter` drive it with no `Tab` first.
     #[test]
     fn opening_a_pane_focuses_it() {
@@ -1509,13 +1626,22 @@ mod tests {
         assert_eq!(app.pane_cursor(Pane::Tags), 2);
     }
 
-    /// `Shift-Tab` undoes `Tab` for every pane-visibility combination.
+    /// `Shift-Tab` undoes `Tab` for every surface-visibility combination.
     #[test]
     fn shift_tab_cycles_focus_in_the_exact_reverse_order() {
         let _guard = env_guard();
         sandbox("pane-focus-back");
 
-        for (projects, tags) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (projects, tags, summary) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+            (false, false, true),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
             let mut app = seed_panes();
             if projects {
                 app.toggle_pane(Pane::Projects);
@@ -1523,9 +1649,12 @@ mod tests {
             if tags {
                 app.toggle_pane(Pane::Tags);
             }
+            if summary {
+                app.toggle_summary();
+            }
             app.focus = Focus::Table;
 
-            let ring_len = 1 + app.visible_panes().len();
+            let ring_len = 1 + app.visible_panes().len() + usize::from(app.show_summary);
             let mut forward = Vec::new();
             for _ in 0..ring_len {
                 app.cycle_focus();
@@ -1548,7 +1677,7 @@ mod tests {
             assert_eq!(
                 backward, expected,
                 "reverse cycling is not the inverse of forward for \
-                 projects={projects} tags={tags}"
+                 projects={projects} tags={tags} summary={summary}"
             );
 
             for _ in 0..ring_len {
@@ -1821,7 +1950,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} missing:\n{}", lines.join("\n")))
         };
         let first = column("previous period");
-        for needle in ["stop active entry", "focus panes in reverse", "quit"] {
+        for needle in [
+            "stop active entry",
+            "focus the same ring in reverse",
+            "quit",
+        ] {
             assert_eq!(column(needle), first, "{needle}");
         }
         let screen = lines.join("\n");
@@ -2321,6 +2454,130 @@ mod tests {
         terminal.draw(|f| render::ui(f, app)).unwrap();
         let pos = terminal.get_cursor_position().unwrap();
         (pos.x, pos.y)
+    }
+
+    /// The legend names every surface key, and `KEYS_WIDTH` still fits it: the
+    /// zone never clips, so an undercount eats the end of the legend.
+    #[test]
+    fn the_footer_legend_names_the_summary_key_without_clipping() {
+        let _guard = env_guard();
+        sandbox("footer-legend");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        let screen = frame_lines(&mut app, 140, 20);
+        let footer = screen
+            .iter()
+            .rev()
+            .find(|line| line.contains("?: help"))
+            .unwrap_or_else(|| panic!("no footer:\n{}", screen.join("\n")));
+        assert!(
+            footer.contains(" | P/T/A/S | Tab | ?: help"),
+            "footer legend clipped or missing `S`: {footer}"
+        );
+        assert!(footer.contains("s: stop"), "the hints zone was clipped");
+    }
+
+    /// The foreground of the first cell of `needle` on the footer's key row.
+    fn footer_key_fg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        const WIDTH: u16 = 140;
+        const HEIGHT: u16 = 30;
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(WIDTH, HEIGHT)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        for y in 0..HEIGHT {
+            let row: String = (0..WIDTH).map(|x| buffer[(x, y)].symbol()).collect();
+            if !row.contains("?: help") {
+                continue;
+            }
+            let byte = row
+                .find(needle)
+                .unwrap_or_else(|| panic!("the footer does not name {needle}: {row}"));
+            let column = row[..byte].chars().count() as u16;
+            return buffer[(column, y)].fg;
+        }
+        panic!("no footer row carries the keys");
+    }
+
+    /// `Tab` is live whenever the ring reaches past the table, and the Summary
+    /// alone is enough to do that.
+    #[test]
+    fn the_footer_tab_key_is_live_while_the_summary_alone_is_open() {
+        let _guard = env_guard();
+        sandbox("footer-tab-key");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::inactive(),
+            "nothing open: Tab moves nothing"
+        );
+
+        app.toggle_summary();
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::accent(),
+            "the Summary alone is a ring member"
+        );
+
+        app.toggle_summary();
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::accent(),
+            "a pane open"
+        );
+    }
+
+    /// The help popup's ring rows name the Summary, not the panes alone.
+    #[test]
+    fn the_help_popup_names_the_summary_in_the_focus_ring() {
+        let _guard = env_guard();
+        sandbox("help-ring-rows");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.input_mode = InputMode::Help;
+        let screen = frame_lines(&mut app, 100, 60);
+        let row = |key: &str| {
+            screen
+                .iter()
+                .find(|line| line.contains(key))
+                .unwrap_or_else(|| panic!("no {key} row:\n{}", screen.join("\n")))
+                .clone()
+        };
+        assert!(row("Shift-Tab").contains("the same ring in reverse"));
+        let split_row = row("human / agent split");
+        assert!(
+            split_row
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2502}')
+                .starts_with("v "),
+            "the split row's key column is not `v`: {split_row}"
+        );
+        assert!(
+            split_row.contains("Summary focused"),
+            "the split row does not say the key is focus-gated: {split_row}"
+        );
+        let follow_row = row("follow the filters");
+        assert!(
+            follow_row
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2502}')
+                .starts_with("f "),
+            "the follow row's key column is not `f`: {follow_row}"
+        );
+        assert!(
+            follow_row.contains("Summary focused"),
+            "the follow row does not say the key is focus-gated: {follow_row}"
+        );
+        assert!(
+            screen
+                .iter()
+                .any(|line| line.contains("Tab") && line.contains("summary")),
+            "no Tab row names the summary:\n{}",
+            screen.join("\n")
+        );
     }
 
     #[test]
@@ -3293,6 +3550,85 @@ mod tests {
         }
     }
 
+    /// One project logged by a person, by `#agent` and by `#auto`, plus a second
+    /// project that is all human. Day: tt 180m (60 human, 120 agent), solo 30m.
+    fn seed_agent_summary() -> App {
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "hand written", "tt", &["impl"], today, 60),
+                logged(1, "agent run", "tt", &["Agent"], today, 90),
+                logged(2, "auto run", "tt", &["auto"], today, 30),
+                logged(3, "all human", "solo", &[], today, 30),
+            ],
+            4,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app
+    }
+
+    /// Agent time is split out per row, and the two halves always rebuild the total.
+    #[test]
+    fn project_summary_splits_human_and_agent_time() {
+        let _guard = env_guard();
+        sandbox("summary-split-fold");
+        let app = seed_agent_summary();
+
+        let rows = app.project_summary();
+        let minutes = |name: &str| {
+            let row = rows.iter().find(|r| r.project == name).unwrap();
+            (
+                row.total.num_minutes(),
+                row.human.num_minutes(),
+                row.agent.num_minutes(),
+            )
+        };
+        assert_eq!(minutes("tt"), (180, 60, 120));
+        assert_eq!(minutes("solo"), (30, 30, 0));
+    }
+
+    /// A running entry has no end time, so it counts as human time up to now.
+    #[test]
+    fn a_running_entry_counts_as_human_time() {
+        let _guard = env_guard();
+        sandbox("summary-split-running");
+        let today = Local::now().date_naive();
+        let mut running = logged(0, "still going", "tt", &["impl"], today, 0);
+        running.start_time = Local::now() - chrono::Duration::minutes(30);
+        running.end_time = None;
+        seed(vec![running], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+
+        let row = &app.project_summary()[0];
+        assert_eq!(row.agent, chrono::Duration::zero());
+        assert_eq!(row.human, row.total);
+        assert!(row.total.num_minutes() >= 29, "the open span is counted");
+    }
+
+    /// The split can never disagree with the total the surface already shows.
+    #[test]
+    fn every_summary_row_rebuilds_its_total_from_the_split() {
+        let _guard = env_guard();
+        sandbox("summary-split-sums");
+        let mut app = seed_summary();
+
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            for row in app.project_summary() {
+                assert_eq!(
+                    row.human + row.agent,
+                    row.total,
+                    "{name}: {} does not rebuild its total",
+                    row.project
+                );
+            }
+        }
+    }
+
     /// The rows sum to the scope total, and their shares to within a point of 100.
     #[test]
     fn project_summary_rows_account_for_the_whole_scope() {
@@ -3322,7 +3658,7 @@ mod tests {
     }
 
     #[test]
-    fn project_summary_ignores_the_active_filter_and_search() {
+    fn project_summary_ignores_the_filter_and_search_in_scope_only_mode() {
         let _guard = env_guard();
         sandbox("summary-prefilter");
         let mut app = seed_summary();
@@ -3348,6 +3684,47 @@ mod tests {
         app.search_term.set_from("nothing matches this");
         assert!(app.filtered_entries().is_empty());
         assert_eq!(app.project_summary(), before);
+    }
+
+    #[test]
+    fn project_summary_follows_the_filter_and_search_in_follow_mode() {
+        let _guard = env_guard();
+        sandbox("summary-follows-filter");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        let scope_only = app.project_summary();
+        app.toggle_summary_follows_filters();
+        assert_eq!(
+            app.project_summary(),
+            scope_only,
+            "an unset filter moves it"
+        );
+
+        let summed = |app: &App| {
+            app.project_summary()
+                .iter()
+                .fold(chrono::Duration::zero(), |acc, row| acc + row.total)
+        };
+
+        app.project_filter.cycle("tt", true);
+        assert_eq!(summary(&app), "tt=90m/2/100%");
+        assert_eq!(summed(&app), app.filtered_total());
+
+        app.project_filter.clear();
+        app.tag_filter.cycle("ops", true);
+        assert_eq!(summary(&app), "vinge=120m/1/73% (no project)=45m/1/27%");
+        assert_eq!(summed(&app), app.filtered_total());
+
+        app.tag_filter.clear();
+        app.search_term.set_from("nothing matches this");
+        assert!(app.project_summary().is_empty());
+        assert_eq!(app.filtered_total(), chrono::Duration::zero());
+
+        // The mode off again restores the scope-only rows byte for byte.
+        app.search_term.clear();
+        app.project_filter.cycle("tt", true);
+        app.toggle_summary_follows_filters();
+        assert_eq!(app.project_summary(), scope_only);
     }
 
     #[test]
@@ -3384,6 +3761,204 @@ mod tests {
         assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
     }
 
+    /// The drawn Summary box, between its top and bottom borders.
+    fn summary_box(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let screen = frame_lines(app, width, height);
+        let top = screen
+            .iter()
+            .position(|line| line.contains("Summary (S)"))
+            .unwrap_or_else(|| panic!("no Summary box:\n{}", screen.join("\n")));
+        screen[top + 1..]
+            .iter()
+            .take_while(|line| !line.contains('\u{2518}'))
+            .cloned()
+            .collect()
+    }
+
+    /// The header names the columns in both modes, and `v` adds the two halves
+    /// between `total` and `count`.
+    #[test]
+    fn the_summary_heads_its_columns_in_both_modes() {
+        let _guard = env_guard();
+        sandbox("summary-header");
+        let mut app = seed_agent_summary();
+        app.toggle_summary();
+
+        let unsplit = summary_box(&mut app, 100, 40);
+        assert!(
+            unsplit[0].starts_with("\u{2502} project    total count share"),
+            "unsplit header: {}",
+            unsplit[0]
+        );
+        assert!(
+            unsplit[1].starts_with("\u{2502} tt         3h 0m     3   86%"),
+            "unsplit row: {}",
+            unsplit[1]
+        );
+
+        app.toggle_summary_split();
+        let split = summary_box(&mut app, 100, 40);
+        assert!(
+            split[0].starts_with("\u{2502} project    total    human    agent count share"),
+            "split header: {}",
+            split[0]
+        );
+        assert!(
+            split[1].starts_with("\u{2502} tt         3h 0m    1h 0m    2h 0m     3   86%"),
+            "split row: {}",
+            split[1]
+        );
+        assert!(
+            split[2].starts_with("\u{2502} solo      0h 30m   0h 30m    0h 0m     1   14%"),
+            "split row two: {}",
+            split[2]
+        );
+    }
+
+    /// The time columns hold `100h 30m` and still keep a gap between them.
+    #[test]
+    fn three_digit_hours_keep_a_gap_between_the_time_columns() {
+        let _guard = env_guard();
+        sandbox("summary-wide-hours");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a long stint", "tt", &[], today, 6030),
+                logged(1, "a long agent run", "tt", &["agent"], today, 6030),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        let drawn = summary_box(&mut app, 100, 40);
+        assert!(
+            drawn[1].starts_with("\u{2502} tt       201h 0m 100h 30m 100h 30m     2  100%"),
+            "the time columns ran together: {}",
+            drawn[1]
+        );
+    }
+
+    /// The label column follows the longest visible name and never sits on a floor.
+    #[test]
+    fn the_summary_label_column_follows_the_longest_project_name() {
+        let _guard = env_guard();
+        sandbox("summary-label-width");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a", "a-very-long-project-name", &[], today, 60),
+                logged(1, "b", "tt", &[], today, 30),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        let wide = summary_box(&mut app, 100, 40);
+        assert!(
+            wide[0].starts_with("\u{2502} project                     total"),
+            "long names did not widen the label column: {}",
+            wide[0]
+        );
+        assert!(
+            wide[1].starts_with("\u{2502} a-very-long-project-name    1h 0m"),
+            "the row does not use the widened column: {}",
+            wide[1]
+        );
+
+        // Short names pull the column in to `project`.
+        seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        let narrow = summary_box(&mut app, 100, 40);
+        assert!(
+            narrow[0].starts_with("\u{2502} project    total"),
+            "short names did not pull the column in: {}",
+            narrow[0]
+        );
+    }
+
+    /// A box too narrow for every column clips the right edge, and `share` goes
+    /// first. No column is dropped and nothing wraps.
+    #[test]
+    fn a_narrow_summary_clips_its_right_edge_rather_than_wrapping() {
+        let _guard = env_guard();
+        sandbox("summary-narrow");
+        let mut app = seed_agent_summary();
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        let narrow = summary_box(&mut app, 40, 40);
+        assert!(
+            narrow[0].starts_with("\u{2502} project    total    human"),
+            "the narrow header lost a left column: {}",
+            narrow[0]
+        );
+        assert!(
+            !narrow[0].contains("share"),
+            "share survived: {}",
+            narrow[0]
+        );
+        assert!(!narrow[1].contains('%'), "the share column survived");
+        // One line per project still, so nothing wrapped onto a second row.
+        assert_eq!(narrow.len(), 3, "{narrow:#?}");
+    }
+
+    /// `nothing in scope` keeps the box it has: no header over an empty surface.
+    #[test]
+    fn an_empty_summary_scope_gets_no_header_row() {
+        let _guard = env_guard();
+        sandbox("summary-empty-header");
+        seed(Vec::new(), 0);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        assert_eq!(app.summary_surface_height(), 3);
+        let empty = summary_box(&mut app, 100, 40);
+        assert!(
+            empty[0].starts_with("\u{2502} nothing in scope"),
+            "the empty box grew a header: {}",
+            empty[0]
+        );
+    }
+
+    /// The marker's count and the rows drawn must agree once the header takes a row.
+    #[test]
+    fn the_summary_marker_counts_the_rows_it_actually_draws() {
+        let _guard = env_guard();
+        sandbox("summary-header-budget");
+        let today = Local::now().date_naive();
+        let entries: Vec<TimeEntry> = (0..9)
+            .map(|n| logged(n, "x", &format!("p{n}"), &[], today, 30 + n as i64))
+            .collect();
+        seed(entries, 9);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        // Two borders, the header and the six-project cap.
+        assert_eq!(app.summary_surface_height(), 9);
+        let drawn = summary_box(&mut app, 100, 40);
+        assert_eq!(drawn.len(), 7, "header plus rows: {drawn:#?}");
+        let screen = frame_lines(&mut app, 100, 40);
+        let title = screen
+            .iter()
+            .find(|line| line.contains("Summary (S)"))
+            .unwrap()
+            .clone();
+        assert!(title.contains("6/9"), "the marker miscounted: {title}");
+    }
+
     /// Hidden, the surface has no height, so `ui` leaves its row out of the plan.
     #[test]
     fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
@@ -3395,12 +3970,12 @@ mod tests {
         assert!(!app.show_summary);
         assert_eq!(app.summary_surface_height(), 0, "hidden: no row at all");
 
-        // Two borders plus one row per project: the day has three.
+        // Two borders, the header row, and one row per project: the day has three.
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(), 5);
+        assert_eq!(app.summary_surface_height(), 6);
         // Re-scoping re-sizes it: the week has four projects, all entries too.
         app.view_mode = ViewMode::Week;
-        assert_eq!(app.summary_surface_height(), 6);
+        assert_eq!(app.summary_surface_height(), 7);
 
         // An empty scope still gets one row, so the box can say it is empty.
         app.view_mode = ViewMode::Day;
@@ -3412,8 +3987,26 @@ mod tests {
         assert_eq!(app.summary_surface_height(), 0, "hidden again: no row");
     }
 
+    /// Focus never reads as resting on a hidden surface, however `focus` was set.
     #[test]
-    fn toggling_the_summary_surface_leaves_focus_and_the_table_alone() {
+    fn the_summary_reads_as_focused_only_while_it_is_visible() {
+        let _guard = env_guard();
+        sandbox("summary-is-focused");
+        let mut app = seed_summary();
+        assert!(!app.summary_is_focused());
+
+        app.focus = Focus::Summary;
+        assert!(!app.summary_is_focused(), "hidden: focus does not count");
+
+        app.toggle_summary();
+        assert!(app.summary_is_focused());
+
+        app.focus = Focus::Table;
+        assert!(!app.summary_is_focused(), "visible but not focused");
+    }
+
+    #[test]
+    fn s_focuses_the_summary_it_opens_and_falls_back_when_it_hides() {
         let _guard = env_guard();
         sandbox("summary-focus");
         let mut app = seed_summary();
@@ -3423,17 +4016,29 @@ mod tests {
 
         app.toggle_summary();
         assert!(app.show_summary);
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focus, Focus::Summary);
         assert_eq!(app.table_state.selected(), Some(1));
 
         app.toggle_summary();
         assert!(!app.show_summary);
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(app.focus, Focus::Pane(Pane::Projects), "back to the pane");
         assert_eq!(app.table_state.selected(), Some(1));
+
+        // Hiding a pane never jumps focus to the Summary.
+        app.toggle_summary();
+        app.focus = Focus::Pane(Pane::Projects);
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(app.focus, Focus::Table);
+
+        let mut app = seed_summary();
+        app.toggle_summary();
+        assert_eq!(app.focus, Focus::Summary);
+        app.toggle_summary();
+        assert_eq!(app.focus, Focus::Table, "no pane to fall back to");
     }
 
     #[test]
-    fn the_title_marker_names_the_scope_and_always_says_all_projects() {
+    fn the_title_marker_says_all_projects_in_scope_only_mode() {
         let _guard = env_guard();
         sandbox("summary-marker");
         let mut app = seed_summary();
@@ -3441,16 +4046,129 @@ mod tests {
 
         for (mode, word) in scopes() {
             app.set_view_mode(mode);
-            assert_eq!(app.summary_marker(6), format!("{word} · all projects"));
+            let rows = app.project_summary();
+            assert_eq!(
+                app.summary_marker(&rows, 6),
+                format!("{word} · all projects")
+            );
         }
 
         // A filter changes the emphasis, never the words.
         app.set_view_mode(ViewMode::Day);
         assert!(!app.total_is_filtered());
-        let unfiltered = app.summary_marker(6);
+        let rows = app.project_summary();
+        let unfiltered = app.summary_marker(&rows, 6);
         app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the footer total is now narrowed");
-        assert_eq!(app.summary_marker(6), unfiltered);
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
+
+        // The split says so last, after the scope and any overflow count.
+        app.toggle_summary_split();
+        assert_eq!(
+            app.summary_marker(&rows, 6),
+            format!("{unfiltered} \u{b7} split")
+        );
+        assert_eq!(
+            app.summary_marker(&rows, 1),
+            "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
+        );
+        app.toggle_summary_split();
+        assert_eq!(app.summary_marker(&rows, 6), unfiltered);
+    }
+
+    #[test]
+    fn the_title_marker_says_filtered_while_the_summary_follows() {
+        let _guard = env_guard();
+        sandbox("summary-marker-follow");
+        let mut app = seed_summary();
+        app.toggle_summary();
+        app.toggle_summary_follows_filters();
+
+        for (mode, word) in scopes() {
+            app.set_view_mode(mode);
+            let rows = app.project_summary();
+            assert_eq!(
+                app.summary_marker(&rows, 6),
+                format!("{word} \u{b7} filtered")
+            );
+        }
+
+        // The word says the mode, so an unset filter does not take it away.
+        app.set_view_mode(ViewMode::Day);
+        assert!(!app.total_is_filtered());
+        let rows = app.project_summary();
+        assert_eq!(app.summary_marker(&rows, 6), "day \u{b7} filtered");
+
+        // The count and the split keep their places after the word.
+        app.toggle_summary_split();
+        assert_eq!(
+            app.summary_marker(&rows, 1),
+            "day \u{b7} filtered \u{b7} 1/3 \u{b7} split"
+        );
+
+        app.toggle_summary_follows_filters();
+        assert_eq!(
+            app.summary_marker(&rows, 1),
+            "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
+        );
+    }
+
+    /// The empty box blames a filter only when one is set and the mode reads it.
+    #[test]
+    fn a_filtered_to_empty_summary_says_the_filter_emptied_it() {
+        let _guard = env_guard();
+        sandbox("summary-empty-follow");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        app.toggle_summary_follows_filters();
+
+        // Three projects in the day, each row plus a header and two borders.
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // A filter that removes projects shrinks the box.
+        app.project_filter.cycle("tt", true);
+        assert_eq!(app.summary_surface_height(), 4);
+        let one = summary_box(&mut app, 100, 40);
+        assert!(one[1].contains("tt"), "{one:#?}");
+
+        // A filter that removes every entry leaves the 3-row empty box.
+        app.project_filter.clear();
+        app.search_term.set_from("nothing matches this");
+        assert_eq!(app.summary_surface_height(), 3);
+        let empty = summary_box(&mut app, 100, 40);
+        assert!(
+            empty[0].starts_with("\u{2502} nothing matches the filter"),
+            "the empty box does not blame the filter: {}",
+            empty[0]
+        );
+
+        // Scope-only mode never empties, however the filter is set.
+        app.toggle_summary_follows_filters();
+        assert_eq!(app.summary_surface_height(), 6);
+
+        // Following with nothing set says the scope is empty, not the filter.
+        app.search_term.clear();
+        app.toggle_summary_follows_filters();
+        app.selected_date -= chrono::Duration::days(400);
+        assert!(!app.total_is_filtered());
+        let bare = summary_box(&mut app, 100, 40);
+        assert!(
+            bare[0].starts_with("\u{2502} nothing in scope"),
+            "an unfiltered empty scope blamed a filter: {}",
+            bare[0]
+        );
+
+        // Scope-only mode never blames the filter, even with one set.
+        app.toggle_summary_follows_filters();
+        app.project_filter.cycle("tt", true);
+        assert!(app.total_is_filtered());
+        let scoped = summary_box(&mut app, 100, 40);
+        assert!(
+            scoped[0].starts_with("\u{2502} nothing in scope"),
+            "scope-only mode blamed the filter: {}",
+            scoped[0]
+        );
     }
 
     /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.
@@ -3469,17 +4187,18 @@ mod tests {
         app.toggle_summary();
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
-        assert_eq!(app.summary_surface_height(), 8);
-        assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
-        assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
-        assert_eq!(app.visible_project_summary(6).len(), 6);
+        assert_eq!(app.summary_surface_height(), 9);
+        let rows = app.project_summary();
+        assert_eq!(summary::summary_count(&rows, 6).as_deref(), Some("6/9"));
+        assert_eq!(app.summary_marker(&rows, 6), "day · all projects · 6/9");
+        assert_eq!(summary::visible_project_summary(&rows, 6).len(), 6);
 
         // A shorter box counts what *it* left out, not what the cap would have.
-        assert_eq!(app.summary_marker(2), "day · all projects · 2/9");
-        assert_eq!(app.visible_project_summary(2).len(), 2);
+        assert_eq!(app.summary_marker(&rows, 2), "day · all projects · 2/9");
+        assert_eq!(summary::visible_project_summary(&rows, 2).len(), 2);
 
-        assert_eq!(app.summary_count(9), None);
-        assert_eq!(app.summary_marker(9), "day · all projects");
+        assert_eq!(summary::summary_count(&rows, 9), None);
+        assert_eq!(app.summary_marker(&rows, 9), "day · all projects");
     }
 
     #[test]
@@ -3505,6 +4224,14 @@ mod tests {
             "the footer total should have dropped below the summary's"
         );
         assert_eq!(app.project_summary(), rows, "the summary must not move");
+
+        // Following, the summary tracks the footer instead of staying put.
+        app.toggle_summary_follows_filters();
+        let followed = app
+            .project_summary()
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, row| acc + row.total);
+        assert_eq!(followed, app.filtered_total());
     }
 
     #[test]
