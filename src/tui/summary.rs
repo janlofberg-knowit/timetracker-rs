@@ -90,11 +90,16 @@ impl App {
     }
 
     /// Height including borders, or 0 while hidden so the layout drops the row.
+    /// The header row is counted here and subtracted from the renderer's row
+    /// budget; the two must stay in step or the marker outruns the rows drawn.
     pub(crate) fn summary_surface_height(&self) -> u16 {
         if !self.show_summary {
             return 0;
         }
-        2 + self.project_summary().len().clamp(1, MAX_VISIBLE_PROJECTS) as u16
+        let rows = self.project_summary().len();
+        // The empty box says `nothing in scope` and heads no columns.
+        let header = u16::from(rows > 0);
+        2 + header + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
 
     pub(crate) fn visible_project_summary(&self, visible_rows: usize) -> Vec<ProjectTotal> {
@@ -113,12 +118,16 @@ impl App {
     }
 
     /// The title bar's right half: `day · all projects`, plus `· 6/9` when rows are
-    /// off screen. Present in **both** filter states — only its colour changes.
+    /// off screen and `· split` while the split is on. Present in **both** filter
+    /// states — only its colour changes.
     pub(crate) fn summary_marker(&self, visible_rows: usize) -> String {
         let mut marker = format!("{} · {}", self.view_mode.label(), ALL_PROJECTS);
         if let Some(count) = self.summary_count(visible_rows) {
             marker.push_str(" · ");
             marker.push_str(&count);
+        }
+        if self.summary_split {
+            marker.push_str(" · split");
         }
         marker
     }

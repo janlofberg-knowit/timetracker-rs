@@ -3593,6 +3593,177 @@ mod tests {
         assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
     }
 
+    /// The drawn Summary box, between its top and bottom borders.
+    fn summary_box(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let screen = frame_lines(app, width, height);
+        let top = screen
+            .iter()
+            .position(|line| line.contains("Summary (S)"))
+            .unwrap_or_else(|| panic!("no Summary box:\n{}", screen.join("\n")));
+        screen[top + 1..]
+            .iter()
+            .take_while(|line| !line.contains('\u{2518}'))
+            .cloned()
+            .collect()
+    }
+
+    /// The header names the columns in both modes, and `v` adds the two halves
+    /// between `total` and `count`.
+    #[test]
+    fn the_summary_heads_its_columns_in_both_modes() {
+        let _guard = env_guard();
+        sandbox("summary-header");
+        let mut app = seed_agent_summary();
+        app.toggle_summary();
+
+        let unsplit = summary_box(&mut app, 100, 40);
+        assert!(
+            unsplit[0].starts_with("\u{2502} project   total count share"),
+            "unsplit header: {}",
+            unsplit[0]
+        );
+        assert!(
+            unsplit[1].starts_with("\u{2502} tt        3h 0m     3   86%"),
+            "unsplit row: {}",
+            unsplit[1]
+        );
+
+        app.toggle_summary_split();
+        let split = summary_box(&mut app, 100, 40);
+        assert!(
+            split[0].starts_with("\u{2502} project   total   human   agent count share"),
+            "split header: {}",
+            split[0]
+        );
+        assert!(
+            split[1].starts_with("\u{2502} tt        3h 0m   1h 0m   2h 0m     3   86%"),
+            "split row: {}",
+            split[1]
+        );
+        assert!(
+            split[2].starts_with("\u{2502} solo     0h 30m  0h 30m   0h 0m     1   14%"),
+            "split row two: {}",
+            split[2]
+        );
+    }
+
+    /// The label column follows the longest visible name and never sits on a floor.
+    #[test]
+    fn the_summary_label_column_follows_the_longest_project_name() {
+        let _guard = env_guard();
+        sandbox("summary-label-width");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a", "a-very-long-project-name", &[], today, 60),
+                logged(1, "b", "tt", &[], today, 30),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        let wide = summary_box(&mut app, 100, 40);
+        assert!(
+            wide[0].starts_with("\u{2502} project                    total"),
+            "long names did not widen the label column: {}",
+            wide[0]
+        );
+        assert!(
+            wide[1].starts_with("\u{2502} a-very-long-project-name   1h 0m"),
+            "the row does not use the widened column: {}",
+            wide[1]
+        );
+
+        // Names shorter than the old 14-column floor pull the column in to `project`.
+        seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        let narrow = summary_box(&mut app, 100, 40);
+        assert!(
+            narrow[0].starts_with("\u{2502} project   total"),
+            "short names did not pull the column in: {}",
+            narrow[0]
+        );
+    }
+
+    /// A box too narrow for every column clips the right edge, and `share` goes
+    /// first. No column is dropped and nothing wraps.
+    #[test]
+    fn a_narrow_summary_clips_its_right_edge_rather_than_wrapping() {
+        let _guard = env_guard();
+        sandbox("summary-narrow");
+        let mut app = seed_agent_summary();
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        let narrow = summary_box(&mut app, 40, 40);
+        assert!(
+            narrow[0].starts_with("\u{2502} project   total   human"),
+            "the narrow header lost a left column: {}",
+            narrow[0]
+        );
+        assert!(
+            !narrow[0].contains("share"),
+            "share survived: {}",
+            narrow[0]
+        );
+        assert!(!narrow[1].contains('%'), "the share column survived");
+        // One line per project still, so nothing wrapped onto a second row.
+        assert_eq!(narrow.len(), 3, "{narrow:#?}");
+    }
+
+    /// `nothing in scope` keeps the box it has: no header over an empty surface.
+    #[test]
+    fn an_empty_summary_scope_gets_no_header_row() {
+        let _guard = env_guard();
+        sandbox("summary-empty-header");
+        seed(Vec::new(), 0);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        assert_eq!(app.summary_surface_height(), 3);
+        let empty = summary_box(&mut app, 100, 40);
+        assert!(
+            empty[0].starts_with("\u{2502} nothing in scope"),
+            "the empty box grew a header: {}",
+            empty[0]
+        );
+    }
+
+    /// The marker's count and the rows drawn must agree once the header takes a row.
+    #[test]
+    fn the_summary_marker_counts_the_rows_it_actually_draws() {
+        let _guard = env_guard();
+        sandbox("summary-header-budget");
+        let today = Local::now().date_naive();
+        let entries: Vec<TimeEntry> = (0..9)
+            .map(|n| logged(n, "x", &format!("p{n}"), &[], today, 30 + n as i64))
+            .collect();
+        seed(entries, 9);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        // Two borders, the header and the six-project cap.
+        assert_eq!(app.summary_surface_height(), 9);
+        let drawn = summary_box(&mut app, 100, 40);
+        assert_eq!(drawn.len(), 7, "header plus rows: {drawn:#?}");
+        let screen = frame_lines(&mut app, 100, 40);
+        let title = screen
+            .iter()
+            .find(|line| line.contains("Summary (S)"))
+            .unwrap()
+            .clone();
+        assert!(title.contains("6/9"), "the marker miscounted: {title}");
+    }
+
     /// Hidden, the surface has no height, so `ui` leaves its row out of the plan.
     #[test]
     fn the_summary_surface_has_no_height_until_it_is_toggled_on() {
@@ -3604,12 +3775,12 @@ mod tests {
         assert!(!app.show_summary);
         assert_eq!(app.summary_surface_height(), 0, "hidden: no row at all");
 
-        // Two borders plus one row per project: the day has three.
+        // Two borders, the header row, and one row per project: the day has three.
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(), 5);
+        assert_eq!(app.summary_surface_height(), 6);
         // Re-scoping re-sizes it: the week has four projects, all entries too.
         app.view_mode = ViewMode::Week;
-        assert_eq!(app.summary_surface_height(), 6);
+        assert_eq!(app.summary_surface_height(), 7);
 
         // An empty scope still gets one row, so the box can say it is empty.
         app.view_mode = ViewMode::Day;
@@ -3694,6 +3865,16 @@ mod tests {
         app.project_filter.cycle("tt", true);
         assert!(app.total_is_filtered(), "the footer total is now narrowed");
         assert_eq!(app.summary_marker(6), unfiltered);
+
+        // The split says so last, after the scope and any overflow count.
+        app.toggle_summary_split();
+        assert_eq!(app.summary_marker(6), format!("{unfiltered} \u{b7} split"));
+        assert_eq!(
+            app.summary_marker(1),
+            "day \u{b7} all projects \u{b7} 1/3 \u{b7} split"
+        );
+        app.toggle_summary_split();
+        assert_eq!(app.summary_marker(6), unfiltered);
     }
 
     /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.
@@ -3712,7 +3893,7 @@ mod tests {
         app.toggle_summary();
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
-        assert_eq!(app.summary_surface_height(), 8);
+        assert_eq!(app.summary_surface_height(), 9);
         assert_eq!(app.summary_count(6).as_deref(), Some("6/9"));
         assert_eq!(app.summary_marker(6), "day · all projects · 6/9");
         assert_eq!(app.visible_project_summary(6).len(), 6);
