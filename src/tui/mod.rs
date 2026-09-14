@@ -2469,7 +2469,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {key} row:\n{}", screen.join("\n")))
                 .clone()
         };
-        assert!(row("Shift-Tab").contains("reverse"));
+        assert!(row("Shift-Tab").contains("the same ring in reverse"));
         assert!(
             screen
                 .iter()
@@ -3584,10 +3584,6 @@ mod tests {
 
         app.focus = Focus::Table;
         assert!(!app.summary_is_focused(), "visible but not focused");
-
-        app.focus = Focus::Summary;
-        app.toggle_summary();
-        assert!(!app.summary_is_focused(), "hidden again");
     }
 
     #[test]

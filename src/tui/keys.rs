@@ -43,8 +43,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.should_quit = true;
             }
         }
-        // j/k move in the focused pane, else the table — but the Summary has no
-        // rows, so with it focused they must not move the table under it.
+        // Summary has no rows: j/k must not move the table.
         KeyCode::Char('j') | KeyCode::Down => {
             if !app.pane_next() && !app.summary_is_focused() {
                 app.next();
