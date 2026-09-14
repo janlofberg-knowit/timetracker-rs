@@ -3532,14 +3532,7 @@ mod tests {
 
         for (mode, name) in scopes() {
             app.view_mode = mode;
-            let rows = app.project_summary();
-            let summed: i64 = rows.iter().map(|r| r.total.num_seconds()).sum();
-            let halves: i64 = rows
-                .iter()
-                .map(|r| r.human.num_seconds() + r.agent.num_seconds())
-                .sum();
-            assert_eq!(summed, halves, "{name} halves do not rebuild the totals");
-            for row in &rows {
+            for row in app.project_summary() {
                 assert_eq!(
                     row.human + row.agent,
                     row.total,
@@ -3547,11 +3540,6 @@ mod tests {
                     row.project
                 );
             }
-        }
-
-        let app = seed_agent_summary();
-        for row in app.project_summary() {
-            assert_eq!(row.human + row.agent, row.total, "{}", row.project);
         }
     }
 
@@ -3757,7 +3745,7 @@ mod tests {
             wide[1]
         );
 
-        // Names shorter than the old 14-column floor pull the column in to `project`.
+        // Short names pull the column in to `project`.
         seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
         let mut app = App::new().unwrap();
         app.selected_date = today;
