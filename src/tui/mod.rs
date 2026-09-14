@@ -4188,6 +4188,17 @@ mod tests {
             "an unfiltered empty scope blamed a filter: {}",
             bare[0]
         );
+
+        // Scope-only mode never blames the filter, even with one set.
+        app.toggle_summary_follows_filters();
+        app.project_filter.cycle("tt", true);
+        assert!(app.total_is_filtered());
+        let scoped = summary_box(&mut app, 100, 40);
+        assert!(
+            scoped[0].starts_with("\u{2502} nothing in scope"),
+            "scope-only mode blamed the filter: {}",
+            scoped[0]
+        );
     }
 
     /// Overflow says `shown/total` off the frame's real height, and nothing while all fit.

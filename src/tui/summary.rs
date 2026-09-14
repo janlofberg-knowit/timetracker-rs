@@ -1,5 +1,5 @@
 //! Per-project totals and the state behind the collapsible `Summary`
-//! surface. Display-only; `render.rs` draws it.
+//! surface. Display-only; `render/surfaces.rs` draws it.
 //!
 //! **Two modes, picked by `summary_follows_filters`:** scope-only, the
 //! default, folds `scope_entries()`, so a filter leaves it alone. Follow
