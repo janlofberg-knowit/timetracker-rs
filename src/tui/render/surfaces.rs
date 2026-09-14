@@ -113,9 +113,9 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     /// The right-flushed number columns. Fixed, not content-derived, so a
     /// re-scope that widens one figure cannot shift them. Every header word is
     /// five characters, so none of them has to widen.
-    const TOTAL_WIDTH: usize = 8;
-    const HUMAN_WIDTH: usize = 8;
-    const AGENT_WIDTH: usize = 8;
+    const TOTAL_WIDTH: usize = 9;
+    const HUMAN_WIDTH: usize = 9;
+    const AGENT_WIDTH: usize = 9;
     // Six, not five: `count` is five characters and would touch `total`.
     const COUNT_WIDTH: usize = 6;
     const SHARE_WIDTH: usize = 6;

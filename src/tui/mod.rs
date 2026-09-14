@@ -3671,12 +3671,12 @@ mod tests {
 
         let unsplit = summary_box(&mut app, 100, 40);
         assert!(
-            unsplit[0].starts_with("\u{2502} project   total count share"),
+            unsplit[0].starts_with("\u{2502} project    total count share"),
             "unsplit header: {}",
             unsplit[0]
         );
         assert!(
-            unsplit[1].starts_with("\u{2502} tt        3h 0m     3   86%"),
+            unsplit[1].starts_with("\u{2502} tt         3h 0m     3   86%"),
             "unsplit row: {}",
             unsplit[1]
         );
@@ -3684,19 +3684,46 @@ mod tests {
         app.toggle_summary_split();
         let split = summary_box(&mut app, 100, 40);
         assert!(
-            split[0].starts_with("\u{2502} project   total   human   agent count share"),
+            split[0].starts_with("\u{2502} project    total    human    agent count share"),
             "split header: {}",
             split[0]
         );
         assert!(
-            split[1].starts_with("\u{2502} tt        3h 0m   1h 0m   2h 0m     3   86%"),
+            split[1].starts_with("\u{2502} tt         3h 0m    1h 0m    2h 0m     3   86%"),
             "split row: {}",
             split[1]
         );
         assert!(
-            split[2].starts_with("\u{2502} solo     0h 30m  0h 30m   0h 0m     1   14%"),
+            split[2].starts_with("\u{2502} solo      0h 30m   0h 30m    0h 0m     1   14%"),
             "split row two: {}",
             split[2]
+        );
+    }
+
+    /// The time columns hold `100h 30m` and still keep a gap between them.
+    #[test]
+    fn three_digit_hours_keep_a_gap_between_the_time_columns() {
+        let _guard = env_guard();
+        sandbox("summary-wide-hours");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a long stint", "tt", &[], today, 6030),
+                logged(1, "a long agent run", "tt", &["agent"], today, 6030),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        let drawn = summary_box(&mut app, 100, 40);
+        assert!(
+            drawn[1].starts_with("\u{2502} tt       201h 0m 100h 30m 100h 30m     2  100%"),
+            "the time columns ran together: {}",
+            drawn[1]
         );
     }
 
@@ -3720,12 +3747,12 @@ mod tests {
 
         let wide = summary_box(&mut app, 100, 40);
         assert!(
-            wide[0].starts_with("\u{2502} project                    total"),
+            wide[0].starts_with("\u{2502} project                     total"),
             "long names did not widen the label column: {}",
             wide[0]
         );
         assert!(
-            wide[1].starts_with("\u{2502} a-very-long-project-name   1h 0m"),
+            wide[1].starts_with("\u{2502} a-very-long-project-name    1h 0m"),
             "the row does not use the widened column: {}",
             wide[1]
         );
@@ -3738,7 +3765,7 @@ mod tests {
         app.toggle_summary();
         let narrow = summary_box(&mut app, 100, 40);
         assert!(
-            narrow[0].starts_with("\u{2502} project   total"),
+            narrow[0].starts_with("\u{2502} project    total"),
             "short names did not pull the column in: {}",
             narrow[0]
         );
@@ -3756,7 +3783,7 @@ mod tests {
 
         let narrow = summary_box(&mut app, 40, 40);
         assert!(
-            narrow[0].starts_with("\u{2502} project   total   human"),
+            narrow[0].starts_with("\u{2502} project    total    human"),
             "the narrow header lost a left column: {}",
             narrow[0]
         );
