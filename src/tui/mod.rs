@@ -111,6 +111,9 @@ pub(crate) struct App {
     /// Whether the Summary splits each row into human and agent time. Runtime
     /// only: nothing persists it.
     pub(crate) summary_split: bool,
+    /// Whether the Summary folds `filtered_entries()` instead of the scope.
+    /// Runtime only: nothing persists it.
+    pub(crate) summary_follows_filters: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -201,6 +204,7 @@ impl App {
             show_marks: layout.show_agents.unwrap_or(false),
             show_summary: layout.show_summary.unwrap_or(false),
             summary_split: false,
+            summary_follows_filters: false,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -2484,6 +2488,17 @@ mod tests {
         assert!(
             split_row.contains("Summary focused"),
             "the split row does not say the key is focus-gated: {split_row}"
+        );
+        let follow_row = row("follow the filters");
+        assert!(
+            follow_row
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2502}')
+                .starts_with("f "),
+            "the follow row's key column is not `f`: {follow_row}"
+        );
+        assert!(
+            follow_row.contains("Summary focused"),
+            "the follow row does not say the key is focus-gated: {follow_row}"
         );
         assert!(
             screen

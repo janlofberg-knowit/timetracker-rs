@@ -143,6 +143,12 @@ impl App {
         self.summary_split = !self.summary_split;
     }
 
+    /// `f`: fold the filtered entries or the whole scope. Runtime state only,
+    /// so this writes nothing to disk.
+    pub(crate) fn toggle_summary_follows_filters(&mut self) {
+        self.summary_follows_filters = !self.summary_follows_filters;
+    }
+
     /// `Shift-S`: show or hide the surface; opening it focuses it.
     pub(crate) fn toggle_summary(&mut self) {
         self.show_summary = !self.show_summary;
