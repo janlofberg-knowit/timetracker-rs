@@ -2399,6 +2399,59 @@ mod tests {
         assert!(footer.contains("s: stop"), "the hints zone was clipped");
     }
 
+    /// The foreground of the first cell of `needle` on the footer's key row.
+    fn footer_key_fg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        const WIDTH: u16 = 140;
+        const HEIGHT: u16 = 30;
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(WIDTH, HEIGHT)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        for y in 0..HEIGHT {
+            let row: String = (0..WIDTH).map(|x| buffer[(x, y)].symbol()).collect();
+            if !row.contains("?: help") {
+                continue;
+            }
+            let byte = row
+                .find(needle)
+                .unwrap_or_else(|| panic!("the footer does not name {needle}: {row}"));
+            let column = row[..byte].chars().count() as u16;
+            return buffer[(column, y)].fg;
+        }
+        panic!("no footer row carries the keys");
+    }
+
+    /// `Tab` is live whenever the ring reaches past the table, and the Summary
+    /// alone is enough to do that.
+    #[test]
+    fn the_footer_tab_key_is_live_while_the_summary_alone_is_open() {
+        let _guard = env_guard();
+        sandbox("footer-tab-key");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::inactive(),
+            "nothing open: Tab moves nothing"
+        );
+
+        app.toggle_summary();
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::accent(),
+            "the Summary alone is a ring member"
+        );
+
+        app.toggle_summary();
+        app.toggle_pane(Pane::Projects);
+        assert_eq!(
+            footer_key_fg(&mut app, "Tab"),
+            theme::accent(),
+            "a pane open"
+        );
+    }
+
     /// The help popup's ring rows name the Summary, not the panes alone.
     #[test]
     fn the_help_popup_names_the_summary_in_the_focus_ring() {

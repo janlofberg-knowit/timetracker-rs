@@ -276,7 +276,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             theme::inactive()
         })
     };
-    let panes_open = !app.visible_panes().is_empty();
+    let ring_reaches_past_the_table = !app.visible_panes().is_empty() || app.show_summary;
     let keys_hint = Paragraph::new(Line::from(vec![
         Span::styled(" | ", Style::default().fg(theme::border())),
         Span::styled("P", key_style(app.show_projects)),
@@ -287,7 +287,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("/", Style::default().fg(theme::border())),
         Span::styled("S", key_style(app.show_summary)),
         Span::styled(" | ", Style::default().fg(theme::border())),
-        Span::styled("Tab", key_style(panes_open)),
+        Span::styled("Tab", key_style(ring_reaches_past_the_table)),
         Span::styled(" | ", Style::default().fg(theme::border())),
         Span::styled("?", Style::default().fg(theme::accent())),
         Span::styled(": help", Style::default().fg(theme::inactive())),
