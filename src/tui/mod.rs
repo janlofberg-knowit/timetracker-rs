@@ -3396,6 +3396,97 @@ mod tests {
         }
     }
 
+    /// One project logged by a person, by `#agent` and by `#auto`, plus a second
+    /// project that is all human. Day: tt 180m (60 human, 120 agent), solo 30m.
+    fn seed_agent_summary() -> App {
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "hand written", "tt", &["impl"], today, 60),
+                logged(1, "agent run", "tt", &["Agent"], today, 90),
+                logged(2, "auto run", "tt", &["auto"], today, 30),
+                logged(3, "all human", "solo", &[], today, 30),
+            ],
+            4,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app
+    }
+
+    /// Agent time is split out per row, and the two halves always rebuild the total.
+    #[test]
+    fn project_summary_splits_human_and_agent_time() {
+        let _guard = env_guard();
+        sandbox("summary-split-fold");
+        let app = seed_agent_summary();
+
+        let rows = app.project_summary();
+        let minutes = |name: &str| {
+            let row = rows.iter().find(|r| r.project == name).unwrap();
+            (
+                row.total.num_minutes(),
+                row.human.num_minutes(),
+                row.agent.num_minutes(),
+            )
+        };
+        assert_eq!(minutes("tt"), (180, 60, 120));
+        assert_eq!(minutes("solo"), (30, 30, 0));
+    }
+
+    /// A running entry has no end time, so it counts as human time up to now.
+    #[test]
+    fn a_running_entry_counts_as_human_time() {
+        let _guard = env_guard();
+        sandbox("summary-split-running");
+        let today = Local::now().date_naive();
+        let mut running = logged(0, "still going", "tt", &["impl"], today, 0);
+        running.start_time = Local::now() - chrono::Duration::minutes(30);
+        running.end_time = None;
+        seed(vec![running], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+
+        let row = &app.project_summary()[0];
+        assert_eq!(row.agent, chrono::Duration::zero());
+        assert_eq!(row.human, row.total);
+        assert!(row.total.num_minutes() >= 29, "the open span is counted");
+    }
+
+    /// The split can never disagree with the total the surface already shows.
+    #[test]
+    fn every_summary_row_rebuilds_its_total_from_the_split() {
+        let _guard = env_guard();
+        sandbox("summary-split-sums");
+        let mut app = seed_summary();
+
+        for (mode, name) in scopes() {
+            app.view_mode = mode;
+            let rows = app.project_summary();
+            let summed: i64 = rows.iter().map(|r| r.total.num_seconds()).sum();
+            let halves: i64 = rows
+                .iter()
+                .map(|r| r.human.num_seconds() + r.agent.num_seconds())
+                .sum();
+            assert_eq!(summed, halves, "{name} halves do not rebuild the totals");
+            for row in &rows {
+                assert_eq!(
+                    row.human + row.agent,
+                    row.total,
+                    "{name}: {} does not rebuild its total",
+                    row.project
+                );
+            }
+        }
+
+        let app = seed_agent_summary();
+        for row in app.project_summary() {
+            assert_eq!(row.human + row.agent, row.total, "{}", row.project);
+        }
+    }
+
     /// The rows sum to the scope total, and their shares to within a point of 100.
     #[test]
     fn project_summary_rows_account_for_the_whole_scope() {

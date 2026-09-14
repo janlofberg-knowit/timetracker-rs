@@ -28,6 +28,9 @@ pub(crate) struct ProjectTotal {
     pub(crate) project: String,
     /// Raw; the caller applies `duration::format`.
     pub(crate) total: Duration,
+    /// `human + agent` is always `total`, so the columns cannot disagree.
+    pub(crate) human: Duration,
+    pub(crate) agent: Duration,
     pub(crate) entries: usize,
     /// Percent of the scope total, rounded, and **not** fudged to sum to 100.
     pub(crate) share: u16,
@@ -39,7 +42,8 @@ impl App {
     /// the rows on screen. An empty scope gives an empty list.
     pub(crate) fn project_summary(&self) -> Vec<ProjectTotal> {
         let entries = self.scope_entries();
-        let mut totals: HashMap<&str, (Duration, usize)> = HashMap::new();
+        // (total, human, agent, entries) in one fold, so the parts cannot drift.
+        let mut totals: HashMap<&str, (Duration, Duration, Duration, usize)> = HashMap::new();
         for entry in &entries {
             // Empty-after-trim counts as absent, as the form and `pane_values` do.
             let project = entry.project.as_deref().map(str::trim).unwrap_or("");
@@ -48,17 +52,30 @@ impl App {
             } else {
                 project
             };
-            let row = totals.entry(key).or_insert((Duration::zero(), 0));
-            row.0 += entry.duration();
-            row.1 += 1;
+            let row = totals.entry(key).or_insert((
+                Duration::zero(),
+                Duration::zero(),
+                Duration::zero(),
+                0,
+            ));
+            let duration = entry.duration();
+            row.0 += duration;
+            if entry.is_agent() {
+                row.2 += duration;
+            } else {
+                row.1 += duration;
+            }
+            row.3 += 1;
         }
 
-        let scope_total: i64 = totals.values().map(|(d, _)| d.num_seconds()).sum();
+        let scope_total: i64 = totals.values().map(|row| row.0.num_seconds()).sum();
         let mut rows: Vec<ProjectTotal> = totals
             .into_iter()
-            .map(|(project, (total, entries))| ProjectTotal {
+            .map(|(project, (total, human, agent, entries))| ProjectTotal {
                 project: project.to_string(),
                 total,
+                human,
+                agent,
                 entries,
                 share: share_of(total, scope_total),
             })
