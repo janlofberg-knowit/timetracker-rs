@@ -138,16 +138,16 @@ impl App {
         self.focus == Focus::Summary && self.show_summary
     }
 
-    /// `v`: show or hide the human / agent columns. Runtime state only, so this
-    /// writes nothing to disk.
+    /// `v`: show or hide the human / agent columns.
     pub(crate) fn toggle_summary_split(&mut self) {
         self.summary_split = !self.summary_split;
+        self.persist_layout();
     }
 
-    /// `f`: fold the filtered entries or the whole scope. Runtime state only,
-    /// so this writes nothing to disk.
+    /// `f`: fold the filtered entries or the whole scope.
     pub(crate) fn toggle_summary_follows_filters(&mut self) {
         self.summary_follows_filters = !self.summary_follows_filters;
+        self.persist_layout();
     }
 
     /// `Shift-S`: show or hide the surface; opening it focuses it.

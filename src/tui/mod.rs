@@ -108,11 +108,9 @@ pub(crate) struct App {
     pub(crate) show_tags: bool,
     pub(crate) show_marks: bool,
     pub(crate) show_summary: bool,
-    /// Whether the Summary splits each row into human and agent time. Runtime
-    /// only: nothing persists it.
+    /// Whether the Summary splits each row into human and agent time.
     pub(crate) summary_split: bool,
     /// Whether the Summary folds `filtered_entries()` instead of the scope.
-    /// Runtime only: nothing persists it.
     pub(crate) summary_follows_filters: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
@@ -203,8 +201,8 @@ impl App {
             show_tags: layout.show_tags.unwrap_or(false),
             show_marks: layout.show_agents.unwrap_or(false),
             show_summary: layout.show_summary.unwrap_or(false),
-            summary_split: false,
-            summary_follows_filters: false,
+            summary_split: layout.summary_split.unwrap_or(false),
+            summary_follows_filters: layout.summary_follows_filters.unwrap_or(false),
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -249,7 +247,8 @@ impl App {
             show_agents: Some(self.show_marks),
             show_summary: Some(self.show_summary),
             show_tags: Some(self.show_tags),
-            ..Default::default()
+            summary_split: Some(self.summary_split),
+            summary_follows_filters: Some(self.summary_follows_filters),
         }
     }
 
@@ -1393,6 +1392,107 @@ mod tests {
         assert_eq!(layout["show_projects"].as_bool(), Some(false));
         // A toggle is not an onboarding answer.
         assert!(saved.get("general").is_none(), "onboarding left untouched");
+    }
+
+    /// Reads the `[layout]` table the TUI wrote, off disk.
+    fn saved_layout() -> toml::Value {
+        let path = std::env::var("TT_CONFIG_FILE").unwrap();
+        let text = std::fs::read_to_string(path).expect("a written config file");
+        let saved: toml::Value = toml::from_str(&text).expect("valid TOML");
+        saved["layout"].clone()
+    }
+
+    #[test]
+    fn toggling_a_summary_mode_persists_it() {
+        let _guard = env_guard();
+        sandbox("summary-mode-persist");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.toggle_summary_split();
+        app.toggle_summary_follows_filters();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn a_later_surface_toggle_keeps_both_summary_modes() {
+        let _guard = env_guard();
+        sandbox("summary-mode-survives-surface");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.toggle_summary_split();
+        app.toggle_summary_follows_filters();
+        app.toggle_pane(Pane::Tags);
+        app.toggle_marks();
+        app.toggle_summary();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+        assert_eq!(layout["show_tags"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn answering_onboarding_keeps_both_summary_modes() {
+        let _guard = env_guard();
+        sandbox("summary-mode-onboarding-finish");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.summary_split = true;
+        app.summary_follows_filters = true;
+        app.onboarding_finish().unwrap();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn skipping_onboarding_keeps_both_summary_modes() {
+        let _guard = env_guard();
+        sandbox("summary-mode-onboarding-skip");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        app.summary_split = true;
+        app.summary_follows_filters = true;
+        app.onboarding_skip().unwrap();
+
+        let layout = saved_layout();
+        assert_eq!(layout["summary_split"].as_bool(), Some(true));
+        assert_eq!(layout["summary_follows_filters"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn the_layout_keys_seed_each_summary_mode() {
+        let _guard = env_guard();
+        let dir = sandbox("summary-mode-seed");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\nsummary_split = true\nsummary_follows_filters = true\n",
+        )
+        .unwrap();
+
+        let app = App::new().unwrap();
+        assert!(app.summary_split);
+        assert!(app.summary_follows_filters);
+    }
+
+    #[test]
+    fn both_summary_modes_start_off_when_the_layout_keys_are_absent() {
+        let _guard = env_guard();
+        sandbox("summary-mode-seed-absent");
+        seed(vec![entry(0, "first")], 1);
+
+        let app = App::new().unwrap();
+        assert!(!app.summary_split);
+        assert!(!app.summary_follows_filters);
     }
 
     #[test]

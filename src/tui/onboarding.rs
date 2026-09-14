@@ -45,12 +45,13 @@ impl App {
     /// Persists the checklist answer and returns to normal use.
     pub(crate) fn onboarding_finish(&mut self) -> Result<()> {
         let [projects, agents, summary, tags] = self.onboarding_checked;
+        // Every other key comes from `layout_config`, so none is erased here.
         crate::config::save_onboarding(&LayoutConfig {
             show_projects: Some(projects),
             show_agents: Some(agents),
             show_summary: Some(summary),
             show_tags: Some(tags),
-            ..Default::default()
+            ..self.layout_config()
         })?;
         self.input_mode = InputMode::Normal;
         Ok(())
@@ -59,13 +60,7 @@ impl App {
     /// `Esc`: a cancel, not "close everything" — persists the panels exactly
     /// as they already were, and marks onboarding done so it stays quiet.
     pub(crate) fn onboarding_skip(&mut self) -> Result<()> {
-        crate::config::save_onboarding(&LayoutConfig {
-            show_projects: Some(self.show_projects),
-            show_agents: Some(self.show_marks),
-            show_summary: Some(self.show_summary),
-            show_tags: Some(self.show_tags),
-            ..Default::default()
-        })?;
+        crate::config::save_onboarding(&self.layout_config())?;
         self.input_mode = InputMode::Normal;
         Ok(())
     }
