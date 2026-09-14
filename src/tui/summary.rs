@@ -42,7 +42,7 @@ impl App {
     /// the rows on screen. An empty scope gives an empty list.
     pub(crate) fn project_summary(&self) -> Vec<ProjectTotal> {
         let entries = self.scope_entries();
-        // (total, human, agent, entries) in one fold, so the parts cannot drift.
+        // (total, human, agent, entries)
         let mut totals: HashMap<&str, (Duration, Duration, Duration, usize)> = HashMap::new();
         for entry in &entries {
             // Empty-after-trim counts as absent, as the form and `pane_values` do.
@@ -90,8 +90,8 @@ impl App {
     }
 
     /// Height including borders, or 0 while hidden so the layout drops the row.
-    /// The header row is counted here and subtracted from the renderer's row
-    /// budget; the two must stay in step or the marker outruns the rows drawn.
+    /// Counts the header row that the renderer subtracts from its row budget;
+    /// the two must stay in step.
     pub(crate) fn summary_surface_height(&self) -> u16 {
         if !self.show_summary {
             return 0;

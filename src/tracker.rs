@@ -156,7 +156,7 @@ impl TimeEntry {
         self.tags.iter().any(|t| t.to_lowercase() == tag_lower)
     }
 
-    /// Whether an agent logged this entry. The only spelling of the agent tags.
+    /// The only spelling of the agent tags.
     pub fn is_agent(&self) -> bool {
         self.has_tag("agent") || self.has_tag("auto")
     }

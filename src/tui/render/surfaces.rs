@@ -111,12 +111,11 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     /// The header over the project column, and the column's floor.
     const LABEL_HEADER: &str = "project";
     /// The right-flushed number columns. Fixed, not content-derived, so a
-    /// re-scope that widens one figure cannot shift them. Every header word is
-    /// five characters, so none of them has to widen.
+    /// re-scope that widens one figure cannot shift them.
     const TOTAL_WIDTH: usize = 9;
     const HUMAN_WIDTH: usize = 9;
     const AGENT_WIDTH: usize = 9;
-    // Six, not five: `count` is five characters and would touch `total`.
+    // 6, not 5: `count` would touch `total`.
     const COUNT_WIDTH: usize = 6;
     const SHARE_WIDTH: usize = 6;
 
@@ -138,8 +137,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         ));
     let inner = block.inner(area);
 
-    // The header takes one row off the budget, and `summary_surface_height` adds
-    // the same row back. Change one of them only with the other.
+    // Budget excludes the header; see `summary_surface_height`.
     let scoped = !app.project_summary().is_empty();
     let visible_rows = (inner.height as usize).saturating_sub(usize::from(scoped));
 
