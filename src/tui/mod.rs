@@ -3599,7 +3599,7 @@ mod tests {
     }
 
     #[test]
-    fn project_summary_ignores_the_active_filter_and_search() {
+    fn project_summary_ignores_the_filter_and_search_in_scope_only_mode() {
         let _guard = env_guard();
         sandbox("summary-prefilter");
         let mut app = seed_summary();
@@ -3625,6 +3625,47 @@ mod tests {
         app.search_term.set_from("nothing matches this");
         assert!(app.filtered_entries().is_empty());
         assert_eq!(app.project_summary(), before);
+    }
+
+    #[test]
+    fn project_summary_follows_the_filter_and_search_in_follow_mode() {
+        let _guard = env_guard();
+        sandbox("summary-follows-filter");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        let scope_only = app.project_summary();
+        app.toggle_summary_follows_filters();
+        assert_eq!(
+            app.project_summary(),
+            scope_only,
+            "an unset filter moves it"
+        );
+
+        let summed = |app: &App| {
+            app.project_summary()
+                .iter()
+                .fold(chrono::Duration::zero(), |acc, row| acc + row.total)
+        };
+
+        app.project_filter.cycle("tt", true);
+        assert_eq!(summary(&app), "tt=90m/2/100%");
+        assert_eq!(summed(&app), app.filtered_total());
+
+        app.project_filter.clear();
+        app.tag_filter.cycle("ops", true);
+        assert_eq!(summary(&app), "vinge=120m/1/73% (no project)=45m/1/27%");
+        assert_eq!(summed(&app), app.filtered_total());
+
+        app.tag_filter.clear();
+        app.search_term.set_from("nothing matches this");
+        assert!(app.project_summary().is_empty());
+        assert_eq!(app.filtered_total(), chrono::Duration::zero());
+
+        // The mode off again restores the scope-only rows byte for byte.
+        app.search_term.clear();
+        app.project_filter.cycle("tt", true);
+        app.toggle_summary_follows_filters();
+        assert_eq!(app.project_summary(), scope_only);
     }
 
     #[test]
@@ -3993,6 +4034,14 @@ mod tests {
             "the footer total should have dropped below the summary's"
         );
         assert_eq!(app.project_summary(), rows, "the summary must not move");
+
+        // Following, the summary tracks the footer instead of staying put.
+        app.toggle_summary_follows_filters();
+        let followed = app
+            .project_summary()
+            .iter()
+            .fold(chrono::Duration::zero(), |acc, row| acc + row.total);
+        assert_eq!(followed, app.filtered_total());
     }
 
     #[test]

@@ -1,8 +1,9 @@
-//! Per-project totals for the current view scope, and the state behind the
-//! collapsible `Summary` surface. Display-only; `render.rs` draws it.
+//! Per-project totals and the state behind the collapsible `Summary`
+//! surface. Display-only; `render.rs` draws it.
 //!
-//! **This folds the scope, not the view:** [`App::project_summary`] reads
-//! `scope_entries()`, never `filtered_entries()`, so a filter leaves it alone.
+//! **Two modes, picked by `summary_follows_filters`:** scope-only, the
+//! default, folds `scope_entries()`, so a filter leaves it alone. Follow
+//! mode folds `filtered_entries()` — both panes and the `/` search term.
 
 use std::collections::HashMap;
 
@@ -32,16 +33,22 @@ pub(crate) struct ProjectTotal {
     pub(crate) human: Duration,
     pub(crate) agent: Duration,
     pub(crate) entries: usize,
-    /// Percent of the scope total, rounded, and **not** fudged to sum to 100.
+    /// Percent of the folded total, rounded, and **not** fudged to sum to 100.
     pub(crate) share: u16,
 }
 
 impl App {
-    /// Per-project totals for the current view scope, largest first. Folds
-    /// [`scope_entries`](Self::scope_entries), so it is about the period rather than
-    /// the rows on screen. An empty scope gives an empty list.
+    /// Per-project totals, largest first. Folds
+    /// [`filtered_entries`](Self::filtered_entries) while
+    /// `summary_follows_filters` is on — the panes and the `/` search term —
+    /// else [`scope_entries`](Self::scope_entries). Nothing folded gives an
+    /// empty list.
     pub(crate) fn project_summary(&self) -> Vec<ProjectTotal> {
-        let entries = self.scope_entries();
+        let entries = if self.summary_follows_filters {
+            self.filtered_entries()
+        } else {
+            self.scope_entries()
+        };
         // (total, human, agent, entries) in one fold, so the parts cannot drift.
         let mut totals: HashMap<&str, (Duration, Duration, Duration, usize)> = HashMap::new();
         for entry in &entries {
@@ -68,7 +75,7 @@ impl App {
             row.3 += 1;
         }
 
-        let scope_total: i64 = totals.values().map(|row| row.0.num_seconds()).sum();
+        let folded_total: i64 = totals.values().map(|row| row.0.num_seconds()).sum();
         let mut rows: Vec<ProjectTotal> = totals
             .into_iter()
             .map(|(project, (total, human, agent, entries))| ProjectTotal {
@@ -77,7 +84,7 @@ impl App {
                 human,
                 agent,
                 entries,
-                share: share_of(total, scope_total),
+                share: share_of(total, folded_total),
             })
             .collect();
         // Ties broken by name, so the order is stable rather than the HashMap's.
