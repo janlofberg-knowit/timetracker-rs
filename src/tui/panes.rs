@@ -293,8 +293,8 @@ impl App {
     }
 
     /// Walk the ring by `delta`, wrapping: table, visible panes left to right,
-    /// then the Summary — screen order, panes above the content and Summary below.
-    /// A focus off the ring reads as the table, so both directions recover.
+    /// then the Summary. A focus off the ring reads as the table, so both
+    /// directions recover.
     fn shift_focus(&mut self, delta: isize) {
         let mut order = vec![Focus::Table];
         order.extend(self.visible_panes().into_iter().map(Focus::Pane));
