@@ -1,4 +1,5 @@
 use super::heat::{TODAY_MARKER, axis_line, day_heat_legend, heat_block_title};
+use super::legend::content_legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
@@ -94,17 +95,23 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let total = breakdown.values().fold(Duration::zero(), |acc, d| acc + *d);
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::border()))
-            .title(Span::styled(
-                heat_block_title(total, breakdown.len(), "day"),
-                Style::default().fg(theme::title()),
-            ))
-            .title_bottom(day_heat_legend().right_aligned()),
-    );
-    f.render_widget(paragraph, area);
+    let inner_width = area.width.saturating_sub(2);
+    let keys = content_legend(app, inner_width);
+    let keys_width = keys.as_ref().map(|line| line.width()).unwrap_or(0) as u16;
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::border()))
+        .title(Span::styled(
+            heat_block_title(total, breakdown.len(), "day"),
+            Style::default().fg(theme::title()),
+        ));
+    if let Some(keys) = keys {
+        block = block.title_bottom(keys.left_aligned());
+    }
+    if let Some(ramp) = day_heat_legend(keys_width, inner_width) {
+        block = block.title_bottom(ramp.right_aligned());
+    }
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
@@ -381,6 +388,14 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         " Entries ".to_string()
     };
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::border()))
+        .title(Span::styled(title, Style::default().fg(theme::title())));
+    if let Some(keys) = content_legend(app, area.width.saturating_sub(2)) {
+        block = block.title_bottom(keys.left_aligned());
+    }
+
     // `Fill(1)` and `Min(12)` share what the fixed columns leave, so both grow with
     // the terminal. The fixed widths are exactly what they render, with no padding.
     let table = Table::new(
@@ -396,12 +411,7 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         ],
     )
     .header(header_row)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::border()))
-            .title(Span::styled(title, Style::default().fg(theme::title()))),
-    )
+    .block(block)
     .row_highlight_style(Style::default().bg(theme::selected_bg()))
     .highlight_symbol(CURSOR_MARKER);
 

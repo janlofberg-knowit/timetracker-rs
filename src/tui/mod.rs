@@ -5097,6 +5097,37 @@ mod tests {
             .unwrap_or_else(|| panic!("no bottom border:\n{}", screen.join("\n")))
     }
 
+    /// The toggle is discoverable where it acts, in both representations and
+    /// in every view.
+    #[test]
+    fn the_content_box_names_the_m_toggle_on_its_bottom_border() {
+        let _guard = env_guard();
+        sandbox("content-legend-render");
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+
+        for (view, name) in views() {
+            app.view_mode = view;
+
+            app.heat_view = false;
+            // The column header, not the title: `All Entries` names the tabs row too.
+            let border = bottom_border(&mut app, "Description", 120, 40);
+            assert!(
+                border.contains("\u{2514} M: heatmap"),
+                "{name} list: no legend on the content border: {border}"
+            );
+
+            app.heat_view = true;
+            let border = bottom_border(&mut app, "tracked over", 120, 40);
+            assert!(
+                border.contains("\u{2514} M: list"),
+                "{name} heat: no legend on the content border: {border}"
+            );
+        }
+    }
+
     /// One convention across the whole TUI: keys on the left, ramps on the
     /// right, so the two never fight for the same corner.
     #[test]

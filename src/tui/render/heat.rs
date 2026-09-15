@@ -1,6 +1,7 @@
 //! What every heat surface draws alike: the tick axis over a row of cells, the
 //! `Less … More` ramps, and the content pane's own one-row heatmap.
 
+use super::legend::content_legend;
 use crate::tui::summary::{BucketGrid, Grain, strip_cells};
 use crate::tui::types::ViewMode;
 use crate::tui::{App, theme};
@@ -47,9 +48,12 @@ pub(super) fn render_heat_row(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(0);
 
+    let inner_width = area.width.saturating_sub(2);
+    let keys = content_legend(app, inner_width);
+    let keys_width = keys.as_ref().map(|line| line.width()).unwrap_or(0) as u16;
     let ramp = match grid.grain {
-        Grain::Day => Some(day_heat_legend()),
-        _ => relative_heat_legend(0, area.width.saturating_sub(2)),
+        Grain::Day => day_heat_legend(keys_width, inner_width),
+        _ => relative_heat_legend(keys_width, inner_width),
     };
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -58,6 +62,9 @@ pub(super) fn render_heat_row(f: &mut Frame, app: &App, area: Rect) {
             heat_block_title(total, active, grid.grain.unit()),
             Style::default().fg(theme::title()),
         ));
+    if let Some(keys) = keys {
+        block = block.title_bottom(keys.left_aligned());
+    }
     if let Some(ramp) = ramp {
         block = block.title_bottom(ramp.right_aligned());
     }
@@ -193,9 +200,10 @@ pub(super) fn axis_line(labels: &[Option<String>], cell_width: usize) -> String 
     axis.into_iter().collect()
 }
 
-/// The day-total ramp, `Less` to `More`, over `theme::heat_color`. Carries no
-/// leading padding, so a caller can put it straight on a block border.
-pub(super) fn day_heat_legend() -> Line<'static> {
+/// The day-total ramp, `Less` to `More`, over `theme::heat_color`. `None` when
+/// it would run into the key legend sharing its border, as its relative
+/// sibling is.
+pub(super) fn day_heat_legend(keys_width: u16, inner_width: u16) -> Option<Line<'static>> {
     let t = theme::theme();
     let mut spans = vec![Span::styled(
         " Less ",
@@ -217,7 +225,8 @@ pub(super) fn day_heat_legend() -> Line<'static> {
         " More ",
         Style::default().fg(theme::inactive()),
     ));
-    Line::from(spans)
+    let line = Line::from(spans);
+    (line.width() as u16 + keys_width <= inner_width).then_some(line)
 }
 
 /// The relative ramp, `Less` to `More`, over `theme::heat_shade` — the one the
