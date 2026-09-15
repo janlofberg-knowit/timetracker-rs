@@ -1,8 +1,9 @@
-use super::heat::day_heat_legend;
+use super::heat::{axis_line, day_heat_legend};
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
 use crate::tui::rows::{GroupHeader, Member, VisibleRow};
+use crate::tui::summary::{days_in_month, strip_cells};
 use crate::tui::{App, theme};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use ratatui::{
@@ -10,6 +11,99 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use std::collections::HashMap;
+
+/// Today's cell marker, as the year grid and the month strip both draw it.
+const TODAY_MARKER: &str = "\u{25cf}";
+
+/// What a heat block calls itself: its total and how many days made it.
+fn heat_block_title(total: Duration, active_days: usize) -> String {
+    format!(
+        " {} tracked over {} active day{} ",
+        crate::duration::format(total),
+        active_days,
+        if active_days == 1 { "" } else { "s" }
+    )
+}
+
+/// The selected month as one heat cell per day, shaded as the year grid shades
+/// a day, with date ticks over the first row and the entries table beneath.
+///
+/// **Too narrow a row wraps rather than sheds.** `strip_cells` drops its oldest
+/// buckets once one column each is too many, which would hide days of the very
+/// month being reported; its shed count is read here as the cells per row.
+pub(super) fn render_month(f: &mut Frame, app: &mut App, area: Rect) {
+    /// Days between ticks, so a month reads `1 8 15 22 29`.
+    const TICK_DAYS: usize = 7;
+
+    let first = NaiveDate::from_ymd_opt(app.selected_date.year(), app.selected_date.month(), 1)
+        .unwrap_or(app.selected_date);
+    let days = days_in_month(first);
+
+    let inner_width = (area.width as usize).saturating_sub(2);
+    let (cell_width, per_row) = strip_cells(inner_width, days);
+    let rows = days.div_ceil(per_row.max(1));
+
+    // Two borders, the tick line and the cell rows.
+    let block_height = (rows as u16 + 3).min(area.height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(block_height), Constraint::Min(0)])
+        .split(area);
+
+    let breakdown = app.data.year_breakdown(first.year());
+    let today = Local::now().date_naive();
+    let day_of = |index: usize| first + Duration::days(index as i64);
+
+    let mut lines = vec![Line::from(Span::styled(
+        axis_line(
+            &(0..per_row.min(days))
+                .map(|index| {
+                    index
+                        .is_multiple_of(TICK_DAYS)
+                        .then(|| (index + 1).to_string())
+                })
+                .collect::<Vec<_>>(),
+            cell_width,
+        ),
+        Style::default().fg(theme::inactive()),
+    ))];
+    for row in 0..rows {
+        let spans = (row * per_row..((row + 1) * per_row).min(days))
+            .map(|index| {
+                let date = day_of(index);
+                let hours = breakdown.get(&date).map(|d| d.num_hours()).unwrap_or(0);
+                let style = Style::default().bg(theme::heat_color(hours));
+                if date == today {
+                    let pad = " ".repeat(cell_width.saturating_sub(1));
+                    Span::styled(
+                        format!("{TODAY_MARKER}{pad}"),
+                        style.fg(theme::highlight()).bold(),
+                    )
+                } else {
+                    Span::styled(" ".repeat(cell_width), style)
+                }
+            })
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
+    }
+
+    let month: Vec<Duration> = (0..days)
+        .filter_map(|index| breakdown.get(&day_of(index)).copied())
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::border()))
+        .title(Span::styled(
+            heat_block_title(
+                month.iter().fold(Duration::zero(), |acc, d| acc + *d),
+                month.len(),
+            ),
+            Style::default().fg(theme::title()),
+        ))
+        .title_bottom(day_heat_legend().left_aligned());
+    f.render_widget(Paragraph::new(lines).block(block), chunks[0]);
+    render_entries_table(f, app, chunks[1]);
+}
 
 /// A GitHub-style yearly contribution heatmap: one column per week, one row
 /// per weekday, each cell shaded by `theme::heat_color` for that day's total.
@@ -79,13 +173,7 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(legend_spans));
 
     let total = breakdown.values().fold(Duration::zero(), |acc, d| acc + *d);
-    let active_days = breakdown.len();
-    let title = format!(
-        " {} tracked over {} active day{} ",
-        crate::duration::format(total),
-        active_days,
-        if active_days == 1 { "" } else { "s" }
-    );
+    let title = heat_block_title(total, breakdown.len());
 
     let paragraph = Paragraph::new(lines).block(
         Block::default()

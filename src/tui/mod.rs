@@ -3198,6 +3198,137 @@ mod tests {
         );
     }
 
+    /// The Month block's tick line and its heat cells, one inner row per
+    /// vector, as `(x, colour)`. A cell is a blank symbol, so only the
+    /// background says where it is. The legend rides a border row, so any row
+    /// carrying a box corner or rule is left out.
+    fn month_heat_block(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> (String, Vec<Vec<(u16, ratatui::style::Color)>>) {
+        // One sample per step of the ramp: empty, then each level in turn.
+        let palette: Vec<ratatui::style::Color> = [0, 1, 3, 5, 9]
+            .into_iter()
+            .map(super::theme::heat_color)
+            .collect();
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row_text = |y: u16| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let rows: Vec<(u16, Vec<(u16, ratatui::style::Color)>)> = (0..height)
+            .filter(|y| !row_text(*y).contains(['\u{2500}', '\u{2514}', '\u{2518}']))
+            .map(|y| {
+                let cells: Vec<(u16, ratatui::style::Color)> = (0..width)
+                    .map(|x| (x, buffer[(x, y)].bg))
+                    .filter(|(_, bg)| palette.contains(bg))
+                    .collect();
+                (y, cells)
+            })
+            .filter(|(_, cells)| !cells.is_empty())
+            .collect();
+        let ticks = rows
+            .first()
+            .map(|(y, _)| row_text(y.saturating_sub(1)).trim_end().to_string())
+            .unwrap_or_default();
+        (ticks, rows.into_iter().map(|(_, cells)| cells).collect())
+    }
+
+    /// The tick words on an axis line, with the block's own borders dropped.
+    fn axis_ticks(line: &str) -> Vec<&str> {
+        line.trim_matches(['\u{2502}', ' '])
+            .split_whitespace()
+            .collect()
+    }
+
+    fn seed_june_2026() {
+        seed(
+            vec![
+                logged(
+                    1,
+                    "a",
+                    "tt",
+                    &["impl"],
+                    NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+                    120,
+                ),
+                logged(
+                    2,
+                    "b",
+                    "tt",
+                    &["impl"],
+                    NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+                    300,
+                ),
+            ],
+            3,
+        );
+    }
+
+    /// A wide terminal draws the whole month on one row, ticks over it and the
+    /// entries table under it.
+    #[test]
+    fn the_month_view_draws_one_cell_per_day_on_a_single_row() {
+        let _guard = env_guard();
+        sandbox("month-render-wide");
+        seed_june_2026();
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Month;
+        app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+
+        let (ticks, rows) = month_heat_block(&mut app, 140, 30);
+        assert_eq!(rows.len(), 1, "June wrapped on a wide terminal: {rows:#?}");
+        let (cell_width, cells) = summary::strip_cells(140 - 2, 30);
+        assert_eq!(cells, 30, "June has 30 days");
+        assert_eq!(
+            rows[0].len(),
+            30 * cell_width,
+            "the cells do not cover every day of June"
+        );
+
+        for day in ["1", "8", "15", "22", "29"] {
+            assert!(
+                axis_ticks(&ticks).contains(&day),
+                "no `{day}` tick on the axis: {ticks}"
+            );
+        }
+        assert_eq!(
+            axis_ticks(&ticks).len(),
+            5,
+            "every day was labelled rather than a few: {ticks}"
+        );
+
+        let screen = frame_lines(&mut app, 140, 30).join("\n");
+        assert!(
+            screen.contains("Entries"),
+            "the entries table is gone from under the block:\n{screen}"
+        );
+    }
+
+    /// Too narrow a row wraps: a month view never hides days of its own month.
+    #[test]
+    fn a_narrow_month_view_wraps_its_days_instead_of_shedding_them() {
+        let _guard = env_guard();
+        sandbox("month-render-narrow");
+        seed_june_2026();
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Month;
+        app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+
+        // 20 columns leave 18 inner ones for 30 days.
+        let (_, rows) = month_heat_block(&mut app, 20, 30);
+        assert!(rows.len() > 1, "the days did not wrap: {rows:#?}");
+        let drawn: usize = rows.iter().map(Vec::len).sum();
+        assert_eq!(drawn, 30, "{} of June's 30 days were shed", 30 - drawn);
+    }
+
     /// The tabs read in period order, shortest first, with `All` last.
     #[test]
     fn the_tabs_row_lists_the_five_views_in_period_order() {

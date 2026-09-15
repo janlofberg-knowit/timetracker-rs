@@ -131,6 +131,11 @@ Open the interactive terminal UI for browsing and managing your entries.
 tt tui
 ```
 
+**Views.** The number keys pick the period the screen reports on, shortest
+first: `1` day, `2` week, `3` month, `4` year, `5` all entries. The month view
+shades one cell per day of the month; the year view shades a week per column.
+`h` and `l` step one period back or forward.
+
 ---
 
 ### `tt update [--check] [-y|--yes]`
