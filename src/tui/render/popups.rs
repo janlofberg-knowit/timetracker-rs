@@ -133,7 +133,7 @@ pub(super) fn render_help_popup(f: &mut Frame, app: &mut App) {
         page.push(Line::from(Span::styled("▾ more", desc_style)).right_aligned());
     }
     f.render_widget(
-        Paragraph::new(page).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(page).style(Style::default().bg(theme::overlay_bg())),
         content,
     );
 }
@@ -211,7 +211,7 @@ pub(super) fn render_confirm_popup(f: &mut Frame, app: &App) {
         ]),
     );
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme::overlay_bg())),
         content,
     );
 }
@@ -341,7 +341,7 @@ pub(super) fn render_detail_popup(f: &mut Frame, app: &App) {
         overlay_hints(&app.detail_hints()),
     );
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme::overlay_bg())),
         content,
     );
 }

@@ -3,20 +3,6 @@ use std::sync::OnceLock;
 
 use crate::config;
 
-/// Not user-configurable: used only for the week-view day-separator rows.
-pub const DAY_HEADER_BG: Color = Color::Rgb(38, 48, 68); // Dark blue for day separators
-
-/// Not user-configurable: used only for the entries table's group-header rows,
-/// and distinct from both [`DAY_HEADER_BG`] and the entry stripe.
-pub const GROUP_HEADER_BG: Color = Color::Rgb(48, 40, 62);
-
-/// Not user-configurable: the faint tint on an expanded group's member rows,
-/// a darker shade of [`GROUP_HEADER_BG`] and distinct from the entry stripe.
-pub const MEMBER_BG: Color = Color::Rgb(32, 28, 44);
-
-/// Not user-configurable: used only for the background of modal popups.
-pub const OVERLAY_BG: Color = Color::Rgb(28, 28, 28);
-
 pub struct Theme {
     pub accent: Color,
     pub active: Color,
@@ -29,6 +15,15 @@ pub struct Theme {
     pub duration_low: Color,
     pub border: Color,
     pub title: Color,
+
+    /// Group-header rows in the entries table.
+    pub group_header_bg: Color,
+    /// The faint tint on an expanded group's member rows.
+    pub member_bg: Color,
+    /// Week-view day-separator rows.
+    pub day_header_bg: Color,
+    /// Background of modal popups.
+    pub overlay_bg: Color,
 
     /// Thresholds (in hours) for coloring a single time entry's duration.
     pub entry_duration_high_h: i64,
@@ -60,6 +55,11 @@ impl Theme {
             duration_low: color(&cfg.duration_low, (165, 214, 167)), // Light green
             border: color(&cfg.border, (88, 88, 88)),    // Border gray
             title: color(&cfg.title, (186, 186, 186)),   // Light gray
+
+            group_header_bg: color(&cfg.group_header_bg, (48, 40, 62)), // Purple
+            member_bg: color(&cfg.member_bg, (32, 28, 44)),             // Dark purple
+            day_header_bg: color(&cfg.day_header_bg, (38, 48, 68)),     // Dark blue
+            overlay_bg: color(&cfg.overlay_bg, (28, 28, 28)),           // Near-black
 
             entry_duration_high_h: dur.entry_high_hours.unwrap_or(4),
             entry_duration_med_h: dur.entry_med_hours.unwrap_or(2),
@@ -101,6 +101,18 @@ pub fn border() -> Color {
 }
 pub fn title() -> Color {
     theme().title
+}
+pub fn group_header_bg() -> Color {
+    theme().group_header_bg
+}
+pub fn member_bg() -> Color {
+    theme().member_bg
+}
+pub fn day_header_bg() -> Color {
+    theme().day_header_bg
+}
+pub fn overlay_bg() -> Color {
+    theme().overlay_bg
 }
 
 /// Maps a duration (in hours) to a color given high/medium thresholds.

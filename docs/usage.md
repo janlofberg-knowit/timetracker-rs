@@ -306,6 +306,10 @@ duration_med = "#ffe082"
 duration_low = "#a5d6a7"
 border = "#585858"
 title = "#bababa"
+group_header_bg = "#302838"
+member_bg = "#201c2c"
+day_header_bg = "#263044"
+overlay_bg = "#1c1c1c"
 
 [icons]
 active = "▶️"
