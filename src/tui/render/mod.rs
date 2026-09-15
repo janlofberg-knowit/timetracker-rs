@@ -10,7 +10,7 @@ mod overlay;
 mod popups;
 mod surfaces;
 
-use entries::{render_entries_table, render_month, render_weekly_breakdown, render_year_heatmap};
+use entries::{render_entries_table, render_weekly_breakdown, render_year_heatmap};
 use form::{render_entry_form, render_search_bar};
 use onboarding::render_onboarding_popup;
 use popups::{render_confirm_popup, render_detail_popup, render_help_popup};
@@ -195,8 +195,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .split(content);
         render_weekly_breakdown(f, app, content_chunks[0]);
         render_entries_table(f, app, content_chunks[1]);
-    } else if app.view_mode == ViewMode::Month {
-        render_month(f, app, content);
     } else if app.view_mode == ViewMode::Year {
         render_year_heatmap(f, app, content);
     } else {
