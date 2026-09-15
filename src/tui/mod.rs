@@ -4318,6 +4318,77 @@ mod tests {
         assert_eq!(narrow.len(), 5, "{narrow:#?}");
     }
 
+    /// The one row's buckets as minutes, so a test reads the fold directly.
+    fn heat_minutes(app: &App) -> Vec<i64> {
+        let grid = app.view_heat_buckets();
+        assert_eq!(grid.rows.len(), 1, "the content heat folds one row");
+        grid.rows[0].iter().map(|cell| cell.num_minutes()).collect()
+    }
+
+    /// The day's own 24 hours, with an entry in the hour it started.
+    #[test]
+    fn a_day_view_folds_its_own_twenty_four_hours() {
+        let _guard = env_guard();
+        sandbox("heat-buckets-day");
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &[], today, 45)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+
+        let grid = app.view_heat_buckets();
+        assert_eq!(grid.grain, summary::Grain::Hour);
+        assert_eq!(grid.start(0), today.and_hms_opt(0, 0, 0).unwrap());
+        let minutes = heat_minutes(&app);
+        assert_eq!(minutes.len(), 24);
+        // `logged` starts at 09:00.
+        assert_eq!(minutes[9], 45);
+        assert_eq!(minutes.iter().sum::<i64>(), 45, "time leaked into an hour");
+    }
+
+    #[test]
+    fn a_month_view_folds_one_bucket_per_day_of_its_month() {
+        let _guard = env_guard();
+        sandbox("heat-buckets-month");
+        let february = NaiveDate::from_ymd_opt(2026, 2, 10).unwrap();
+        seed(vec![logged(0, "a", "tt", &[], february, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = february;
+        app.view_mode = ViewMode::Month;
+
+        let minutes = heat_minutes(&app);
+        assert_eq!(minutes.len(), 28, "February 2026 has 28 days");
+        assert_eq!(minutes[9], 60, "the 10th is bucket 9");
+    }
+
+    /// The content heat folds what the table walks, so a pane filter moves it —
+    /// unlike the Summary's strips, which the scope alone drives.
+    #[test]
+    fn a_project_filter_changes_the_content_heat_totals() {
+        let _guard = env_guard();
+        sandbox("heat-buckets-filtered");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                logged(0, "a", "tt", &[], today, 60),
+                logged(1, "b", "other", &[], today, 30),
+            ],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        assert_eq!(heat_minutes(&app).iter().sum::<i64>(), 90);
+
+        app.project_filter.cycle("tt", true);
+        assert!(!app.summary_follows_filters, "the scope-only default holds");
+        assert_eq!(
+            heat_minutes(&app).iter().sum::<i64>(),
+            60,
+            "the heat folded the scope instead of the filtered entries"
+        );
+    }
+
     /// The heat-strip cells inside the drawn Summary box, as `(x, y, colour)`.
     /// `frame_lines` collects symbols alone, so a strip of blank coloured cells
     /// is invisible to it; this reads the background the cell really carries.

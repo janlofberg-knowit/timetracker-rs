@@ -192,6 +192,41 @@ impl App {
         }
     }
 
+    /// The open view's period folded into one row of totals, oldest bucket
+    /// first — the content pane's heat, where [`project_buckets`](Self::project_buckets)
+    /// is the Summary's. **It folds `filtered_entries()`, never
+    /// `summary_entries()`:** the heat and the entry list must not disagree
+    /// about what is on screen, and `summary_follows_filters` is the Summary's
+    /// setting alone. Nothing folded gives one empty row, so no caller
+    /// special-cases it.
+    pub(crate) fn view_heat_buckets(&self) -> BucketGrid {
+        let grain = Grain::for_view(self.view_mode);
+        let entries = self.filtered_entries();
+        let Some((anchor, count)) = bucket_range(self.view_mode, &entries, self.selected_date)
+        else {
+            return BucketGrid {
+                grain,
+                anchor: self.selected_date.and_hms_opt(0, 0, 0).unwrap(),
+                rows: vec![Vec::new()],
+            };
+        };
+
+        let mut buckets = vec![Duration::zero(); count];
+        for entry in &entries {
+            let slot = bucket_index(grain, anchor, entry.start_time.naive_local());
+            if let Ok(slot) = usize::try_from(slot)
+                && let Some(cell) = buckets.get_mut(slot)
+            {
+                *cell += entry.duration();
+            }
+        }
+        BucketGrid {
+            grain,
+            anchor,
+            rows: vec![buckets],
+        }
+    }
+
     /// Height including borders. Collapsed, the box is the total row alone;
     /// expanded, the header and the capped rows sit over the rule and the
     /// total. The strips ride the rows they belong to, so they cost no line.
