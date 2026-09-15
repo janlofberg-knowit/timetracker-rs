@@ -4293,20 +4293,16 @@ mod tests {
         }
     }
 
-    /// A grain that covers a period stretches its cells to the columns the box
-    /// really has, rather than leaving most of the row blank.
+    /// The strip stretches its cells to the columns the box really has, in
+    /// every view, rather than leaving most of the row blank.
     #[test]
-    fn the_strip_fills_the_width_a_bounded_grain_is_given() {
+    fn the_strip_fills_the_width_it_is_given() {
         let _guard = env_guard();
         sandbox("summary-strip-fills");
         let mut app = seed_summary();
         app.toggle_summary();
 
-        for (mode, name) in [
-            (ViewMode::Day, "day"),
-            (ViewMode::Week, "week"),
-            (ViewMode::Overview, "year"),
-        ] {
+        for (mode, name) in scopes().into_iter().chain([(ViewMode::Overview, "year")]) {
             app.view_mode = mode;
             for width in [70u16, 120, 200] {
                 let rows = app.project_summary();
