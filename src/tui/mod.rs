@@ -4182,6 +4182,94 @@ mod tests {
         );
     }
 
+    /// Four projects, each busy on its own weekday. Each strip must carry its
+    /// own project's buckets on its own line: one line per row, the busy cell
+    /// moving one place right as the rows go down, and no cell shared.
+    #[test]
+    fn every_project_gets_its_own_strip_line_aligned_with_its_row() {
+        let _guard = env_guard();
+        sandbox("summary-strip-alignment");
+        let week = TimeData::week_start(Local::now().date_naive());
+        // The rows tie on time, so the name orders them: the names are chosen
+        // to sort in the same order as the weekdays they are busy on.
+        let names = ["aa", "bb", "cc", "dd"];
+        let entries: Vec<TimeEntry> = names
+            .iter()
+            .enumerate()
+            .map(|(day, project)| {
+                logged(
+                    day as u64,
+                    "x",
+                    project,
+                    &[],
+                    week + chrono::Duration::days(day as i64),
+                    60,
+                )
+            })
+            .collect();
+        seed(entries, 4);
+        let mut app = App::new().unwrap();
+        app.selected_date = week;
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+
+        for width in [60u16, 90, 120, 200] {
+            let cells = summary_heat_cells(&mut app, width, 40);
+            let busy = super::theme::heat_shade(1, 1);
+            let mut lines: Vec<(u16, Vec<u16>)> = Vec::new();
+            for (x, y, color) in cells {
+                if color != busy {
+                    continue;
+                }
+                match lines.iter_mut().find(|(row, _)| *row == y) {
+                    Some((_, columns)) => columns.push(x),
+                    None => lines.push((y, vec![x])),
+                }
+            }
+            lines.sort_by_key(|(y, _)| *y);
+            assert_eq!(
+                lines.len(),
+                names.len(),
+                "width {width}: {} strips carry time, not {}",
+                lines.len(),
+                names.len()
+            );
+            let mut last_start = None;
+            let mut cell_width = None;
+            for (index, (y, columns)) in lines.iter().enumerate() {
+                let mut columns = columns.clone();
+                columns.sort_unstable();
+                let start = columns[0];
+                let run = *columns.last().unwrap() - start + 1;
+                assert_eq!(
+                    run as usize,
+                    columns.len(),
+                    "width {width}: {} holds a broken run of cells",
+                    names[index]
+                );
+                assert_eq!(
+                    *cell_width.get_or_insert(columns.len()),
+                    columns.len(),
+                    "width {width}: {} draws a cell of its own size",
+                    names[index]
+                );
+                if let Some(last) = last_start {
+                    assert!(
+                        start > last,
+                        "width {width}: {} did not start right of the row above",
+                        names[index]
+                    );
+                }
+                last_start = Some(start);
+                assert_eq!(
+                    lines.iter().filter(|(row, _)| row == y).count(),
+                    1,
+                    "two projects share one strip line"
+                );
+            }
+        }
+    }
+
     /// Every view names its grain on the axis and ticks the period it covers.
     #[test]
     fn the_strip_axis_names_the_grain_and_ticks_its_period() {
@@ -4201,6 +4289,40 @@ mod tests {
             let axis = box_lines.last().unwrap();
             for tick in ticks {
                 assert!(axis.contains(tick), "no `{tick}` on the axis: {axis}");
+            }
+        }
+    }
+
+    /// A grain that covers a period stretches its cells to the columns the box
+    /// really has, rather than leaving most of the row blank.
+    #[test]
+    fn the_strip_fills_the_width_a_bounded_grain_is_given() {
+        let _guard = env_guard();
+        sandbox("summary-strip-fills");
+        let mut app = seed_summary();
+        app.toggle_summary();
+
+        for (mode, name) in [
+            (ViewMode::Day, "day"),
+            (ViewMode::Week, "week"),
+            (ViewMode::Overview, "year"),
+        ] {
+            app.view_mode = mode;
+            for width in [70u16, 120, 200] {
+                let rows = app.project_summary();
+                let visible = summary::visible_project_summary(&rows, 6);
+                let available = summary::strip_width(width, summary::label_width(visible));
+                let buckets = app.project_buckets(visible).len();
+                let cells = summary_heat_cells(&mut app, width, 40);
+                let left = cells.iter().map(|(x, _, _)| *x).min().unwrap();
+                let right = cells.iter().map(|(x, _, _)| *x).max().unwrap();
+                let drawn = (right - left + 1) as usize;
+                // The cells divide the width evenly, so only the remainder is
+                // left over: never more than one column short of a cell each.
+                assert!(
+                    drawn + buckets >= available,
+                    "{name} at {width}: the strip covers {drawn} of {available} columns"
+                );
             }
         }
     }

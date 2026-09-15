@@ -322,8 +322,8 @@ fn heat_strip_block(
     label_width: usize,
     box_width: u16,
 ) -> Vec<Line<'static>> {
-    /// Widest a cell gets, so a short period reads as a strip, not a banner.
-    const MAX_CELL_WIDTH: usize = 8;
+    /// The yearly overview's own cell, for the grain that has no end to fill.
+    const WEEK_CELL_WIDTH: usize = 2;
 
     let width = strip_width(box_width, label_width);
     let grid = app.project_buckets(rows);
@@ -331,9 +331,14 @@ fn heat_strip_block(
     if buckets == 0 || width == 0 {
         return Vec::new();
     }
-    let cell_width = (width / buckets).clamp(1, MAX_CELL_WIDTH);
-    // The most recent buckets stay when they cannot all fit, as the yearly
-    // overview sheds its oldest weeks.
+    let cell_width = match grid.grain {
+        // Weeks run on without end, so the cell keeps the overview's width and
+        // the oldest weeks shed to what fits, exactly as `render_overview` does.
+        Grain::Week => WEEK_CELL_WIDTH,
+        // Every other grain covers a period that ends, so its cells stretch to
+        // the columns the box really has instead of leaving them blank.
+        _ => (width / buckets).max(1),
+    };
     let cells = (width / cell_width).min(buckets);
     let first = buckets - cells;
     // One maximum over every cell drawn, so the rows stay comparable.
