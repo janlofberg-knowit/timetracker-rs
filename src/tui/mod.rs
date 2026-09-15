@@ -3209,6 +3209,7 @@ mod tests {
         );
 
         let mut app = App::new().unwrap();
+        app.heat_view = true;
         app.view_mode = ViewMode::Year;
         app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
 
@@ -3261,6 +3262,7 @@ mod tests {
             2,
         );
         let mut app = App::new().unwrap();
+        app.heat_view = true;
         app.view_mode = ViewMode::Year;
         app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
         app
@@ -3280,8 +3282,8 @@ mod tests {
             let cell_width = (rows[0][0].0 - GRID_LEFT) as usize;
             (cell_width, painted / cell_width)
         };
-        let (narrow_width, narrow_weeks) = band(month_heat_block(&mut app, 140, 30).1);
-        let (wide_width, wide_weeks) = band(month_heat_block(&mut app, 280, 30).1);
+        let (narrow_width, narrow_weeks) = band(heat_block_cells(&mut app, 140, 30).1);
+        let (wide_width, wide_weeks) = band(heat_block_cells(&mut app, 280, 30).1);
 
         assert_eq!(narrow_width, 2, "a week is never under two columns");
         assert_eq!(wide_width, 4, "twice the width did not widen the cells");
@@ -3304,7 +3306,7 @@ mod tests {
         let mut app = year_view_2026();
 
         // 58 inner columns less the gutter leave 27 pairs for 53 weeks.
-        let (_, rows) = month_heat_block(&mut app, 60, 30);
+        let (_, rows) = heat_block_cells(&mut app, 60, 30);
         assert_eq!(rows[0].len(), 27 * 2, "the shed grid is not two wide");
     }
 
@@ -3315,8 +3317,8 @@ mod tests {
         sandbox("year-view-height");
         let mut app = year_view_2026();
 
-        let (_, short) = month_heat_block(&mut app, 140, 20);
-        let (_, tall) = month_heat_block(&mut app, 140, 40);
+        let (_, short) = heat_block_cells(&mut app, 140, 20);
+        let (_, tall) = heat_block_cells(&mut app, 140, 40);
         assert!(
             tall.len() > short.len(),
             "the bands did not grow: {} rows at both heights",
@@ -3342,7 +3344,7 @@ mod tests {
     /// vector, as `(x, colour)`. A cell is a blank symbol, so only the
     /// background says where it is. The legend rides a border row, so any row
     /// carrying a box corner or rule is left out.
-    fn month_heat_block(
+    fn heat_block_cells(
         app: &mut App,
         width: u16,
         height: u16,
@@ -4316,6 +4318,89 @@ mod tests {
         assert!(!narrow[1].contains('%'), "the share column survived");
         // One line per project still, so nothing wrapped onto a second row.
         assert_eq!(narrow.len(), 5, "{narrow:#?}");
+    }
+
+    /// The five views, with a name to report against; `ViewMode` is not `Debug`.
+    fn views() -> [(ViewMode, &'static str); 5] {
+        [
+            (ViewMode::Day, "day"),
+            (ViewMode::Week, "week"),
+            (ViewMode::Month, "month"),
+            (ViewMode::Year, "year"),
+            (ViewMode::All, "all"),
+        ]
+    }
+
+    /// One flag decides the whole content area, in every view: the list and the
+    /// heat never share it.
+    #[test]
+    fn every_view_draws_its_list_or_its_heat_by_the_flag() {
+        let _guard = env_guard();
+        sandbox("content-dispatch");
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+
+        for (view, name) in views() {
+            app.view_mode = view;
+
+            app.heat_view = false;
+            let list = frame_lines(&mut app, 120, 30).join("\n");
+            assert!(
+                list.contains("Description"),
+                "{name} list: no table:\n{list}"
+            );
+            assert!(
+                !list.contains("tracked over"),
+                "{name} list: a heat block came with it:\n{list}"
+            );
+
+            app.heat_view = true;
+            let heat = frame_lines(&mut app, 120, 30).join("\n");
+            assert!(
+                heat.contains("tracked over"),
+                "{name} heat: no heat block:\n{heat}"
+            );
+            assert!(
+                !heat.contains("Description"),
+                "{name} heat: the table came with it:\n{heat}"
+            );
+        }
+
+        // The Year view keeps its own two-dimensional grid rather than a row.
+        app.view_mode = ViewMode::Year;
+        let year = frame_lines(&mut app, 120, 30).join("\n");
+        assert!(
+            year.contains("Mon") && year.contains("Sun"),
+            "the year heat lost its weekday bands:\n{year}"
+        );
+    }
+
+    /// In heat mode the heat row already carries the per-day shape, so the
+    /// side panel that repeats it is dropped.
+    #[test]
+    fn the_week_view_keeps_its_daily_totals_only_as_a_list() {
+        let _guard = env_guard();
+        sandbox("content-dispatch-week");
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "a", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Week;
+
+        assert!(
+            frame_lines(&mut app, 120, 30)
+                .join("\n")
+                .contains("Daily Totals")
+        );
+        app.heat_view = true;
+        assert!(
+            !frame_lines(&mut app, 120, 30)
+                .join("\n")
+                .contains("Daily Totals"),
+            "the side panel survived into heat mode"
+        );
     }
 
     /// The one row's buckets as minutes, so a test reads the fold directly.

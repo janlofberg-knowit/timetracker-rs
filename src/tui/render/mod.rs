@@ -12,6 +12,7 @@ mod surfaces;
 
 use entries::{render_entries_table, render_weekly_breakdown, render_year_heatmap};
 use form::{render_entry_form, render_search_bar};
+use heat::render_heat_row;
 use onboarding::render_onboarding_popup;
 use popups::{render_confirm_popup, render_detail_popup, render_help_popup};
 use surfaces::{render_marks_surface, render_pane_surface, render_summary_surface};
@@ -188,6 +189,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let content = rows.area(LayoutRow::Content);
     if app.input_mode == InputMode::AddingEntry || app.input_mode == InputMode::EditingEntry {
         render_entry_form(f, app, content);
+    } else if app.heat_view {
+        // Heat replaces the list, whole area: the Year keeps its own grid, and
+        // the Week drops the side panel the heat row already says.
+        match app.view_mode {
+            ViewMode::Year => render_year_heatmap(f, app, content),
+            _ => render_heat_row(f, app, content),
+        }
     } else if app.view_mode == ViewMode::Week {
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -195,8 +203,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .split(content);
         render_weekly_breakdown(f, app, content_chunks[0]);
         render_entries_table(f, app, content_chunks[1]);
-    } else if app.view_mode == ViewMode::Year {
-        render_year_heatmap(f, app, content);
     } else {
         render_entries_table(f, app, content);
     }
