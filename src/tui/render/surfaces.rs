@@ -175,7 +175,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     let keys = legend(&keys, inner.width);
     let keys_width = keys.as_ref().map(|line| line.width()).unwrap_or(0) as u16;
     if let Some(keys) = keys {
-        block = block.title_bottom(keys.right_aligned());
+        block = block.title_bottom(keys.left_aligned());
     }
 
     // Both conditions: an empty day must not blame a filter nobody set.
@@ -356,7 +356,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     };
 
     if let Some(heat_legend) = heat_legend {
-        block = block.title_bottom(heat_legend.left_aligned());
+        block = block.title_bottom(heat_legend.right_aligned());
     }
 
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -425,7 +425,7 @@ fn render_pane(f: &mut Frame, app: &App, pane: Pane, area: Rect) {
         ],
         inner.width,
     ) {
-        block = block.title_bottom(keys.right_aligned());
+        block = block.title_bottom(keys.left_aligned());
     }
 
     // The marker is a gutter on every row, so it comes off the rows' layout width.

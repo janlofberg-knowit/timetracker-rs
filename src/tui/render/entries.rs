@@ -102,7 +102,7 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
                 heat_block_title(total, breakdown.len(), "day"),
                 Style::default().fg(theme::title()),
             ))
-            .title_bottom(day_heat_legend().left_aligned()),
+            .title_bottom(day_heat_legend().right_aligned()),
     );
     f.render_widget(paragraph, area);
 }

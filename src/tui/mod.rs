@@ -4917,6 +4917,10 @@ mod tests {
             2,
             "one legend per pane: {border}"
         );
+        assert!(
+            border.starts_with("\u{2514} Enter: filter"),
+            "a key legend sits on the left of its border: {border}"
+        );
 
         // 80 columns split in two leave 38 inner cells; the legend is 37.
         let border = pane_bottom_border(&mut app, 80, 40);
@@ -5014,12 +5018,65 @@ mod tests {
 
         let border = summary_bottom_border(&mut app, 100, 40);
         assert!(
-            border.contains(" v: split \u{b7} f: filter "),
-            "no legend on the border: {border}"
+            border.starts_with("\u{2514} v: split \u{b7} f: filter "),
+            "the key legend is not on the left of its border: {border}"
         );
         assert!(
             border.ends_with('\u{2518}'),
             "the legend ate the corner: {border}"
+        );
+    }
+
+    /// The bottom border of the box opened by `title`, whichever box it is.
+    fn bottom_border(app: &mut App, title: &str, width: u16, height: u16) -> String {
+        let screen = frame_lines(app, width, height);
+        let top = screen
+            .iter()
+            .position(|line| line.contains(title))
+            .unwrap_or_else(|| panic!("no `{title}` box:\n{}", screen.join("\n")));
+        screen[top..]
+            .iter()
+            .find(|line| line.contains('\u{2518}'))
+            .cloned()
+            .unwrap_or_else(|| panic!("no bottom border:\n{}", screen.join("\n")))
+    }
+
+    /// One convention across the whole TUI: keys on the left, ramps on the
+    /// right, so the two never fight for the same corner.
+    #[test]
+    fn every_colour_ramp_sits_on_the_right_of_its_border() {
+        let _guard = env_guard();
+        sandbox("legend-sides");
+        let mut app = seed_summary();
+        app.toggle_summary();
+        app.heat_view = true;
+
+        let ramp_is_right = |border: &str, what: &str| {
+            let middle = border.chars().count() / 2;
+            let less = border.find("Less").unwrap_or_else(|| {
+                panic!("no ramp on the {what} border: {border}");
+            });
+            assert!(
+                less > middle,
+                "the {what} ramp is not on the right: {border}"
+            );
+        };
+
+        for (view, title) in [
+            (ViewMode::Day, "tracked over"),
+            (ViewMode::Year, "tracked over"),
+        ] {
+            app.view_mode = view;
+            ramp_is_right(&bottom_border(&mut app, title, 120, 40), "heat block");
+        }
+
+        // The Summary's border carries both, so it proves they share a border.
+        app.view_mode = ViewMode::Week;
+        let border = bottom_border(&mut app, "Summary (S)", 120, 40);
+        ramp_is_right(&border, "summary strip");
+        assert!(
+            border.starts_with("\u{2514} v: split"),
+            "the keys left the left of the border: {border}"
         );
     }
 

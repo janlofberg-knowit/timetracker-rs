@@ -59,7 +59,7 @@ pub(super) fn render_heat_row(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::title()),
         ));
     if let Some(ramp) = ramp {
-        block = block.title_bottom(ramp.left_aligned());
+        block = block.title_bottom(ramp.right_aligned());
     }
     let inner = block.inner(area);
 
