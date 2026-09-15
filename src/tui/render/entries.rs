@@ -1,4 +1,4 @@
-use super::heat::{axis_line, day_heat_legend};
+use super::heat::{TODAY_MARKER, axis_line, day_heat_legend, heat_block_title};
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
@@ -11,19 +11,6 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use std::collections::HashMap;
-
-/// Today's cell marker, as the year grid and the month strip both draw it.
-const TODAY_MARKER: &str = "\u{25cf}";
-
-/// What a heat block calls itself: its total and how many days made it.
-fn heat_block_title(total: Duration, active_days: usize) -> String {
-    format!(
-        " {} tracked over {} active day{} ",
-        crate::duration::format(total),
-        active_days,
-        if active_days == 1 { "" } else { "s" }
-    )
-}
 
 /// A GitHub-style yearly contribution heatmap: one column band per week, one
 /// row band per weekday, each cell shaded by `theme::heat_color` for that
@@ -112,7 +99,7 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::border()))
             .title(Span::styled(
-                heat_block_title(total, breakdown.len()),
+                heat_block_title(total, breakdown.len(), "day"),
                 Style::default().fg(theme::title()),
             ))
             .title_bottom(day_heat_legend().left_aligned()),

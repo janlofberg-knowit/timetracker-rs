@@ -1,4 +1,4 @@
-use super::heat::heat_axis;
+use super::heat::{heat_axis, relative_heat_legend};
 use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
@@ -340,7 +340,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         }));
 
         if strip {
-            heat_legend = heat_strip_legend(keys_width, inner.width);
+            heat_legend = relative_heat_legend(keys_width, inner.width);
         }
 
         // The rule sits under the number columns only, as a hand sum does.
@@ -367,28 +367,6 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
 /// the rule runs the height of the strip beside it.
 fn strip_separator() -> Span<'static> {
     Span::styled("  │  ", Style::default().fg(theme::border()))
-}
-
-/// The strip's `Less … More` ramp for the bottom border, or `None` when it
-/// would run into the key legend already sitting on the bottom right.
-fn heat_strip_legend(keys_width: u16, inner_width: u16) -> Option<Line<'static>> {
-    // Part and maximum per swatch, one per quarter of the ramp. An empty
-    // bucket is never drawn, so the ramp does not offer a swatch for one.
-    const SWATCHES: [(i64, i64); 4] = [(1, 4), (1, 2), (3, 4), (1, 1)];
-
-    let mut spans = vec![Span::styled(
-        " Less ",
-        Style::default().fg(theme::inactive()),
-    )];
-    spans.extend(SWATCHES.iter().map(|(part, max)| {
-        Span::styled("  ", Style::default().bg(theme::heat_shade(*part, *max)))
-    }));
-    spans.push(Span::styled(
-        " More ",
-        Style::default().fg(theme::inactive()),
-    ));
-    let line = Line::from(spans);
-    (line.width() as u16 + keys_width <= inner_width).then_some(line)
 }
 
 /// The pane surface: both panes side by side, or the single open one full width.

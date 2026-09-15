@@ -47,6 +47,16 @@ impl Grain {
             ViewMode::Year => Grain::Month,
         }
     }
+
+    /// What one bucket is called, for a block that counts its active ones.
+    pub(crate) fn unit(self) -> &'static str {
+        match self {
+            Grain::Hour => "hour",
+            Grain::Day => "day",
+            Grain::Week => "week",
+            Grain::Month => "month",
+        }
+    }
 }
 
 /// Per-project time buckets over one period, oldest bucket first.
