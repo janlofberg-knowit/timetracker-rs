@@ -162,9 +162,54 @@ pub fn heat_color(hours: i64) -> Color {
     }
 }
 
+/// Maps `part` onto the same ramp by its proportion of `max`, in quarters, for
+/// grids whose buckets are too small for [`heat_color`]'s day thresholds. Any
+/// unit, as long as both arguments share it. A part or a maximum at or below
+/// zero is empty, so an empty grid cannot divide by zero.
+pub fn heat_shade(part: i64, max: i64) -> Color {
+    if part <= 0 || max <= 0 {
+        HEATMAP_EMPTY
+    } else if part * 4 <= max {
+        HEATMAP_LEVELS[0]
+    } else if part * 2 <= max {
+        HEATMAP_LEVELS[1]
+    } else if part * 4 <= max * 3 {
+        HEATMAP_LEVELS[2]
+    } else {
+        HEATMAP_LEVELS[3]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quarters of the maximum, each band closed at its top.
+    #[test]
+    fn heat_shade_bands_the_proportion_of_the_maximum() {
+        assert_eq!(heat_shade(25, 100), HEATMAP_LEVELS[0], "the first quarter");
+        assert_eq!(heat_shade(26, 100), HEATMAP_LEVELS[1]);
+        assert_eq!(heat_shade(50, 100), HEATMAP_LEVELS[1], "the second quarter");
+        assert_eq!(heat_shade(51, 100), HEATMAP_LEVELS[2]);
+        assert_eq!(heat_shade(75, 100), HEATMAP_LEVELS[2], "the third quarter");
+        assert_eq!(heat_shade(76, 100), HEATMAP_LEVELS[3]);
+        assert_eq!(heat_shade(100, 100), HEATMAP_LEVELS[3], "the maximum");
+    }
+
+    /// A small part of a small maximum still reads hot: the scale is relative.
+    #[test]
+    fn heat_shade_rescales_to_whatever_the_maximum_is() {
+        assert_eq!(heat_shade(1, 1), HEATMAP_LEVELS[3]);
+        assert_eq!(heat_shade(1, 4), HEATMAP_LEVELS[0]);
+    }
+
+    #[test]
+    fn heat_shade_treats_an_empty_bucket_or_an_empty_grid_as_empty() {
+        assert_eq!(heat_shade(0, 100), HEATMAP_EMPTY, "nothing in the bucket");
+        assert_eq!(heat_shade(-5, 100), HEATMAP_EMPTY, "never below empty");
+        assert_eq!(heat_shade(10, 0), HEATMAP_EMPTY, "no divide by zero");
+        assert_eq!(heat_shade(0, 0), HEATMAP_EMPTY);
+    }
 
     #[test]
     fn heat_color_covers_each_threshold_boundary_with_progressively_greener_shades() {
