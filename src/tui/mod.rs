@@ -4619,6 +4619,21 @@ mod tests {
                 assert!(header.contains(tick), "no `{tick}` on the header: {header}");
             }
         }
+
+        // A month is a day axis too long for weekday names: sparse dates instead.
+        app.view_mode = ViewMode::Month;
+        let header = summary_box(&mut app, 120, 40)[0].clone();
+        let axis = header
+            .split_once('\u{2502}')
+            .map(|(_, axis)| axis.to_string())
+            .expect("no strip separator on the header");
+        for date in ["1", "8", "15", "22", "29"] {
+            assert!(axis.contains(date), "no `{date}` on the axis: {axis}");
+        }
+        assert!(
+            !axis.contains("Mon") && !axis.contains("Tue"),
+            "a month of weekday names: {axis}"
+        );
     }
 
     /// The collapsed box is the total line alone; no strip comes with it.

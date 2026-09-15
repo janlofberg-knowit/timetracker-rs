@@ -1,13 +1,12 @@
-use super::heat::axis_line;
+use super::heat::heat_axis;
 use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
 use crate::tui::summary::{
-    BucketGrid, Grain, SUMMARY_TOTAL_LINES, strip_cells, summary_total, visible_project_summary,
+    SUMMARY_TOTAL_LINES, strip_cells, summary_total, visible_project_summary,
 };
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
-use chrono::{Datelike, Timelike};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -368,35 +367,6 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
 /// the rule runs the height of the strip beside it.
 fn strip_separator() -> Span<'static> {
     Span::styled("  │  ", Style::default().fg(theme::border()))
-}
-
-/// The axis that heads the strip: one tick over the cell it belongs to, as the
-/// yearly overview heads its grid with month names. A tick is cut to the room
-/// before the next one, so a dense axis abbreviates instead of running its
-/// labels together.
-fn heat_axis(grid: &BucketGrid, first: usize, cells: usize, cell_width: usize) -> String {
-    let labels: Vec<Option<String>> = (0..cells)
-        .map(|cell| axis_tick(grid, first + cell))
-        .collect();
-    axis_line(&labels, cell_width)
-}
-
-/// What bucket `index` is called on the axis, or `None` where no tick belongs.
-fn axis_tick(grid: &BucketGrid, index: usize) -> Option<String> {
-    /// Hours between ticks, so a day reads `00 06 12 18`.
-    const TICK_HOURS: u32 = 6;
-
-    let start = grid.start(index);
-    match grid.grain {
-        Grain::Hour => start
-            .hour()
-            .is_multiple_of(TICK_HOURS)
-            .then(|| format!("{:02}", start.hour())),
-        Grain::Day => Some(start.format("%a").to_string()),
-        // The week opening a month carries its name, as the yearly overview does.
-        Grain::Week => (start.day() <= 7).then(|| start.format("%b").to_string()),
-        Grain::Month => Some(start.format("%b").to_string()),
-    }
 }
 
 /// The strip's `Less … More` ramp for the bottom border, or `None` when it
