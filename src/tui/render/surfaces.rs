@@ -1,3 +1,4 @@
+use super::heat::axis_line;
 use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
@@ -374,21 +375,10 @@ fn strip_separator() -> Span<'static> {
 /// before the next one, so a dense axis abbreviates instead of running its
 /// labels together.
 fn heat_axis(grid: &BucketGrid, first: usize, cells: usize, cell_width: usize) -> String {
-    let ticks: Vec<(usize, String)> = (0..cells)
-        .filter_map(|cell| axis_tick(grid, first + cell).map(|text| (cell * cell_width, text)))
+    let labels: Vec<Option<String>> = (0..cells)
+        .map(|cell| axis_tick(grid, first + cell))
         .collect();
-    let mut axis = vec![' '; cells * cell_width];
-    for (index, (column, text)) in ticks.iter().enumerate() {
-        // One column short of the next tick, so neighbours never touch.
-        let room = ticks
-            .get(index + 1)
-            .map(|(next, _)| (next - column).saturating_sub(1).max(1))
-            .unwrap_or(axis.len() - column);
-        for (offset, symbol) in text.chars().take(room).enumerate() {
-            axis[column + offset] = symbol;
-        }
-    }
-    axis.into_iter().collect()
+    axis_line(&labels, cell_width)
 }
 
 /// What bucket `index` is called on the axis, or `None` where no tick belongs.

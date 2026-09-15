@@ -1,3 +1,4 @@
+use super::heat::day_heat_legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
@@ -72,28 +73,8 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(spans));
     }
 
-    // Legend: "Less" -> five progressively hotter swatches -> "More".
-    let t = theme::theme();
-    let mut legend_spans = vec![
-        Span::raw(" ".repeat(GUTTER)),
-        Span::styled("Less ", Style::default().fg(theme::inactive())),
-    ];
-    for hours in [
-        0,
-        1,
-        t.day_duration_med_h / 2,
-        t.day_duration_med_h,
-        t.day_duration_high_h,
-    ] {
-        legend_spans.push(Span::styled(
-            "  ",
-            Style::default().bg(theme::heat_color(hours)),
-        ));
-    }
-    legend_spans.push(Span::styled(
-        " More",
-        Style::default().fg(theme::inactive()),
-    ));
+    let mut legend_spans = vec![Span::raw(" ".repeat(GUTTER))];
+    legend_spans.extend(day_heat_legend().spans);
     lines.push(Line::from(""));
     lines.push(Line::from(legend_spans));
 
