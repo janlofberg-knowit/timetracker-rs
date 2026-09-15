@@ -36,6 +36,9 @@ pub use types::{
     ViewMode,
 };
 
+/// The view every session opens on, and what `heat_view` defaults against.
+const START_VIEW: ViewMode = ViewMode::Day;
+
 pub(crate) struct App {
     /// The store snapshot. **Never assign this directly** — go through
     /// [`App::set_data`], which bumps `data_revision`.
@@ -112,6 +115,9 @@ pub(crate) struct App {
     pub(crate) summary_split: bool,
     /// Whether the Summary folds `filtered_entries()` instead of the scope.
     pub(crate) summary_follows_filters: bool,
+    /// Whether the content area draws a heatmap instead of the entry list.
+    /// One flag for every view, so switching view keeps the representation.
+    pub(crate) heat_view: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -178,7 +184,7 @@ impl App {
             unaccounted: Vec::new(),
             table_state: TableState::default().with_selected(Some(0)),
             should_quit: false,
-            view_mode: ViewMode::Day,
+            view_mode: START_VIEW,
             selected_date: Local::now().date_naive(),
             input_mode: InputMode::Normal,
             help_scroll: 0,
@@ -203,6 +209,8 @@ impl App {
             show_summary: layout.show_summary.unwrap_or(false),
             summary_split: layout.summary_split.unwrap_or(false),
             summary_follows_filters: layout.summary_follows_filters.unwrap_or(false),
+            // Year is the only view whose own representation is the heatmap.
+            heat_view: layout.heat_view.unwrap_or(START_VIEW == ViewMode::Year),
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -240,7 +248,9 @@ impl App {
         Ok(result)
     }
 
-    /// Which surfaces are open right now, in config shape.
+    /// How the TUI stands right now — open surfaces and representations — in
+    /// config shape. **The single writer:** a field left out of this literal is
+    /// erased on the next [`persist_layout`](Self::persist_layout).
     pub(crate) fn layout_config(&self) -> crate::config::LayoutConfig {
         crate::config::LayoutConfig {
             show_projects: Some(self.show_projects),
@@ -249,6 +259,7 @@ impl App {
             show_tags: Some(self.show_tags),
             summary_split: Some(self.summary_split),
             summary_follows_filters: Some(self.summary_follows_filters),
+            heat_view: Some(self.heat_view),
         }
     }
 
@@ -1463,6 +1474,37 @@ mod tests {
         let app = App::new().unwrap();
         assert!(app.summary_split);
         assert!(app.summary_follows_filters);
+    }
+
+    /// The flag survives a write made for another key: the literal in
+    /// `layout_config` is the only writer, so a field left out is erased.
+    #[test]
+    fn toggling_the_heat_view_persists_it_and_survives_another_write() {
+        let _guard = env_guard();
+        sandbox("heat-view-persist");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        assert!(!app.heat_view, "a Day session opens as a list");
+        app.toggle_heat_view();
+        assert_eq!(saved_layout()["heat_view"].as_bool(), Some(true));
+
+        app.toggle_summary_split();
+        assert_eq!(
+            saved_layout()["heat_view"].as_bool(),
+            Some(true),
+            "another layout write erased the heat view"
+        );
+    }
+
+    #[test]
+    fn the_layout_key_seeds_the_heat_view() {
+        let _guard = env_guard();
+        let dir = sandbox("heat-view-seed");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(dir.join("config.toml"), "[layout]\nheat_view = true\n").unwrap();
+
+        assert!(App::new().unwrap().heat_view);
     }
 
     #[test]

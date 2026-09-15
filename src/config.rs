@@ -90,8 +90,9 @@ pub struct AgentConfig {
     pub round_minutes: Option<i64>,
 }
 
-/// Which collapsible TUI surfaces start open, independent of whether
-/// onboarding has run — see [`GeneralConfig`].
+/// How the TUI starts: which collapsible surfaces are open and which
+/// representation each surface opens in. Independent of whether onboarding has
+/// run — see [`GeneralConfig`].
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct LayoutConfig {
     pub show_projects: Option<bool>,
@@ -102,6 +103,8 @@ pub struct LayoutConfig {
     pub summary_split: Option<bool>,
     /// Whether the Summary starts folding the filtered entries.
     pub summary_follows_filters: Option<bool>,
+    /// Whether the content area starts as a heatmap instead of an entry list.
+    pub heat_view: Option<bool>,
 }
 
 /// Cross-cutting settings. The first-run popup shows until it has run once,
@@ -359,6 +362,7 @@ fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
         show_tags: o.show_tags.or(b.show_tags),
         summary_split: o.summary_split.or(b.summary_split),
         summary_follows_filters: o.summary_follows_filters.or(b.summary_follows_filters),
+        heat_view: o.heat_view.or(b.heat_view),
     }
 }
 

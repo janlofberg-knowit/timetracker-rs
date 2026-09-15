@@ -238,6 +238,12 @@ impl App {
         self.persist_layout();
     }
 
+    /// `M`: draw the content area as a heatmap or as the entry list.
+    pub(crate) fn toggle_heat_view(&mut self) {
+        self.heat_view = !self.heat_view;
+        self.persist_layout();
+    }
+
     /// `f`: fold the filtered entries or the whole scope.
     pub(crate) fn toggle_summary_follows_filters(&mut self) {
         self.summary_follows_filters = !self.summary_follows_filters;

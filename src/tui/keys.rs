@@ -70,6 +70,9 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('A') => app.toggle_marks(),
         // Capital `S` only; lowercase `s` stops the entry.
         KeyCode::Char('S') => app.toggle_summary(),
+        // Capital `M` only, and unconditional: it owns the content pane rather
+        // than a focusable surface, so no focus state takes it away.
+        KeyCode::Char('M') => app.toggle_heat_view(),
         KeyCode::Char('v') => {
             if app.summary_is_focused() {
                 app.toggle_summary_split();
@@ -654,6 +657,35 @@ mod tests {
         assert!(app.summary_follows_filters, "`f` fired on a hidden surface");
     }
 
+    /// `M` owns the content pane, so no focus state may take it away, and the
+    /// lowercase `h` beside it must still step the period back.
+    #[test]
+    fn shift_m_flips_the_heat_view_from_any_focus() {
+        let _guard = env_guard();
+        sandbox("keys-heat-view");
+        let mut with_project = entry(0, "has a project");
+        with_project.project = Some("acme".to_string());
+        seed(vec![with_project], 1);
+        let mut app = App::new().unwrap();
+
+        press(&mut app, KeyCode::Char('M'));
+        assert!(app.heat_view, "`M` did not reach the flag");
+        press(&mut app, KeyCode::Char('M'));
+        assert!(!app.heat_view, "`M` did not flip back");
+
+        for focus in [Focus::Summary, Focus::Pane(Pane::Projects)] {
+            app.show_summary = true;
+            app.focus = focus;
+            press(&mut app, KeyCode::Char('M'));
+            assert!(app.heat_view, "`M` was gated on {focus:?}");
+            press(&mut app, KeyCode::Char('M'));
+        }
+
+        let today = app.selected_date;
+        press(&mut app, KeyCode::Char('h'));
+        assert!(app.selected_date < today, "`h` stopped stepping back");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]
@@ -703,6 +735,7 @@ mod tests {
             (KeyCode::Char('T'), "tags pane", |a| a.show_tags),
             (KeyCode::Char('A'), "marks pane", |a| a.show_marks),
             (KeyCode::Char('S'), "summary pane", |a| a.show_summary),
+            (KeyCode::Char('M'), "heat view", |a| a.heat_view),
             (KeyCode::Char('o'), "sort order", |a| {
                 a.sort_order != SortOrder::NewestFirst
             }),

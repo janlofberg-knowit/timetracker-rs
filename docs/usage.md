@@ -135,6 +135,10 @@ tt tui
 first: `1` day, `2` week, `3` month, `4` year, `5` all entries. The year view
 shades a week per column. `h` and `l` step one period back or forward.
 
+**Heatmaps.** `M` flips the open view between its entry list and a heatmap of
+the same period. The year view opens as a heatmap; the other views open as
+lists. The choice is kept for the next run.
+
 ---
 
 ### `tt update [--check] [-y|--yes]`
