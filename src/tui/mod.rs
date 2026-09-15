@@ -2215,13 +2215,13 @@ mod tests {
     }
 
     #[test]
-    fn overview_h_l_page_by_year_instead_of_by_day() {
+    fn the_year_view_pages_by_year_instead_of_by_day() {
         let _guard = env_guard();
-        sandbox("overview-year-paging");
+        sandbox("year-view-paging");
         seed(vec![], 0);
 
         let mut app = App::new().unwrap();
-        app.view_mode = ViewMode::Overview;
+        app.view_mode = ViewMode::Year;
         let start = app.selected_date;
 
         app.next_period();
@@ -2235,13 +2235,13 @@ mod tests {
     }
 
     #[test]
-    fn overview_leap_day_falls_back_to_feb_28_in_a_non_leap_year() {
+    fn the_year_view_leap_day_falls_back_to_feb_28_in_a_non_leap_year() {
         let _guard = env_guard();
-        sandbox("overview-year-paging-leap");
+        sandbox("year-view-paging-leap");
         seed(vec![], 0);
 
         let mut app = App::new().unwrap();
-        app.view_mode = ViewMode::Overview;
+        app.view_mode = ViewMode::Year;
         app.selected_date = NaiveDate::from_ymd_opt(2024, 2, 29).unwrap();
 
         app.next_period();
@@ -3133,9 +3133,9 @@ mod tests {
     }
 
     #[test]
-    fn overview_renders_a_year_grid_with_labels_and_legend() {
+    fn the_year_view_renders_a_grid_with_labels_and_legend() {
         let _guard = env_guard();
-        sandbox("overview-render");
+        sandbox("year-view-render");
         seed(
             vec![
                 logged(
@@ -3167,12 +3167,15 @@ mod tests {
         );
 
         let mut app = App::new().unwrap();
-        app.view_mode = ViewMode::Overview;
+        app.view_mode = ViewMode::Year;
         app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
 
         let screen = frame_lines(&mut app, 140, 24).join("\n");
 
-        assert!(screen.contains("Overview"), "tab title shows the new view");
+        assert!(
+            screen.contains("Yearly View"),
+            "tab title shows the new view"
+        );
         assert!(
             screen.contains("Year 2026"),
             "date_info names the shown year"
@@ -3192,6 +3195,46 @@ mod tests {
         assert!(
             screen.contains("active day"),
             "the block title reports the active-day count:\n{screen}"
+        );
+    }
+
+    /// The tabs read in period order, shortest first, with `All` last.
+    #[test]
+    fn the_tabs_row_lists_the_five_views_in_period_order() {
+        let _guard = env_guard();
+        sandbox("tabs-period-order");
+        seed(vec![], 0);
+
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Month;
+        app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+
+        let screen = frame_lines(&mut app, 140, 24);
+        let tabs = screen
+            .iter()
+            .find(|line| line.contains("[1] Day"))
+            .unwrap_or_else(|| panic!("no tabs row:\n{}", screen.join("\n")))
+            .clone();
+
+        let order: Vec<usize> = ["[1] Day", "[2] Week", "[3] Month", "[4] Year", "[5] All"]
+            .iter()
+            .map(|tab| {
+                tabs.find(tab)
+                    .unwrap_or_else(|| panic!("no `{tab}` on the tabs row: {tabs}"))
+            })
+            .collect();
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "the tabs are out of period order: {tabs}"
+        );
+
+        let title = screen
+            .iter()
+            .find(|line| line.contains("Monthly View"))
+            .unwrap_or_else(|| panic!("no Month title:\n{}", screen.join("\n")));
+        assert!(
+            title.contains("June 2026"),
+            "the Month tab does not name its month: {title}"
         );
     }
 
@@ -3813,10 +3856,7 @@ mod tests {
         sandbox("summary-buckets-sum");
         let mut app = seed_summary();
 
-        for (mode, name) in scopes()
-            .into_iter()
-            .chain([(ViewMode::Overview, "overview")])
-        {
+        for (mode, name) in scopes().into_iter().chain([(ViewMode::Year, "year")]) {
             app.view_mode = mode;
             let rows = app.project_summary();
             let grid = app.project_buckets(&rows);
@@ -4319,7 +4359,7 @@ mod tests {
         for (mode, ticks) in [
             (ViewMode::Day, vec!["00", "06", "12", "18"]),
             (ViewMode::Week, vec!["Mon", "Sun"]),
-            (ViewMode::Overview, vec!["Jan", "Dec"]),
+            (ViewMode::Year, vec!["Jan", "Dec"]),
         ] {
             app.view_mode = mode;
             let header = summary_box(&mut app, 120, 40)[0].clone();

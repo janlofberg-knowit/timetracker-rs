@@ -9,7 +9,7 @@ mod overlay;
 mod popups;
 mod surfaces;
 
-use entries::{render_entries_table, render_overview, render_weekly_breakdown};
+use entries::{render_entries_table, render_weekly_breakdown, render_year_heatmap};
 use form::{render_entry_form, render_search_bar};
 use onboarding::render_onboarding_popup;
 use popups::{render_confirm_popup, render_detail_popup, render_help_popup};
@@ -137,12 +137,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_pane_surface(f, app, area);
     }
 
-    let tab_titles = vec!["[1] Day", "[2] Week", "[3] All", "[4] Overview"];
+    let tab_titles = vec!["[1] Day", "[2] Week", "[3] Month", "[4] Year", "[5] All"];
     let selected_tab = match app.view_mode {
         ViewMode::Day => 0,
         ViewMode::Week => 1,
-        ViewMode::All => 2,
-        ViewMode::Overview => 3,
+        ViewMode::Month => 2,
+        ViewMode::Year => 3,
+        ViewMode::All => 4,
     };
     let date_info = match app.view_mode {
         ViewMode::All => "All entries".to_string(),
@@ -156,7 +157,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 week_end.format("%b %d, %Y")
             )
         }
-        ViewMode::Overview => format!("Year {}", app.selected_date.year()),
+        ViewMode::Month => app.selected_date.format("%B %Y").to_string(),
+        ViewMode::Year => format!("Year {}", app.selected_date.year()),
     };
     let tabs = Tabs::new(tab_titles)
         .select(selected_tab)
@@ -192,8 +194,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .split(content);
         render_weekly_breakdown(f, app, content_chunks[0]);
         render_entries_table(f, app, content_chunks[1]);
-    } else if app.view_mode == ViewMode::Overview {
-        render_overview(f, app, content);
+    } else if app.view_mode == ViewMode::Year {
+        render_year_heatmap(f, app, content);
     } else {
         render_entries_table(f, app, content);
     }

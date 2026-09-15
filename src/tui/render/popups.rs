@@ -15,7 +15,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("j / ↓", "select next entry"),
             ("k / ↑", "select previous entry"),
             ("t", "go to today"),
-            ("1 / 2 / 3 / 4", "day / week / all / overview"),
+            ("1 / 2 / 3 / 4 / 5", "day / week / month / year / all"),
             ("?", "toggle this help"),
             ("q / Esc", "quit"),
         ],

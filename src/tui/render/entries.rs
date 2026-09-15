@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 /// A GitHub-style yearly contribution heatmap: one column per week, one row
 /// per weekday, each cell shaded by `theme::heat_color` for that day's total.
-pub(super) fn render_overview(f: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
     const GUTTER: usize = 4; // weekday label width, e.g. "Mon "
     const WEEKDAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 

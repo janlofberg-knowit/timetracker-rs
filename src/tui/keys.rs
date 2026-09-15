@@ -93,8 +93,9 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => app.start_search(),
         KeyCode::Char('1') => app.set_view_mode(ViewMode::Day),
         KeyCode::Char('2') => app.set_view_mode(ViewMode::Week),
-        KeyCode::Char('3') => app.set_view_mode(ViewMode::All),
-        KeyCode::Char('4') => app.set_view_mode(ViewMode::Overview),
+        KeyCode::Char('3') => app.set_view_mode(ViewMode::Month),
+        KeyCode::Char('4') => app.set_view_mode(ViewMode::Year),
+        KeyCode::Char('5') => app.set_view_mode(ViewMode::All),
         KeyCode::Char('h') | KeyCode::Left => app.previous_period(),
         KeyCode::Char('l') | KeyCode::Right => app.next_period(),
         KeyCode::Char('t') => app.go_to_today(),
@@ -671,11 +672,14 @@ mod tests {
             (KeyCode::Char('2'), "week view", |a| {
                 a.view_mode == ViewMode::Week
             }),
-            (KeyCode::Char('3'), "all view", |a| {
-                a.view_mode == ViewMode::All
+            (KeyCode::Char('3'), "month view", |a| {
+                a.view_mode == ViewMode::Month
             }),
-            (KeyCode::Char('4'), "overview", |a| {
-                a.view_mode == ViewMode::Overview
+            (KeyCode::Char('4'), "year view", |a| {
+                a.view_mode == ViewMode::Year
+            }),
+            (KeyCode::Char('5'), "all view", |a| {
+                a.view_mode == ViewMode::All
             }),
             (KeyCode::Char('a'), "add form", |a| {
                 a.input_mode == InputMode::AddingEntry

@@ -43,8 +43,9 @@ impl Grain {
         match view {
             ViewMode::Day => Grain::Hour,
             ViewMode::Week => Grain::Day,
+            ViewMode::Month => Grain::Day,
             ViewMode::All => Grain::Week,
-            ViewMode::Overview => Grain::Month,
+            ViewMode::Year => Grain::Month,
         }
     }
 }
@@ -288,7 +289,7 @@ pub(crate) fn visible_project_summary(
 /// How wide each cell is and how many of the newest buckets are drawn, for a
 /// strip with `available` columns. The cells stretch to the columns the row
 /// really has; once one column each is too many, the oldest buckets shed, as
-/// `render_overview` sheds its oldest weeks. Only the remainder of the even
+/// `render_year_heatmap` sheds its oldest weeks. Only the remainder of the even
 /// division is left over, so the strip is never a whole cell short.
 pub(crate) fn strip_cells(available: usize, buckets: usize) -> (usize, usize) {
     if buckets == 0 {
@@ -389,7 +390,8 @@ mod tests {
         assert_eq!(Grain::for_view(ViewMode::Day), Grain::Hour);
         assert_eq!(Grain::for_view(ViewMode::Week), Grain::Day);
         assert_eq!(Grain::for_view(ViewMode::All), Grain::Week);
-        assert_eq!(Grain::for_view(ViewMode::Overview), Grain::Month);
+        assert_eq!(Grain::for_view(ViewMode::Month), Grain::Day);
+        assert_eq!(Grain::for_view(ViewMode::Year), Grain::Month);
     }
 
     /// The index keys on the start alone, so a span never reaches the next bucket.

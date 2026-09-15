@@ -126,7 +126,15 @@ impl App {
                 let week_start = TimeData::week_start(self.selected_date);
                 self.data.entries_for_week(week_start)
             }
-            ViewMode::Overview => {
+            ViewMode::Month => {
+                let (year, month) = (self.selected_date.year(), self.selected_date.month());
+                self.data
+                    .entries
+                    .iter()
+                    .filter(|e| e.start_time.year() == year && e.start_time.month() == month)
+                    .collect()
+            }
+            ViewMode::Year => {
                 let year = self.selected_date.year();
                 self.data
                     .entries
