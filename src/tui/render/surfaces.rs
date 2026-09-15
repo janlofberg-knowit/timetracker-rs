@@ -123,8 +123,6 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     const SHARE_WIDTH: usize = 6;
     /// The header over the project column, and the column's floor.
     const LABEL_HEADER: &str = "project";
-    /// The blank column between `share` and the strip.
-    const STRIP_GAP: usize = 1;
     /// Fewest cells worth drawing: a shorter strip reads as noise, not a shape.
     const MIN_STRIP_CELLS: usize = 6;
 
@@ -253,10 +251,11 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
             numbers_width += HUMAN_WIDTH + AGENT_WIDTH;
         }
 
-        // The columns left of the border, right of `share`. The model holds
-        // every bucket; the free width decides how many are drawn and how wide.
-        let free =
-            (inner.width as usize).saturating_sub(1 + label_width + numbers_width + STRIP_GAP);
+        // The columns left of the border, right of the strip's own separator.
+        // The model holds every bucket; the free width decides how many are
+        // drawn and how wide.
+        let free = (inner.width as usize)
+            .saturating_sub(1 + label_width + numbers_width + strip_separator().width());
         let grid = app.project_buckets(rows);
         let (cell_width, cells) = strip_cells(free, grid.len());
         let first = grid.len() - cells;
@@ -277,16 +276,21 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         }
         header.push_str(&format!("{:>COUNT_WIDTH$}", "count"));
         header.push_str(&format!("{:>SHARE_WIDTH$}", "share"));
-        if strip {
-            // The ticks head the strip as the column names head the numbers.
-            header.push_str(&" ".repeat(STRIP_GAP));
-            header.push_str(&heat_axis(&grid, first, cells, cell_width));
-        }
 
-        let mut lines = vec![Line::from(Span::styled(
+        let mut header_spans = vec![Span::styled(
             header,
             Style::default().fg(theme::inactive()).italic(),
-        ))];
+        )];
+        if strip {
+            // The ticks head the strip as the column names head the numbers.
+            header_spans.push(strip_separator());
+            header_spans.push(Span::styled(
+                heat_axis(&grid, first, cells, cell_width),
+                Style::default().fg(theme::inactive()),
+            ));
+        }
+
+        let mut lines = vec![Line::from(header_spans)];
         lines.extend(rows.iter().enumerate().map(|(index, row)| {
             let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
             let mut spans = vec![
@@ -318,7 +322,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(theme::accent()),
             ));
             if strip {
-                spans.push(Span::raw(" ".repeat(STRIP_GAP)));
+                spans.push(strip_separator());
                 spans.extend(grid.rows[index][first..].iter().map(|cell| {
                     let seconds = cell.num_seconds();
                     // An empty bucket keeps the surface behind it, so a strip
@@ -356,6 +360,13 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     }
 
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// What holds the strip off the `share` column: two blanks, a rule of the
+/// border's own, two blanks. Drawn on the header and on every project row, so
+/// the rule runs the height of the strip beside it.
+fn strip_separator() -> Span<'static> {
+    Span::styled("  │  ", Style::default().fg(theme::border()))
 }
 
 /// The axis that heads the strip: one tick over the cell it belongs to, as the

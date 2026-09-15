@@ -4235,10 +4235,16 @@ mod tests {
             .chars()
             .position(|c| c == '%')
             .expect("no share on the row") as u16;
+        // Two blanks, the rule of the strip's own column, two blanks.
         assert!(
-            box_lines[0].contains("share Mon"),
-            "the ticks do not head the strip: {}",
+            box_lines[0].contains("share  \u{2502}  Mon"),
+            "the ticks do not head the strip past its separator: {}",
             box_lines[0]
+        );
+        assert!(
+            box_lines[1].contains("\u{2502}"),
+            "the project row lost the separator: {}",
+            box_lines[1]
         );
 
         let screen = frame_lines(&mut app, 120, 40);
@@ -4291,8 +4297,8 @@ mod tests {
         let cells = summary_heat_cells(&mut app, 120, 40);
         let rows = app.project_summary();
         let (cell_width, _) = summary::strip_cells(
-            // the free width the one row leaves right of `share`
-            120 - 2 - 1 - "(no project)".len().max(7) - 21 - 1,
+            // the free width the one row leaves right of its separator
+            120 - 2 - 1 - "(no project)".len().max(7) - 21 - 5,
             app.project_buckets(&rows).len(),
         );
         assert_eq!(
