@@ -112,7 +112,7 @@ fn render_onboarding_layout_step(f: &mut Frame, app: &App) {
         ]),
     );
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme::overlay_bg())),
         content,
     );
 }
@@ -180,7 +180,7 @@ fn render_onboarding_skill_step(f: &mut Frame, app: &App) {
         overlay_hints(&[("y", "install"), ("n / enter", "skip"), ("esc", "skip all")]),
     );
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(theme::OVERLAY_BG)),
+        Paragraph::new(lines).style(Style::default().bg(theme::overlay_bg())),
         content,
     );
 }

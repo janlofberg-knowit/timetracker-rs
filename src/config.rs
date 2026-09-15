@@ -39,6 +39,10 @@ pub struct ThemeConfig {
     pub duration_low: Option<String>,
     pub border: Option<String>,
     pub title: Option<String>,
+    pub group_header_bg: Option<String>,
+    pub member_bg: Option<String>,
+    pub day_header_bg: Option<String>,
+    pub overlay_bg: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -303,6 +307,10 @@ fn merge_theme(b: ThemeConfig, o: ThemeConfig) -> ThemeConfig {
         duration_low: o.duration_low.or(b.duration_low),
         border: o.border.or(b.border),
         title: o.title.or(b.title),
+        group_header_bg: o.group_header_bg.or(b.group_header_bg),
+        member_bg: o.member_bg.or(b.member_bg),
+        day_header_bg: o.day_header_bg.or(b.day_header_bg),
+        overlay_bg: o.overlay_bg.or(b.overlay_bg),
     }
 }
 

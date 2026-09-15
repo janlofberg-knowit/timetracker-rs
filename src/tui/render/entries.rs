@@ -195,7 +195,7 @@ fn entry_row<'e>(
     };
 
     let row_style = match (member, stripe) {
-        (Some(_), _) => Style::default().bg(theme::MEMBER_BG),
+        (Some(_), _) => Style::default().bg(theme::member_bg()),
         (None, true) => Style::default().bg(Color::Rgb(35, 35, 35)),
         (None, false) => Style::default(),
     };
@@ -251,7 +251,7 @@ fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
         Cell::from(""),
     ])
     .height(2)
-    .style(Style::default().bg(theme::DAY_HEADER_BG))
+    .style(Style::default().bg(theme::day_header_bg()))
 }
 
 /// One issue's collapsed row: its span, its member count and id behind a
@@ -300,7 +300,7 @@ fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry])
         Cell::from(crate::duration::format(total)).style(Style::default().fg(dur_color)),
         Cell::from(icon).style(Style::default().fg(theme::active())),
     ])
-    .style(Style::default().bg(theme::GROUP_HEADER_BG))
+    .style(Style::default().bg(theme::group_header_bg()))
 }
 
 pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {

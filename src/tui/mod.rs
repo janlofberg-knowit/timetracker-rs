@@ -2964,14 +2964,14 @@ mod tests {
             "a top-level row moved:\n{screen}"
         );
 
-        assert_eq!(row_bg(&mut app, "round one"), theme::MEMBER_BG);
+        assert_eq!(row_bg(&mut app, "round one"), theme::member_bg());
         assert_eq!(
             row_bg(&mut app, "▾ 3 entries - tt/174"),
-            theme::GROUP_HEADER_BG
+            theme::group_header_bg()
         );
         assert_ne!(
             row_bg(&mut app, "hand written"),
-            theme::MEMBER_BG,
+            theme::member_bg(),
             "a top-level row was tinted"
         );
     }

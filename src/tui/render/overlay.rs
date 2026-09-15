@@ -50,7 +50,7 @@ pub(super) fn render_overlay(
 
     // `Clear` first, or the widgets underneath show through the popup's gaps.
     f.render_widget(Clear, popup_area);
-    let overlay_style = Style::default().bg(theme::OVERLAY_BG);
+    let overlay_style = Style::default().bg(theme::overlay_bg());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::accent()))
