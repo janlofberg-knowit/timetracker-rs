@@ -88,7 +88,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     plan.push((LayoutRow::Content, Constraint::Min(10)));
     plan.push((
         LayoutRow::Summary,
-        Constraint::Length(app.summary_surface_height()),
+        Constraint::Length(app.summary_surface_height(f.area().width)),
     ));
     plan.push((LayoutRow::Footer, Constraint::Length(3)));
     let rows = LayoutRows::split(f.area(), plan);

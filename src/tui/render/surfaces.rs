@@ -1,9 +1,13 @@
 use super::legend::legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tui::panes::Polarity;
-use crate::tui::summary::{SUMMARY_TOTAL_LINES, summary_total, visible_project_summary};
+use crate::tui::summary::{
+    BucketGrid, Grain, LABEL_HEADER, ProjectTotal, SUMMARY_TOTAL_LINES, label_width, strip_width,
+    summary_total, visible_project_summary,
+};
 use crate::tui::types::Pane;
 use crate::tui::{App, theme};
+use chrono::{Datelike, Timelike};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -110,8 +114,6 @@ pub(super) fn render_marks_surface(f: &mut Frame, app: &App, area: Rect) {
 /// title bar's marker names the mode and takes its colour from the same
 /// predicate the footer's total uses.
 pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
-    /// The header over the project column, and the column's floor.
-    const LABEL_HEADER: &str = "project";
     /// The right-flushed number columns. Fixed, not content-derived, so a
     /// re-scope that widens one figure cannot shift them.
     const TOTAL_WIDTH: usize = 9;
@@ -120,12 +122,6 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     // 6, not 5: `count` would touch `total`.
     const COUNT_WIDTH: usize = 6;
     const SHARE_WIDTH: usize = 6;
-    /// Widest a heat cell gets; it sheds to one column before the strip goes.
-    const CELL_WIDTH: usize = 2;
-    /// Fewest cells worth drawing: a shorter strip reads as noise, not a shape.
-    const MIN_STRIP_CELLS: usize = 6;
-    /// The blank column between `share` and the strip.
-    const STRIP_GAP: usize = 1;
 
     let focused = app.summary_is_focused();
     let mut block = Block::default()
@@ -147,10 +143,12 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
 
     // One fold for the whole frame: the marker and the rows read the same list.
     let summary = app.project_summary();
-    // Budget excludes the header and total lines; see `summary_surface_height`.
+    // Budget excludes the header, the total lines and the strip block; see
+    // `summary_surface_height`, which reserves them off the same rule.
+    let strip_height = app.summary_strip_height(area.width) as usize;
     let scoped = !summary.is_empty();
     let visible_rows = if scoped {
-        (inner.height as usize).saturating_sub(1 + SUMMARY_TOTAL_LINES as usize)
+        (inner.height as usize).saturating_sub(1 + SUMMARY_TOTAL_LINES as usize + strip_height)
     } else {
         inner.height as usize
     };
@@ -238,41 +236,9 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         ))]
     } else {
         let rows = visible_project_summary(&summary, visible_rows);
-        // One project column for the whole box, so the numbers read as columns.
-        let label_width = rows
-            .iter()
-            .map(|row| row.project.chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(LABEL_HEADER.chars().count());
-
-        // The rule under the numbers and the strip's budget read the same width.
-        let mut numbers_width = TOTAL_WIDTH + COUNT_WIDTH + SHARE_WIDTH;
-        if app.summary_split {
-            numbers_width += HUMAN_WIDTH + AGENT_WIDTH;
-        }
-
-        // The free columns right of `share`. The model returns every bucket;
-        // the width decides how many of the most recent ones are drawn.
-        let free =
-            (inner.width as usize).saturating_sub(1 + label_width + numbers_width + STRIP_GAP);
-        let (grain, buckets) = app.project_buckets(rows);
-        let bucket_count = buckets.first().map(Vec::len).unwrap_or(0);
-        let cell_width = if bucket_count * CELL_WIDTH <= free {
-            CELL_WIDTH
-        } else {
-            1
-        };
-        let drawn_cells = (free / cell_width).min(bucket_count);
-        let first_cell = bucket_count - drawn_cells;
-        let strip = drawn_cells >= MIN_STRIP_CELLS;
-        // One maximum over every cell drawn, so the rows stay comparable.
-        let peak = buckets
-            .iter()
-            .flat_map(|row| row[first_cell..].iter())
-            .map(|cell| cell.num_seconds())
-            .max()
-            .unwrap_or(0);
+        // One project column for the whole box, so the numbers read as columns
+        // and the strips under them start where their own labels end.
+        let label_width = label_width(rows);
 
         let mut header = format!(" {LABEL_HEADER:<label_width$}{:>TOTAL_WIDTH$}", "total");
         if app.summary_split {
@@ -281,16 +247,12 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         }
         header.push_str(&format!("{:>COUNT_WIDTH$}", "count"));
         header.push_str(&format!("{:>SHARE_WIDTH$}", "share"));
-        if strip {
-            header.push_str(&" ".repeat(STRIP_GAP));
-            header.push_str(grain.label());
-        }
 
         let mut lines = vec![Line::from(Span::styled(
             header,
             Style::default().fg(theme::inactive()).italic(),
         ))];
-        lines.extend(rows.iter().enumerate().map(|(index, row)| {
+        lines.extend(rows.iter().map(|row| {
             let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
             let mut spans = vec![
                 Span::styled(
@@ -320,23 +282,14 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
                 format!("{:>SHARE_WIDTH$}", format!("{}%", row.share)),
                 Style::default().fg(theme::accent()),
             ));
-            if strip {
-                spans.push(Span::raw(" ".repeat(STRIP_GAP)));
-                spans.extend(buckets[index][first_cell..].iter().map(|cell| {
-                    Span::styled(
-                        " ".repeat(cell_width),
-                        Style::default().bg(theme::heat_shade(cell.num_seconds(), peak)),
-                    )
-                }));
-            }
             Line::from(spans)
         }));
 
-        if strip {
-            heat_legend = heat_strip_legend(keys_width, inner.width);
-        }
-
         // The rule sits under the number columns only, as a hand sum does.
+        let mut numbers_width = TOTAL_WIDTH + COUNT_WIDTH + SHARE_WIDTH;
+        if app.summary_split {
+            numbers_width += HUMAN_WIDTH + AGENT_WIDTH;
+        }
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(label_width + 1)),
             Span::styled(
@@ -345,6 +298,11 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
         lines.push(total_line(label_width));
+
+        if strip_height > 0 {
+            lines.extend(heat_strip_block(app, rows, label_width, area.width));
+            heat_legend = heat_strip_legend(keys_width, inner.width);
+        }
         lines
     };
 
@@ -353,6 +311,110 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     }
 
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The heat-strip block under the total row: a blank separator, one strip per
+/// project row, and the axis. It carries its own label column, aligned with
+/// the table's, so the strips are read against the project names alone.
+fn heat_strip_block(
+    app: &App,
+    rows: &[ProjectTotal],
+    label_width: usize,
+    box_width: u16,
+) -> Vec<Line<'static>> {
+    /// Widest a cell gets, so a short period reads as a strip, not a banner.
+    const MAX_CELL_WIDTH: usize = 8;
+
+    let width = strip_width(box_width, label_width);
+    let grid = app.project_buckets(rows);
+    let buckets = grid.len();
+    if buckets == 0 || width == 0 {
+        return Vec::new();
+    }
+    let cell_width = (width / buckets).clamp(1, MAX_CELL_WIDTH);
+    // The most recent buckets stay when they cannot all fit, as the yearly
+    // overview sheds its oldest weeks.
+    let cells = (width / cell_width).min(buckets);
+    let first = buckets - cells;
+    // One maximum over every cell drawn, so the rows stay comparable.
+    let peak = grid
+        .rows
+        .iter()
+        .flat_map(|row| row[first..].iter())
+        .map(|cell| cell.num_seconds())
+        .max()
+        .unwrap_or(0);
+
+    let mut lines = vec![Line::from("")];
+    lines.extend(rows.iter().enumerate().map(|(index, row)| {
+        let pad = " ".repeat(label_width.saturating_sub(row.project.chars().count()));
+        let mut spans = vec![Span::styled(
+            format!(" {}{} ", row.project, pad),
+            Style::default().fg(theme::inactive()),
+        )];
+        spans.extend(grid.rows[index][first..].iter().map(|cell| {
+            Span::styled(
+                " ".repeat(cell_width),
+                Style::default().bg(theme::heat_shade(cell.num_seconds(), peak)),
+            )
+        }));
+        Line::from(spans)
+    }));
+    lines.push(heat_axis_line(&grid, first, cells, cell_width, label_width));
+    lines
+}
+
+/// The axis under the strips: the grain in the label column, then each tick
+/// over the cell it belongs to. A tick is cut to the room before the next one,
+/// so a dense axis abbreviates instead of running its labels together.
+fn heat_axis_line(
+    grid: &BucketGrid,
+    first: usize,
+    cells: usize,
+    cell_width: usize,
+    label_width: usize,
+) -> Line<'static> {
+    let ticks: Vec<(usize, String)> = (0..cells)
+        .filter_map(|cell| axis_tick(grid, first + cell).map(|text| (cell * cell_width, text)))
+        .collect();
+    let mut axis = vec![' '; cells * cell_width];
+    for (index, (column, text)) in ticks.iter().enumerate() {
+        let room = ticks
+            .get(index + 1)
+            .map(|(next, _)| next - column)
+            .unwrap_or(axis.len() - column);
+        for (offset, symbol) in text.chars().take(room).enumerate() {
+            axis[column + offset] = symbol;
+        }
+    }
+    Line::from(vec![
+        Span::styled(
+            format!(" {:>label_width$} ", grid.grain.label()),
+            Style::default().fg(theme::inactive()).italic(),
+        ),
+        Span::styled(
+            axis.into_iter().collect::<String>(),
+            Style::default().fg(theme::inactive()),
+        ),
+    ])
+}
+
+/// What bucket `index` is called on the axis, or `None` where no tick belongs.
+fn axis_tick(grid: &BucketGrid, index: usize) -> Option<String> {
+    /// Hours between ticks, so a day reads `00 06 12 18`.
+    const TICK_HOURS: u32 = 6;
+
+    let start = grid.start(index);
+    match grid.grain {
+        Grain::Hour => start
+            .hour()
+            .is_multiple_of(TICK_HOURS)
+            .then(|| format!("{:02}", start.hour())),
+        Grain::Day => Some(start.format("%a").to_string()),
+        // The week opening a month carries its name, as the yearly overview does.
+        Grain::Week => (start.day() <= 7).then(|| start.format("%b").to_string()),
+        Grain::Month => Some(start.format("%b").to_string()),
+    }
 }
 
 /// The strip's `Less … More` ramp for the bottom border, or `None` when it

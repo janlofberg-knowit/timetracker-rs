@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, Months, NaiveDate, NaiveDateTime, Timelike};
 
 use super::App;
 use super::panes::surface_count;
@@ -28,6 +28,18 @@ const FILTERED: &str = "filtered";
 
 /// The label for entries with no project; counted so the rows sum to the scope.
 pub(crate) const NO_PROJECT: &str = "(no project)";
+
+/// The header over the project column, and that column's floor.
+pub(crate) const LABEL_HEADER: &str = "project";
+
+/// The blank separator over the heat-strip block and the axis line under it.
+const STRIP_CHROME_LINES: u16 = 2;
+
+/// Fewest cells worth a block of its own; narrower, the strips do not appear.
+const MIN_STRIP_CELLS: usize = 6;
+
+/// One column of left padding, one space after the label, one right margin.
+const STRIP_MARGINS: usize = 3;
 
 /// The period one heat-strip cell covers, chosen by the view mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +68,36 @@ impl Grain {
             Grain::Week => "week",
             Grain::Month => "month",
         }
+    }
+}
+
+/// Per-project time buckets over one period, oldest bucket first.
+pub(crate) struct BucketGrid {
+    pub(crate) grain: Grain,
+    /// The start of bucket 0; each later bucket follows it by one grain.
+    pub(crate) anchor: NaiveDateTime,
+    /// One bucket list per row it was folded for, index for index.
+    pub(crate) rows: Vec<Vec<Duration>>,
+}
+
+impl BucketGrid {
+    /// When bucket `index` begins.
+    pub(crate) fn start(&self, index: usize) -> NaiveDateTime {
+        let index = index as i64;
+        match self.grain {
+            Grain::Hour => self.anchor + Duration::hours(index),
+            Grain::Day => self.anchor + Duration::days(index),
+            Grain::Week => self.anchor + Duration::days(index * 7),
+            Grain::Month => self
+                .anchor
+                .checked_add_months(Months::new(index as u32))
+                .unwrap_or(self.anchor),
+        }
+    }
+
+    /// Buckets per row; every row carries the same count.
+    pub(crate) fn len(&self) -> usize {
+        self.rows.first().map(Vec::len).unwrap_or(0)
     }
 }
 
@@ -136,11 +178,15 @@ impl App {
     /// to the bucket holding its `start_time`, as `year_breakdown` does, so a
     /// row's buckets sum to its [`ProjectTotal::total`]. Sheds nothing: the
     /// renderer owns the width and must take its maximum over what it draws.
-    pub(crate) fn project_buckets(&self, rows: &[ProjectTotal]) -> (Grain, Vec<Vec<Duration>>) {
+    pub(crate) fn project_buckets(&self, rows: &[ProjectTotal]) -> BucketGrid {
         let grain = Grain::for_view(self.view_mode);
         let entries = self.summary_entries();
         let Some((anchor, count)) = bucket_range(grain, &entries, self.selected_date) else {
-            return (grain, vec![Vec::new(); rows.len()]);
+            return BucketGrid {
+                grain,
+                anchor: self.selected_date.and_hms_opt(0, 0, 0).unwrap(),
+                rows: vec![Vec::new(); rows.len()],
+            };
         };
 
         let mut buckets = vec![vec![Duration::zero(); count]; rows.len()];
@@ -160,12 +206,18 @@ impl App {
                 *cell += entry.duration();
             }
         }
-        (grain, buckets)
+        BucketGrid {
+            grain,
+            anchor,
+            rows: buckets,
+        }
     }
 
     /// Height including borders. Collapsed, the box is the total row alone;
-    /// expanded, the header and the capped rows sit over the rule and the total.
-    pub(crate) fn summary_surface_height(&self) -> u16 {
+    /// expanded, the header and the capped rows sit over the rule, the total
+    /// and the heat-strip block. `width` is the box's own width, which decides
+    /// whether the strips fit; `render_summary_surface` reads the same rule.
+    pub(crate) fn summary_surface_height(&self, width: u16) -> u16 {
         if !self.show_summary {
             return 3;
         }
@@ -173,7 +225,26 @@ impl App {
         // The empty box says why it is empty, heads no columns and sums nothing.
         let header = u16::from(rows > 0);
         let total = if rows > 0 { SUMMARY_TOTAL_LINES } else { 0 };
-        2 + header + total + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
+        2 + header
+            + total
+            + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
+            + self.summary_strip_height(width)
+    }
+
+    /// Lines the heat-strip block adds under the total row: one strip per
+    /// visible project, plus its separator and its axis. Zero while the
+    /// Summary is collapsed or empty, or while the box is too narrow for a
+    /// strip worth reading.
+    pub(crate) fn summary_strip_height(&self, width: u16) -> u16 {
+        if !self.show_summary {
+            return 0;
+        }
+        let rows = self.project_summary();
+        let visible = visible_project_summary(&rows, MAX_VISIBLE_PROJECTS);
+        if visible.is_empty() || strip_width(width, label_width(visible)) < MIN_STRIP_CELLS {
+            return 0;
+        }
+        visible.len() as u16 + STRIP_CHROME_LINES
     }
 
     /// The title bar's right half: `day · all projects`, or `day · filtered`
@@ -256,6 +327,21 @@ pub(crate) fn visible_project_summary(
     &rows[..visible_rows.min(rows.len())]
 }
 
+/// The project column the table and the strip block share, so the two
+/// sections line up. Follows the longest visible name, never below the header.
+pub(crate) fn label_width(rows: &[ProjectTotal]) -> usize {
+    rows.iter()
+        .map(|row| row.project.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(LABEL_HEADER.chars().count())
+}
+
+/// The columns a strip has inside a box `box_width` wide, right of the label.
+pub(crate) fn strip_width(box_width: u16, label_width: usize) -> usize {
+    (box_width as usize).saturating_sub(2 + label_width + STRIP_MARGINS)
+}
+
 /// `shown/total` once more projects exist than fit, else `None`.
 pub(crate) fn summary_count(rows: &[ProjectTotal], visible_rows: usize) -> Option<String> {
     if rows.len() <= visible_rows {
@@ -276,8 +362,10 @@ fn project_key(entry: &TimeEntry) -> &str {
 }
 
 /// The first bucket's start and how many buckets follow it, or `None` when
-/// nothing is folded. `Day` is the seven days of the selected week and `Month`
-/// the twelve months of the selected year; `Hour` and `Week` span the entries.
+/// nothing is folded. Each grain but `Week` covers its whole period — the 24
+/// hours of the selected day, the 7 days of its week, the 12 months of its
+/// year — so the strip reads against the period, not against itself. `Week`
+/// has no bounded period to cover and spans the entries instead.
 fn bucket_range(
     grain: Grain,
     entries: &[&TimeEntry],
@@ -287,15 +375,16 @@ fn bucket_range(
     let latest = entries.iter().map(|e| e.start_time.naive_local()).max()?;
     let midnight = |date: NaiveDate| date.and_hms_opt(0, 0, 0).unwrap();
     let anchor = match grain {
-        Grain::Hour => floor_hour(earliest),
+        Grain::Hour => midnight(selected),
         Grain::Day => midnight(TimeData::week_start(selected)),
         Grain::Week => midnight(TimeData::week_start(earliest.date())),
         Grain::Month => midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
     };
     let count = match grain {
+        Grain::Hour => 24,
         Grain::Day => 7,
         Grain::Month => 12,
-        _ => (bucket_index(grain, anchor, latest) + 1).max(1) as usize,
+        Grain::Week => (bucket_index(grain, anchor, latest) + 1).max(1) as usize,
     };
     Some((anchor, count))
 }
