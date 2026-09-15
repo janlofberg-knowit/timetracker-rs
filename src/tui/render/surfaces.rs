@@ -379,9 +379,10 @@ fn heat_axis(grid: &BucketGrid, first: usize, cells: usize, cell_width: usize) -
         .collect();
     let mut axis = vec![' '; cells * cell_width];
     for (index, (column, text)) in ticks.iter().enumerate() {
+        // One column short of the next tick, so neighbours never touch.
         let room = ticks
             .get(index + 1)
-            .map(|(next, _)| next - column)
+            .map(|(next, _)| (next - column).saturating_sub(1).max(1))
             .unwrap_or(axis.len() - column);
         for (offset, symbol) in text.chars().take(room).enumerate() {
             axis[column + offset] = symbol;
