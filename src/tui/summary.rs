@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 
-use chrono::Duration;
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 
 use super::App;
 use super::panes::surface_count;
-use super::types::Focus;
+use super::types::{Focus, ViewMode};
+use crate::tracker::{TimeData, TimeEntry};
 
 /// Most project rows the surface shows before the rest live in the border count.
 const MAX_VISIBLE_PROJECTS: usize = 6;
@@ -27,6 +28,36 @@ const FILTERED: &str = "filtered";
 
 /// The label for entries with no project; counted so the rows sum to the scope.
 pub(crate) const NO_PROJECT: &str = "(no project)";
+
+/// The period one heat-strip cell covers, chosen by the view mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grain {
+    Hour,
+    Day,
+    Week,
+    Month,
+}
+
+impl Grain {
+    pub(crate) fn for_view(view: ViewMode) -> Self {
+        match view {
+            ViewMode::Day => Grain::Hour,
+            ViewMode::Week => Grain::Day,
+            ViewMode::All => Grain::Week,
+            ViewMode::Overview => Grain::Month,
+        }
+    }
+
+    /// The one-word period name, for the column head over the strip.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Grain::Hour => "hour",
+            Grain::Day => "day",
+            Grain::Week => "week",
+            Grain::Month => "month",
+        }
+    }
+}
 
 /// One row: a project, its time in the scope, its entry count and its share.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,28 +75,26 @@ pub(crate) struct ProjectTotal {
 }
 
 impl App {
+    /// The entry set both the rows and the heat strips fold.
+    fn summary_entries(&self) -> Vec<&TimeEntry> {
+        if self.summary_follows_filters {
+            self.filtered_entries()
+        } else {
+            self.scope_entries()
+        }
+    }
+
     /// Per-project totals, largest first. Folds
     /// [`filtered_entries`](Self::filtered_entries) while
     /// `summary_follows_filters` is on — the panes and the `/` search term —
     /// else [`scope_entries`](Self::scope_entries). Nothing folded gives an
     /// empty list.
     pub(crate) fn project_summary(&self) -> Vec<ProjectTotal> {
-        let entries = if self.summary_follows_filters {
-            self.filtered_entries()
-        } else {
-            self.scope_entries()
-        };
+        let entries = self.summary_entries();
         // (total, human, agent, entries)
         let mut totals: HashMap<&str, (Duration, Duration, Duration, usize)> = HashMap::new();
         for entry in &entries {
-            // Empty-after-trim counts as absent, as the form and `pane_values` do.
-            let project = entry.project.as_deref().map(str::trim).unwrap_or("");
-            let key = if project.is_empty() {
-                NO_PROJECT
-            } else {
-                project
-            };
-            let row = totals.entry(key).or_insert((
+            let row = totals.entry(project_key(entry)).or_insert((
                 Duration::zero(),
                 Duration::zero(),
                 Duration::zero(),
@@ -100,6 +129,38 @@ impl App {
                 .then_with(|| a.project.cmp(&b.project))
         });
         rows
+    }
+
+    /// The grain of the current view plus one bucket list per row of `rows`,
+    /// index for index, oldest bucket first. Every entry's whole duration goes
+    /// to the bucket holding its `start_time`, as `year_breakdown` does, so a
+    /// row's buckets sum to its [`ProjectTotal::total`]. Sheds nothing: the
+    /// renderer owns the width and must take its maximum over what it draws.
+    pub(crate) fn project_buckets(&self, rows: &[ProjectTotal]) -> (Grain, Vec<Vec<Duration>>) {
+        let grain = Grain::for_view(self.view_mode);
+        let entries = self.summary_entries();
+        let Some((anchor, count)) = bucket_range(grain, &entries, self.selected_date) else {
+            return (grain, vec![Vec::new(); rows.len()]);
+        };
+
+        let mut buckets = vec![vec![Duration::zero(); count]; rows.len()];
+        let row_of: HashMap<&str, usize> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.project.as_str(), index))
+            .collect();
+        for entry in &entries {
+            let Some(&row) = row_of.get(project_key(entry)) else {
+                continue;
+            };
+            let slot = bucket_index(grain, anchor, entry.start_time.naive_local());
+            if let Ok(slot) = usize::try_from(slot)
+                && let Some(cell) = buckets[row].get_mut(slot)
+            {
+                *cell += entry.duration();
+            }
+        }
+        (grain, buckets)
     }
 
     /// Height including borders. Collapsed, the box is the total row alone;
@@ -203,6 +264,60 @@ pub(crate) fn summary_count(rows: &[ProjectTotal], visible_rows: usize) -> Optio
     surface_count(None, rows.len(), visible_rows)
 }
 
+/// The summary row an entry belongs to: its trimmed project, or [`NO_PROJECT`].
+/// Empty-after-trim counts as absent, as the form and `pane_values` do.
+fn project_key(entry: &TimeEntry) -> &str {
+    let project = entry.project.as_deref().map(str::trim).unwrap_or("");
+    if project.is_empty() {
+        NO_PROJECT
+    } else {
+        project
+    }
+}
+
+/// The first bucket's start and how many buckets follow it, or `None` when
+/// nothing is folded. `Day` is the seven days of the selected week and `Month`
+/// the twelve months of the selected year; `Hour` and `Week` span the entries.
+fn bucket_range(
+    grain: Grain,
+    entries: &[&TimeEntry],
+    selected: NaiveDate,
+) -> Option<(NaiveDateTime, usize)> {
+    let earliest = entries.iter().map(|e| e.start_time.naive_local()).min()?;
+    let latest = entries.iter().map(|e| e.start_time.naive_local()).max()?;
+    let midnight = |date: NaiveDate| date.and_hms_opt(0, 0, 0).unwrap();
+    let anchor = match grain {
+        Grain::Hour => floor_hour(earliest),
+        Grain::Day => midnight(TimeData::week_start(selected)),
+        Grain::Week => midnight(TimeData::week_start(earliest.date())),
+        Grain::Month => midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
+    };
+    let count = match grain {
+        Grain::Day => 7,
+        Grain::Month => 12,
+        _ => (bucket_index(grain, anchor, latest) + 1).max(1) as usize,
+    };
+    Some((anchor, count))
+}
+
+/// How many grains `start` sits past `anchor`. Reads the start alone, never the
+/// span, so an entry is never shared between the buckets it runs through.
+fn bucket_index(grain: Grain, anchor: NaiveDateTime, start: NaiveDateTime) -> i64 {
+    match grain {
+        Grain::Hour => (floor_hour(start) - anchor).num_hours(),
+        Grain::Day => (start.date() - anchor.date()).num_days(),
+        Grain::Week => (start.date() - anchor.date()).num_days().div_euclid(7),
+        Grain::Month => {
+            (i64::from(start.year()) - i64::from(anchor.year())) * 12 + i64::from(start.month())
+                - i64::from(anchor.month())
+        }
+    }
+}
+
+fn floor_hour(at: NaiveDateTime) -> NaiveDateTime {
+    at.date().and_hms_opt(at.hour(), 0, 0).unwrap()
+}
+
 /// `part` as a whole-percent share of `whole`, in seconds; a zero `whole` is 0%.
 fn share_of(part: Duration, whole: i64) -> u16 {
     if whole <= 0 {
@@ -211,4 +326,48 @@ fn share_of(part: Duration, whole: i64) -> u16 {
     let part = part.num_seconds().max(0);
     // Round half up in integers, so the same input always gives the same point.
     (((part * 200) / whole + 1) / 2) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn every_view_mode_maps_to_its_own_grain() {
+        assert_eq!(Grain::for_view(ViewMode::Day), Grain::Hour);
+        assert_eq!(Grain::for_view(ViewMode::Week), Grain::Day);
+        assert_eq!(Grain::for_view(ViewMode::All), Grain::Week);
+        assert_eq!(Grain::for_view(ViewMode::Overview), Grain::Month);
+    }
+
+    /// The index keys on the start alone, so a span never reaches the next bucket.
+    #[test]
+    fn a_bucket_index_counts_grains_from_the_anchor_to_the_start() {
+        let anchor = at(2026, 1, 1, 0, 0);
+        assert_eq!(
+            bucket_index(Grain::Hour, anchor, at(2026, 1, 1, 23, 30)),
+            23
+        );
+        assert_eq!(bucket_index(Grain::Hour, anchor, at(2026, 1, 2, 0, 30)), 24);
+        assert_eq!(bucket_index(Grain::Day, anchor, at(2026, 1, 2, 0, 30)), 1);
+        assert_eq!(bucket_index(Grain::Week, anchor, at(2026, 1, 15, 9, 0)), 2);
+        assert_eq!(
+            bucket_index(Grain::Month, anchor, at(2026, 12, 31, 9, 0)),
+            11
+        );
+        assert_eq!(bucket_index(Grain::Month, anchor, at(2027, 2, 1, 9, 0)), 13);
+    }
+
+    #[test]
+    fn a_grain_names_the_period_one_cell_covers() {
+        assert_eq!(Grain::Hour.label(), "hour");
+        assert_eq!(Grain::Month.label(), "month");
+    }
 }

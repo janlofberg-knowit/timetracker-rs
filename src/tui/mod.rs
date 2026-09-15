@@ -3805,6 +3805,86 @@ mod tests {
         assert_eq!(summary(&app), "(no project)=0m/1/0% tt=0m/1/0%");
     }
 
+    /// Every bucket list rebuilds the total printed on its own row, in every
+    /// view, so a strip can never disagree with the row it sits on.
+    #[test]
+    fn project_buckets_sum_to_the_row_total_in_every_view() {
+        let _guard = env_guard();
+        sandbox("summary-buckets-sum");
+        let mut app = seed_summary();
+
+        for (mode, name) in scopes()
+            .into_iter()
+            .chain([(ViewMode::Overview, "overview")])
+        {
+            app.view_mode = mode;
+            let rows = app.project_summary();
+            let (_, buckets) = app.project_buckets(&rows);
+            assert_eq!(buckets.len(), rows.len(), "{name}: a row lost its buckets");
+            for (row, cells) in rows.iter().zip(&buckets) {
+                let summed = cells.iter().fold(chrono::Duration::zero(), |a, c| a + *c);
+                assert_eq!(summed, row.total, "{name}: {} lost time", row.project);
+            }
+        }
+    }
+
+    /// An entry that runs past midnight stays whole in the hour it started.
+    #[test]
+    fn an_entry_lands_wholly_in_the_bucket_holding_its_start() {
+        let _guard = env_guard();
+        sandbox("summary-buckets-start");
+        let today = Local::now().date_naive();
+        let mut late = logged(1, "over midnight", "tt", &[], today, 60);
+        late.start_time = today
+            .and_hms_opt(23, 30, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        late.end_time = Some(late.start_time + chrono::Duration::minutes(60));
+        seed(vec![logged(0, "morning", "tt", &[], today, 30), late], 2);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+
+        let rows = app.project_summary();
+        let (grain, buckets) = app.project_buckets(&rows);
+        assert_eq!(grain, super::summary::Grain::Hour);
+        let cells = &buckets[0];
+        assert_eq!(cells.len(), 15, "09:00 to 23:00 inclusive");
+        assert_eq!(cells[0].num_minutes(), 30);
+        assert_eq!(cells[14].num_minutes(), 60, "the whole hour-long entry");
+        assert_eq!(
+            cells[1..14]
+                .iter()
+                .fold(chrono::Duration::zero(), |a, c| a + *c),
+            chrono::Duration::zero(),
+            "time leaked into the hours between"
+        );
+    }
+
+    /// Bucket lists are index for index with the rows they were given.
+    #[test]
+    fn project_buckets_line_up_with_the_rows_they_were_given() {
+        let _guard = env_guard();
+        sandbox("summary-buckets-order");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+
+        let rows = app.project_summary();
+        let (grain, buckets) = app.project_buckets(&rows);
+        assert_eq!(grain, super::summary::Grain::Day);
+        let minutes = |name: &str| {
+            let index = rows.iter().position(|row| row.project == name).unwrap();
+            buckets[index]
+                .iter()
+                .map(|cell| cell.num_minutes())
+                .collect::<Vec<_>>()
+        };
+        // vinge is logged on day two alone, tt on day one alone.
+        assert_eq!(minutes("vinge"), vec![0, 120, 0, 0, 0, 0, 0]);
+        assert_eq!(minutes("tt"), vec![90, 0, 0, 0, 0, 0, 0]);
+    }
+
     /// The drawn Summary box, between its top and bottom borders.
     fn summary_box(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let screen = frame_lines(app, width, height);
