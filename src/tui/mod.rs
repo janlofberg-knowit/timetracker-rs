@@ -4088,6 +4088,150 @@ mod tests {
         assert_eq!(narrow.len(), 5, "{narrow:#?}");
     }
 
+    /// The heat-strip cells inside the drawn Summary box, as `(x, y, colour)`.
+    /// `frame_lines` collects symbols alone, so a strip of blank coloured cells
+    /// is invisible to it; this reads the background the cell really carries.
+    fn summary_heat_cells(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> Vec<(u16, u16, ratatui::style::Color)> {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let palette: Vec<_> = [(0, 1), (1, 4), (1, 2), (3, 4), (1, 1)]
+            .into_iter()
+            .map(|(part, max)| super::theme::heat_shade(part, max))
+            .collect();
+        let row_text = |y: u16| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let top = (0..height)
+            .find(|y| row_text(*y).contains("Summary (S)"))
+            .expect("no Summary box");
+        let bottom = (top + 1..height)
+            .find(|y| row_text(*y).contains('\u{2518}'))
+            .expect("no Summary foot");
+        (top + 1..bottom)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|(x, y)| palette.contains(&buffer[(*x, *y)].bg))
+            .map(|(x, y)| (x, y, buffer[(x, y)].bg))
+            .collect()
+    }
+
+    /// Expanded, each project row carries a strip right of its share, the
+    /// header names the grain, and the busiest bucket of the grid is hottest.
+    #[test]
+    fn the_expanded_summary_draws_a_heat_strip_right_of_the_share_column() {
+        let _guard = env_guard();
+        sandbox("summary-strip-draw");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+
+        let box_lines = summary_box(&mut app, 120, 40);
+        assert!(
+            box_lines[0].contains("share day"),
+            "the header does not name the grain over the strip: {}",
+            box_lines[0]
+        );
+        let share_end = box_lines[1]
+            .chars()
+            .position(|c| c == '%')
+            .expect("no share on the row") as u16;
+
+        let cells = summary_heat_cells(&mut app, 120, 40);
+        assert!(!cells.is_empty(), "no strip:\n{}", box_lines.join("\n"));
+        assert!(
+            cells.iter().all(|(x, _, _)| *x > share_end),
+            "a strip cell sits on the share column"
+        );
+        // vinge's 120m is the largest bucket of the grid, so it alone is hottest.
+        let hottest: Vec<u16> = cells
+            .iter()
+            .filter(|(_, _, color)| *color == super::theme::heat_shade(1, 1))
+            .map(|(_, y, _)| *y)
+            .collect();
+        assert_eq!(hottest.len(), 2, "one two-column cell holds the maximum");
+        let screen = frame_lines(&mut app, 120, 40);
+        assert!(
+            hottest
+                .iter()
+                .all(|y| screen[*y as usize].contains("vinge")),
+            "the hottest cell is not on the busiest project's row"
+        );
+        assert!(
+            box_lines.iter().all(|line| line.ends_with('\u{2502}')),
+            "a strip ran over the right border:\n{}",
+            box_lines.join("\n")
+        );
+    }
+
+    /// The collapsed box is the total line alone; no strip comes with it.
+    #[test]
+    fn a_collapsed_summary_draws_no_heat_strip() {
+        let _guard = env_guard();
+        sandbox("summary-strip-collapsed");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+
+        assert!(summary_heat_cells(&mut app, 120, 40).is_empty());
+    }
+
+    /// Too narrow for a readable strip, the box drops it rather than drawing a
+    /// stub, and every row stays inside the border.
+    #[test]
+    fn a_narrow_summary_sheds_the_heat_strip_whole() {
+        let _guard = env_guard();
+        sandbox("summary-strip-shed");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+        app.toggle_summary_split();
+
+        assert!(
+            summary_heat_cells(&mut app, 60, 40).is_empty(),
+            "a stub strip"
+        );
+        let box_lines = summary_box(&mut app, 60, 40);
+        assert!(
+            box_lines.iter().all(|line| line.ends_with('\u{2502}')),
+            "a row ran over the right border:\n{}",
+            box_lines.join("\n")
+        );
+    }
+
+    /// The columns the strip sits beside are unchanged in either split mode.
+    #[test]
+    fn the_heat_strip_leaves_the_number_columns_alone() {
+        let _guard = env_guard();
+        sandbox("summary-strip-columns");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+
+        for split in [false, true] {
+            if split {
+                app.toggle_summary_split();
+            }
+            let box_lines = summary_box(&mut app, 120, 40);
+            assert!(box_lines[0].contains("count share"), "{}", box_lines[0]);
+            assert!(box_lines[1].contains("2h 0m"), "{}", box_lines[1]);
+            assert!(
+                box_lines[1].contains("32%"),
+                "split={split}: {}",
+                box_lines[1]
+            );
+            assert!(
+                !summary_heat_cells(&mut app, 120, 40).is_empty(),
+                "split={split}: no strip"
+            );
+        }
+    }
+
     /// `nothing in scope` keeps the box it has: no header over an empty surface.
     #[test]
     fn an_empty_summary_scope_gets_no_header_row() {
