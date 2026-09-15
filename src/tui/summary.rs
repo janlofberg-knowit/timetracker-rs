@@ -29,18 +29,6 @@ const FILTERED: &str = "filtered";
 /// The label for entries with no project; counted so the rows sum to the scope.
 pub(crate) const NO_PROJECT: &str = "(no project)";
 
-/// The header over the project column, and that column's floor.
-pub(crate) const LABEL_HEADER: &str = "project";
-
-/// The blank separator over the heat-strip block and the axis line under it.
-const STRIP_CHROME_LINES: u16 = 2;
-
-/// Fewest cells worth a block of its own; narrower, the strips do not appear.
-const MIN_STRIP_CELLS: usize = 6;
-
-/// One column of left padding, one space after the label, one right margin.
-const STRIP_MARGINS: usize = 3;
-
 /// The period one heat-strip cell covers, chosen by the view mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Grain {
@@ -57,16 +45,6 @@ impl Grain {
             ViewMode::Week => Grain::Day,
             ViewMode::All => Grain::Week,
             ViewMode::Overview => Grain::Month,
-        }
-    }
-
-    /// The one-word period name, for the column head over the strip.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Grain::Hour => "hour",
-            Grain::Day => "day",
-            Grain::Week => "week",
-            Grain::Month => "month",
         }
     }
 }
@@ -214,10 +192,9 @@ impl App {
     }
 
     /// Height including borders. Collapsed, the box is the total row alone;
-    /// expanded, the header and the capped rows sit over the rule, the total
-    /// and the heat-strip block. `width` is the box's own width, which decides
-    /// whether the strips fit; `render_summary_surface` reads the same rule.
-    pub(crate) fn summary_surface_height(&self, width: u16) -> u16 {
+    /// expanded, the header and the capped rows sit over the rule and the
+    /// total. The strips ride the rows they belong to, so they cost no line.
+    pub(crate) fn summary_surface_height(&self) -> u16 {
         if !self.show_summary {
             return 3;
         }
@@ -225,26 +202,7 @@ impl App {
         // The empty box says why it is empty, heads no columns and sums nothing.
         let header = u16::from(rows > 0);
         let total = if rows > 0 { SUMMARY_TOTAL_LINES } else { 0 };
-        2 + header
-            + total
-            + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
-            + self.summary_strip_height(width)
-    }
-
-    /// Lines the heat-strip block adds under the total row: one strip per
-    /// visible project, plus its separator and its axis. Zero while the
-    /// Summary is collapsed or empty, or while the box is too narrow for a
-    /// strip worth reading.
-    pub(crate) fn summary_strip_height(&self, width: u16) -> u16 {
-        if !self.show_summary {
-            return 0;
-        }
-        let rows = self.project_summary();
-        let visible = visible_project_summary(&rows, MAX_VISIBLE_PROJECTS);
-        if visible.is_empty() || strip_width(width, label_width(visible)) < MIN_STRIP_CELLS {
-            return 0;
-        }
-        visible.len() as u16 + STRIP_CHROME_LINES
+        2 + header + total + rows.clamp(1, MAX_VISIBLE_PROJECTS) as u16
     }
 
     /// The title bar's right half: `day · all projects`, or `day · filtered`
@@ -327,19 +285,17 @@ pub(crate) fn visible_project_summary(
     &rows[..visible_rows.min(rows.len())]
 }
 
-/// The project column the table and the strip block share, so the two
-/// sections line up. Follows the longest visible name, never below the header.
-pub(crate) fn label_width(rows: &[ProjectTotal]) -> usize {
-    rows.iter()
-        .map(|row| row.project.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(LABEL_HEADER.chars().count())
-}
-
-/// The columns a strip has inside a box `box_width` wide, right of the label.
-pub(crate) fn strip_width(box_width: u16, label_width: usize) -> usize {
-    (box_width as usize).saturating_sub(2 + label_width + STRIP_MARGINS)
+/// How wide each cell is and how many of the newest buckets are drawn, for a
+/// strip with `available` columns. The cells stretch to the columns the row
+/// really has; once one column each is too many, the oldest buckets shed, as
+/// `render_overview` sheds its oldest weeks. Only the remainder of the even
+/// division is left over, so the strip is never a whole cell short.
+pub(crate) fn strip_cells(available: usize, buckets: usize) -> (usize, usize) {
+    if buckets == 0 {
+        return (1, 0);
+    }
+    let cell_width = (available / buckets).max(1);
+    (cell_width, (available / cell_width).min(buckets))
 }
 
 /// `shown/total` once more projects exist than fit, else `None`.
@@ -454,9 +410,28 @@ mod tests {
         assert_eq!(bucket_index(Grain::Month, anchor, at(2027, 2, 1, 9, 0)), 13);
     }
 
+    /// The cells fill the row: what is left over is under one cell's worth,
+    /// and a row too narrow for the buckets sheds instead of shrinking further.
     #[test]
-    fn a_grain_names_the_period_one_cell_covers() {
-        assert_eq!(Grain::Hour.label(), "hour");
-        assert_eq!(Grain::Month.label(), "month");
+    fn strip_cells_fill_the_room_and_then_shed() {
+        for buckets in [1usize, 7, 12, 24, 53] {
+            for available in 0..200usize {
+                let (cell_width, cells) = strip_cells(available, buckets);
+                assert!(cell_width >= 1, "a cell is never nothing");
+                assert!(cells <= buckets, "more cells drawn than buckets held");
+                assert!(cells * cell_width <= available, "the strip overran");
+                if available >= buckets {
+                    assert_eq!(cells, buckets, "every bucket fits and must be drawn");
+                    assert!(
+                        available - cells * cell_width < buckets,
+                        "{available} columns over {buckets} buckets left a whole cell unused"
+                    );
+                } else {
+                    assert_eq!(cell_width, 1, "a shed strip keeps the narrowest cell");
+                    assert_eq!(cells, available, "a shed strip fills what is left");
+                }
+            }
+        }
+        assert_eq!(strip_cells(40, 0), (1, 0), "nothing folded draws nothing");
     }
 }

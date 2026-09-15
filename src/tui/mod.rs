@@ -3942,8 +3942,8 @@ mod tests {
 
         app.toggle_summary();
         let expanded = summary_box(&mut app, 100, 40);
-        // header, two projects, rule, total, then the strip block
-        assert_eq!(expanded.len(), 9, "{expanded:#?}");
+        // header, two projects, rule, total
+        assert_eq!(expanded.len(), 5, "{expanded:#?}");
         assert!(
             expanded[3].contains("\u{2500}\u{2500}"),
             "no rule: {}",
@@ -4094,7 +4094,7 @@ mod tests {
         );
         assert!(!narrow[1].contains('%'), "the share column survived");
         // One line per project still, so nothing wrapped onto a second row.
-        assert_eq!(narrow.len(), 9, "{narrow:#?}");
+        assert_eq!(narrow.len(), 5, "{narrow:#?}");
     }
 
     /// The heat-strip cells inside the drawn Summary box, as `(x, y, colour)`.
@@ -4131,62 +4131,11 @@ mod tests {
             .collect()
     }
 
-    /// The strip block sits under the total row, one strip per project, over
-    /// an axis that names the grain. The table itself carries no heat.
+    /// Four projects, each busy on its own weekday. Each strip must ride its
+    /// own project's row: one strip per row, the busy cell moving one place
+    /// right as the rows go down, and no cell shared between two rows.
     #[test]
-    fn the_heat_strips_sit_in_a_block_under_the_summary_table() {
-        let _guard = env_guard();
-        sandbox("summary-strip-block");
-        let mut app = seed_summary();
-        app.view_mode = ViewMode::Week;
-        app.toggle_summary();
-
-        let box_lines = summary_box(&mut app, 120, 40);
-        // header, four projects, rule, total, separator, four strips, axis
-        assert_eq!(box_lines.len(), 13, "{box_lines:#?}");
-        assert_eq!(
-            box_lines[7].trim_matches('\u{2502}').trim(),
-            "",
-            "no blank line separates the strips from the table"
-        );
-        // The strips repeat the names, so each is read against its own project.
-        assert!(box_lines[8].contains("vinge"), "{}", box_lines[8]);
-        assert!(box_lines[12].contains("day"), "the axis: {}", box_lines[12]);
-
-        let screen = frame_lines(&mut app, 120, 40);
-        let top = screen
-            .iter()
-            .position(|line| line.contains("Summary (S)"))
-            .unwrap() as u16;
-        let cells = summary_heat_cells(&mut app, 120, 40);
-        assert!(!cells.is_empty(), "no strip:\n{}", box_lines.join("\n"));
-        assert!(
-            cells.iter().all(|(_, y, _)| *y >= top + 9),
-            "a heat cell fell on the table rather than the strip block"
-        );
-        // vinge's Tuesday is the largest bucket, so it alone is hottest.
-        let hottest: Vec<u16> = cells
-            .iter()
-            .filter(|(_, _, color)| *color == super::theme::heat_shade(1, 1))
-            .map(|(_, y, _)| *y)
-            .collect();
-        assert!(!hottest.is_empty(), "nothing carries the grid maximum");
-        assert!(
-            hottest.iter().all(|y| *y == top + 9),
-            "the hottest cells are not on the busiest project's strip"
-        );
-        assert!(
-            box_lines.iter().all(|line| line.ends_with('\u{2502}')),
-            "a strip ran over the right border:\n{}",
-            box_lines.join("\n")
-        );
-    }
-
-    /// Four projects, each busy on its own weekday. Each strip must carry its
-    /// own project's buckets on its own line: one line per row, the busy cell
-    /// moving one place right as the rows go down, and no cell shared.
-    #[test]
-    fn every_project_gets_its_own_strip_line_aligned_with_its_row() {
+    fn every_project_gets_its_own_strip_on_its_own_row() {
         let _guard = env_guard();
         sandbox("summary-strip-alignment");
         let week = TimeData::week_start(Local::now().date_naive());
@@ -4215,12 +4164,8 @@ mod tests {
 
         for width in [60u16, 90, 120, 200] {
             let cells = summary_heat_cells(&mut app, width, 40);
-            let busy = super::theme::heat_shade(1, 1);
             let mut lines: Vec<(u16, Vec<u16>)> = Vec::new();
-            for (x, y, color) in cells {
-                if color != busy {
-                    continue;
-                }
+            for (x, y, _) in cells {
                 match lines.iter_mut().find(|(row, _)| *row == y) {
                     Some((_, columns)) => columns.push(x),
                     None => lines.push((y, vec![x])),
@@ -4230,13 +4175,21 @@ mod tests {
             assert_eq!(
                 lines.len(),
                 names.len(),
-                "width {width}: {} strips carry time, not {}",
+                "width {width}: {} rows carry a strip, not {}",
                 lines.len(),
                 names.len()
             );
+            // Each row sits one line under the last, as its table row does.
+            for pair in lines.windows(2) {
+                assert_eq!(
+                    pair[1].0,
+                    pair[0].0 + 1,
+                    "width {width}: the strips left their own rows"
+                );
+            }
             let mut last_start = None;
             let mut cell_width = None;
-            for (index, (y, columns)) in lines.iter().enumerate() {
+            for (index, (_, columns)) in lines.iter().enumerate() {
                 let mut columns = columns.clone();
                 columns.sort_unstable();
                 let start = columns[0];
@@ -4261,64 +4214,111 @@ mod tests {
                     );
                 }
                 last_start = Some(start);
-                assert_eq!(
-                    lines.iter().filter(|(row, _)| row == y).count(),
-                    1,
-                    "two projects share one strip line"
-                );
             }
         }
     }
 
-    /// Every view names its grain on the axis and ticks the period it covers.
+    /// The strip rides the project's own row, right of `share`, and the ticks
+    /// head it in the same columns. Only worked buckets carry colour.
     #[test]
-    fn the_strip_axis_names_the_grain_and_ticks_its_period() {
+    fn the_expanded_summary_draws_a_heat_strip_right_of_the_share_column() {
+        let _guard = env_guard();
+        sandbox("summary-strip-draw");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+
+        let box_lines = summary_box(&mut app, 120, 40);
+        // header, four projects, rule, total: the strips cost no line.
+        assert_eq!(box_lines.len(), 7, "{box_lines:#?}");
+        let share_end = box_lines[1]
+            .chars()
+            .position(|c| c == '%')
+            .expect("no share on the row") as u16;
+        assert!(
+            box_lines[0].contains("share Mon"),
+            "the ticks do not head the strip: {}",
+            box_lines[0]
+        );
+
+        let screen = frame_lines(&mut app, 120, 40);
+        let top = screen
+            .iter()
+            .position(|line| line.contains("Summary (S)"))
+            .unwrap() as u16;
+        let cells = summary_heat_cells(&mut app, 120, 40);
+        assert!(!cells.is_empty(), "no strip:\n{}", box_lines.join("\n"));
+        assert!(
+            cells.iter().all(|(x, _, _)| *x > share_end),
+            "a strip cell sits on the share column"
+        );
+        // The rows run from the line under the header to the rule above the
+        // total, so nothing is painted on the header, the rule or the total.
+        assert!(
+            cells.iter().all(|(_, y, _)| *y > top + 1 && *y <= top + 5),
+            "a heat cell fell outside the project rows"
+        );
+        // vinge's Tuesday is the largest bucket, so it alone is hottest.
+        let hottest: Vec<u16> = cells
+            .iter()
+            .filter(|(_, _, color)| *color == super::theme::heat_shade(1, 1))
+            .map(|(_, y, _)| *y)
+            .collect();
+        assert!(!hottest.is_empty(), "nothing carries the grid maximum");
+        assert!(
+            hottest.iter().all(|y| *y == top + 2),
+            "the hottest cells are not on the busiest project's row"
+        );
+        assert!(
+            box_lines.iter().all(|line| line.ends_with('\u{2502}')),
+            "a strip ran over the right border:\n{}",
+            box_lines.join("\n")
+        );
+    }
+
+    /// An empty bucket keeps the surface behind it: only worked time is drawn.
+    #[test]
+    fn an_empty_bucket_carries_no_colour_of_its_own() {
+        let _guard = env_guard();
+        sandbox("summary-strip-empty");
+        let today = Local::now().date_naive();
+        seed(vec![logged(0, "one hour", "tt", &[], today, 60)], 1);
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.toggle_summary();
+
+        let cells = summary_heat_cells(&mut app, 120, 40);
+        let rows = app.project_summary();
+        let (cell_width, _) = summary::strip_cells(
+            // the free width the one row leaves right of `share`
+            120 - 2 - 1 - "(no project)".len().max(7) - 21 - 1,
+            app.project_buckets(&rows).len(),
+        );
+        assert_eq!(
+            cells.len(),
+            cell_width,
+            "the empty hours of the day were painted too"
+        );
+    }
+
+    /// Every view heads its strip with the ticks of the period it covers.
+    #[test]
+    fn the_strip_ticks_head_the_period_each_view_covers() {
         let _guard = env_guard();
         sandbox("summary-strip-axis");
         let mut app = seed_summary();
         app.toggle_summary();
 
         for (mode, ticks) in [
-            (ViewMode::Day, vec!["hour", "00", "06", "12", "18"]),
-            (ViewMode::Week, vec!["day", "Mon", "Sun"]),
-            (ViewMode::All, vec!["week"]),
-            (ViewMode::Overview, vec!["month", "Jan", "Dec"]),
+            (ViewMode::Day, vec!["00", "06", "12", "18"]),
+            (ViewMode::Week, vec!["Mon", "Sun"]),
+            (ViewMode::Overview, vec!["Jan", "Dec"]),
         ] {
             app.view_mode = mode;
-            let box_lines = summary_box(&mut app, 120, 40);
-            let axis = box_lines.last().unwrap();
+            let header = summary_box(&mut app, 120, 40)[0].clone();
             for tick in ticks {
-                assert!(axis.contains(tick), "no `{tick}` on the axis: {axis}");
-            }
-        }
-    }
-
-    /// The strip stretches its cells to the columns the box really has, in
-    /// every view, rather than leaving most of the row blank.
-    #[test]
-    fn the_strip_fills_the_width_it_is_given() {
-        let _guard = env_guard();
-        sandbox("summary-strip-fills");
-        let mut app = seed_summary();
-        app.toggle_summary();
-
-        for (mode, name) in scopes().into_iter().chain([(ViewMode::Overview, "year")]) {
-            app.view_mode = mode;
-            for width in [70u16, 120, 200] {
-                let rows = app.project_summary();
-                let visible = summary::visible_project_summary(&rows, 6);
-                let available = summary::strip_width(width, summary::label_width(visible));
-                let buckets = app.project_buckets(visible).len();
-                let cells = summary_heat_cells(&mut app, width, 40);
-                let left = cells.iter().map(|(x, _, _)| *x).min().unwrap();
-                let right = cells.iter().map(|(x, _, _)| *x).max().unwrap();
-                let drawn = (right - left + 1) as usize;
-                // The cells divide the width evenly, so only the remainder is
-                // left over: never more than one column short of a cell each.
-                assert!(
-                    drawn + buckets >= available,
-                    "{name} at {width}: the strip covers {drawn} of {available} columns"
-                );
+                assert!(header.contains(tick), "no `{tick}` on the header: {header}");
             }
         }
     }
@@ -4331,57 +4331,35 @@ mod tests {
         let mut app = seed_summary();
         app.view_mode = ViewMode::Week;
 
-        assert_eq!(app.summary_strip_height(120), 0);
         assert!(summary_heat_cells(&mut app, 120, 40).is_empty());
     }
 
-    /// Too narrow for a strip worth reading, the box drops the whole block
-    /// rather than reserving lines for a stub.
+    /// Too narrow for a strip worth reading, the row drops it whole rather
+    /// than drawing a stub, and no row runs over the border.
     #[test]
-    fn a_narrow_summary_drops_the_whole_strip_block() {
+    fn a_narrow_summary_sheds_the_heat_strip_whole() {
         let _guard = env_guard();
-        sandbox("summary-strip-narrow");
+        sandbox("summary-strip-shed");
         let mut app = seed_summary();
         app.view_mode = ViewMode::Week;
         app.toggle_summary();
+        app.toggle_summary_split();
 
-        assert_eq!(app.summary_strip_height(22), 0, "a stub block");
-        assert!(summary_heat_cells(&mut app, 22, 40).is_empty());
-        let box_lines = summary_box(&mut app, 22, 40);
-        assert_eq!(box_lines.len(), 7, "the table alone: {box_lines:#?}");
+        assert!(
+            summary_heat_cells(&mut app, 60, 40).is_empty(),
+            "a stub strip"
+        );
+        let box_lines = summary_box(&mut app, 60, 40);
+        assert!(
+            box_lines.iter().all(|line| line.ends_with('\u{2502}')),
+            "a row ran over the right border:\n{}",
+            box_lines.join("\n")
+        );
     }
 
-    /// The reserved height is exactly what the block draws, so the box never
-    /// clips a strip or keeps a blank line back for one.
+    /// The columns the strip sits beside are unchanged in either split mode.
     #[test]
-    fn the_reserved_height_is_what_the_strip_block_draws() {
-        let _guard = env_guard();
-        sandbox("summary-strip-height");
-        let mut app = seed_summary();
-        app.toggle_summary();
-
-        for (mode, name) in scopes() {
-            app.view_mode = mode;
-            for split in [false, true] {
-                if split {
-                    app.toggle_summary_split();
-                }
-                let drawn = summary_box(&mut app, 120, 40).len() as u16;
-                assert_eq!(
-                    app.summary_surface_height(120),
-                    drawn + 2,
-                    "{name} split={split}: the box and its height disagree"
-                );
-                if split {
-                    app.toggle_summary_split();
-                }
-            }
-        }
-    }
-
-    /// The table the block sits under is unchanged in either split mode.
-    #[test]
-    fn the_heat_strips_leave_the_number_columns_alone() {
+    fn the_heat_strip_leaves_the_number_columns_alone() {
         let _guard = env_guard();
         sandbox("summary-strip-columns");
         let mut app = seed_summary();
@@ -4392,7 +4370,7 @@ mod tests {
             if split {
                 app.toggle_summary_split();
             }
-            let box_lines = summary_box(&mut app, 120, 40);
+            let box_lines = summary_box(&mut app, 140, 40);
             assert!(box_lines[0].contains("count share"), "{}", box_lines[0]);
             assert!(box_lines[1].contains("2h 0m"), "{}", box_lines[1]);
             assert!(
@@ -4401,8 +4379,8 @@ mod tests {
                 box_lines[1]
             );
             assert!(
-                app.summary_strip_height(120) > 0,
-                "split={split}: no strip block"
+                !summary_heat_cells(&mut app, 140, 40).is_empty(),
+                "split={split}: no strip"
             );
         }
     }
@@ -4417,7 +4395,7 @@ mod tests {
         app.view_mode = ViewMode::Day;
         app.toggle_summary();
 
-        assert_eq!(app.summary_surface_height(100), 3);
+        assert_eq!(app.summary_surface_height(), 3);
         let empty = summary_box(&mut app, 100, 40);
         assert!(
             empty[0].starts_with("\u{2502} nothing in scope"),
@@ -4441,15 +4419,10 @@ mod tests {
         app.view_mode = ViewMode::Day;
         app.toggle_summary();
 
-        // Two borders, the header, the six-project cap, the rule, the total,
-        // and the strip block: a separator, six strips and the axis.
-        assert_eq!(app.summary_surface_height(100), 19);
+        // Two borders, the header, the six-project cap, the rule and the total.
+        assert_eq!(app.summary_surface_height(), 11);
         let drawn = summary_box(&mut app, 100, 40);
-        assert_eq!(
-            drawn.len(),
-            17,
-            "header, rows, rule, total and strips: {drawn:#?}"
-        );
+        assert_eq!(drawn.len(), 9, "header, rows, rule and total: {drawn:#?}");
         let screen = frame_lines(&mut app, 100, 40);
         let title = screen
             .iter()
@@ -4469,28 +4442,24 @@ mod tests {
         app.view_mode = ViewMode::Day;
 
         assert!(!app.show_summary);
-        assert_eq!(
-            app.summary_surface_height(100),
-            3,
-            "collapsed: the total row"
-        );
+        assert_eq!(app.summary_surface_height(), 3, "collapsed: the total row");
 
-        // Two borders, the header, the rule, the total, one row per project —
-        // the day has three — and the strip block over them all.
+        // Two borders, the header, the rule, the total, and one row per project:
+        // the day has three. The strips ride the rows, so they cost no line.
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(100), 13);
+        assert_eq!(app.summary_surface_height(), 8);
         // Re-scoping re-sizes it: the week has four projects, all entries too.
         app.view_mode = ViewMode::Week;
-        assert_eq!(app.summary_surface_height(100), 15);
+        assert_eq!(app.summary_surface_height(), 9);
 
         // An empty scope still gets one row, so the box can say it is empty.
         app.view_mode = ViewMode::Day;
         app.selected_date = Local::now().date_naive() - chrono::Duration::days(400);
         assert!(app.project_summary().is_empty());
-        assert_eq!(app.summary_surface_height(100), 3);
+        assert_eq!(app.summary_surface_height(), 3);
 
         app.toggle_summary();
-        assert_eq!(app.summary_surface_height(100), 3, "collapsed again");
+        assert_eq!(app.summary_surface_height(), 3, "collapsed again");
     }
 
     /// Focus never reads as resting on a hidden surface, however `focus` was set.
@@ -4816,20 +4785,19 @@ mod tests {
         app.toggle_summary();
         app.toggle_summary_follows_filters();
 
-        // Three projects in the day, each row plus header, rule, total, two
-        // borders, and the strip block.
-        assert_eq!(app.summary_surface_height(100), 13);
+        // Three projects in the day, each row plus header, rule, total, two borders.
+        assert_eq!(app.summary_surface_height(), 8);
 
         // A filter that removes projects shrinks the box.
         app.project_filter.cycle("tt", true);
-        assert_eq!(app.summary_surface_height(100), 9);
+        assert_eq!(app.summary_surface_height(), 6);
         let one = summary_box(&mut app, 100, 40);
         assert!(one[1].contains("tt"), "{one:#?}");
 
         // A filter that removes every entry leaves the 3-row empty box.
         app.project_filter.clear();
         app.search_term.set_from("nothing matches this");
-        assert_eq!(app.summary_surface_height(100), 3);
+        assert_eq!(app.summary_surface_height(), 3);
         let empty = summary_box(&mut app, 100, 40);
         assert!(
             empty[0].starts_with("\u{2502} nothing matches the filter"),
@@ -4839,7 +4807,7 @@ mod tests {
 
         // Scope-only mode never empties, however the filter is set.
         app.toggle_summary_follows_filters();
-        assert_eq!(app.summary_surface_height(100), 13);
+        assert_eq!(app.summary_surface_height(), 8);
 
         // Following with nothing set says the scope is empty, not the filter.
         app.search_term.clear();
@@ -4881,7 +4849,7 @@ mod tests {
         app.toggle_summary();
 
         // Capped at six rows, so nine projects overflow: `6/9`, on the one title.
-        assert_eq!(app.summary_surface_height(100), 19);
+        assert_eq!(app.summary_surface_height(), 11);
         let rows = app.project_summary();
         assert_eq!(summary::summary_count(&rows, 6).as_deref(), Some("6/9"));
         assert_eq!(app.summary_marker(&rows, 6), "day · all projects · 6/9");
