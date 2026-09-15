@@ -3198,6 +3198,104 @@ mod tests {
         );
     }
 
+    /// 2026 opens on a Thursday and closes on a Thursday, so its grid is 53
+    /// Monday-opened weeks wide.
+    const WEEKS_IN_2026: usize = 53;
+
+    /// The first inner column of the year grid: the block border and the
+    /// four-column weekday gutter.
+    const GRID_LEFT: u16 = 5;
+
+    fn year_view_2026() -> App {
+        seed(
+            vec![logged(
+                1,
+                "a",
+                "tt",
+                &["impl"],
+                NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+                300,
+            )],
+            2,
+        );
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Year;
+        app.selected_date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        app
+    }
+
+    /// A wider window gives each week a fatter cell; it never invents weeks.
+    #[test]
+    fn a_wider_year_grid_widens_its_cells_rather_than_adding_weeks() {
+        let _guard = env_guard();
+        sandbox("year-view-width");
+        let mut app = year_view_2026();
+
+        // The Monday band opens in 2025, so its first cell is left unpainted
+        // and the gap before the painted ones is exactly one cell wide.
+        let band = |rows: Vec<Vec<(u16, ratatui::style::Color)>>| {
+            let painted = rows[0].len();
+            let cell_width = (rows[0][0].0 - GRID_LEFT) as usize;
+            (cell_width, painted / cell_width)
+        };
+        let (narrow_width, narrow_weeks) = band(month_heat_block(&mut app, 140, 30).1);
+        let (wide_width, wide_weeks) = band(month_heat_block(&mut app, 280, 30).1);
+
+        assert_eq!(narrow_width, 2, "a week is never under two columns");
+        assert_eq!(wide_width, 4, "twice the width did not widen the cells");
+        assert_eq!(
+            narrow_weeks, wide_weeks,
+            "the wider grid grew weeks instead of cells"
+        );
+        assert_eq!(
+            narrow_weeks + 1,
+            WEEKS_IN_2026,
+            "the grid lost weeks it had room for"
+        );
+    }
+
+    /// Too narrow a window still drops the oldest weeks, two columns each.
+    #[test]
+    fn a_narrow_year_grid_sheds_its_oldest_weeks() {
+        let _guard = env_guard();
+        sandbox("year-view-narrow");
+        let mut app = year_view_2026();
+
+        // 58 inner columns less the gutter leave 27 pairs for 53 weeks.
+        let (_, rows) = month_heat_block(&mut app, 60, 30);
+        assert_eq!(rows[0].len(), 27 * 2, "the shed grid is not two wide");
+    }
+
+    /// The grid takes the height it is given, and names each weekday once.
+    #[test]
+    fn a_taller_year_grid_grows_its_weekday_bands() {
+        let _guard = env_guard();
+        sandbox("year-view-height");
+        let mut app = year_view_2026();
+
+        let (_, short) = month_heat_block(&mut app, 140, 20);
+        let (_, tall) = month_heat_block(&mut app, 140, 40);
+        assert!(
+            tall.len() > short.len(),
+            "the bands did not grow: {} rows at both heights",
+            short.len()
+        );
+        for rows in [&short, &tall] {
+            assert_eq!(rows.len() % 7, 0, "the bands are uneven: {}", rows.len());
+        }
+
+        let screen = frame_lines(&mut app, 140, 40);
+        assert_eq!(
+            screen
+                .iter()
+                .filter(|line| line.starts_with("\u{2502}Mon"))
+                .count(),
+            1,
+            "the weekday label repeats down its band:\n{}",
+            screen.join("\n")
+        );
+    }
+
     /// The Month block's tick line and its heat cells, one inner row per
     /// vector, as `(x, colour)`. A cell is a blank symbol, so only the
     /// background says where it is. The legend rides a border row, so any row

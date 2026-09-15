@@ -105,8 +105,10 @@ pub(super) fn render_month(f: &mut Frame, app: &mut App, area: Rect) {
     render_entries_table(f, app, chunks[1]);
 }
 
-/// A GitHub-style yearly contribution heatmap: one column per week, one row
-/// per weekday, each cell shaded by `theme::heat_color` for that day's total.
+/// A GitHub-style yearly contribution heatmap: one column band per week, one
+/// row band per weekday, each cell shaded by `theme::heat_color` for that
+/// day's total. The grid fills the block in both axes; when the width runs out
+/// the oldest weeks shed, since a window onto the year still reads as the year.
 pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
     const GUTTER: usize = 4; // weekday label width, e.g. "Mon "
     const WEEKDAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -120,66 +122,80 @@ pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
         TimeData::week_start(NaiveDate::from_ymd_opt(year, 12, 31).unwrap()) + Duration::days(6);
     let total_weeks = ((grid_end - grid_start).num_days() / 7 + 1) as usize;
 
-    // Show only as many of the most recent weeks as fit the available width,
-    // rather than silently clipping mid-cell on a narrow terminal.
-    let available_weeks = ((area.width as usize).saturating_sub(GUTTER) / 2).max(1);
-    let visible_weeks = total_weeks.min(available_weeks);
+    // Cells are asked for in pairs of columns, so a week keeps its two-column
+    // minimum and the oldest weeks still shed once the room runs out.
+    let available = (area.width as usize)
+        .saturating_sub(2)
+        .saturating_sub(GUTTER);
+    let (pairs, visible_weeks) = strip_cells(available / 2, total_weeks);
+    let cell_width = pairs * 2;
     let first_week = total_weeks - visible_weeks;
 
-    // Month header: a fixed-width char grid, so a 3-char abbreviation can
-    // overlap slightly into the next column, same as it does on github.com.
-    let mut header_chars = vec![' '; GUTTER + visible_weeks * 2];
-    for w in 0..visible_weeks {
-        let monday = grid_start + Duration::days(((first_week + w) * 7) as i64);
-        if monday.year() == year && monday.day() <= 7 {
-            let col = GUTTER + w * 2;
-            for (i, ch) in monday.format("%b").to_string().chars().enumerate() {
-                if let Some(slot) = header_chars.get_mut(col + i) {
-                    *slot = ch;
-                }
-            }
-        }
-    }
+    // Seven bands over the rows the month header leaves.
+    let cell_height = ((area.height as usize).saturating_sub(3) / 7).max(1);
+    let middle = cell_height / 2;
+
+    let monday_of = |week: usize| grid_start + Duration::days(((first_week + week) * 7) as i64);
+    let header = axis_line(
+        &(0..visible_weeks)
+            .map(|week| {
+                let monday = monday_of(week);
+                (monday.year() == year && monday.day() <= 7)
+                    .then(|| monday.format("%b").to_string())
+            })
+            .collect::<Vec<_>>(),
+        cell_width,
+    );
     let mut lines = vec![Line::from(Span::styled(
-        header_chars.into_iter().collect::<String>(),
+        format!("{}{}", " ".repeat(GUTTER), header),
         Style::default().fg(theme::inactive()),
     ))];
 
-    for (row, label) in WEEKDAY_LABELS.iter().enumerate() {
-        let mut spans = vec![Span::styled(
-            format!("{:<width$}", label, width = GUTTER),
-            Style::default().fg(theme::inactive()),
-        )];
-        for w in 0..visible_weeks {
-            let date = grid_start + Duration::days(((first_week + w) * 7 + row) as i64);
-            if date.year() != year {
-                spans.push(Span::raw("  "));
-                continue;
+    for (weekday, label) in WEEKDAY_LABELS.iter().enumerate() {
+        for row in 0..cell_height {
+            // The label names the band once, so the gutter does not read as
+            // seven repeated words.
+            let named = row == middle;
+            let mut spans = vec![Span::styled(
+                format!(
+                    "{:<width$}",
+                    if named { *label } else { "" },
+                    width = GUTTER
+                ),
+                Style::default().fg(theme::inactive()),
+            )];
+            for week in 0..visible_weeks {
+                let date = monday_of(week) + Duration::days(weekday as i64);
+                if date.year() != year {
+                    spans.push(Span::raw(" ".repeat(cell_width)));
+                    continue;
+                }
+                let hours = breakdown.get(&date).map(|d| d.num_hours()).unwrap_or(0);
+                let cell_style = Style::default().bg(theme::heat_color(hours));
+                if date == today && named {
+                    let pad = " ".repeat(cell_width.saturating_sub(1));
+                    spans.push(Span::styled(
+                        format!("{TODAY_MARKER}{pad}"),
+                        cell_style.fg(theme::highlight()).bold(),
+                    ));
+                } else {
+                    spans.push(Span::styled(" ".repeat(cell_width), cell_style));
+                }
             }
-            let hours = breakdown.get(&date).map(|d| d.num_hours()).unwrap_or(0);
-            let cell_style = Style::default().bg(theme::heat_color(hours));
-            if date == today {
-                spans.push(Span::styled(" ●", cell_style.fg(theme::highlight()).bold()));
-            } else {
-                spans.push(Span::styled("  ", cell_style));
-            }
+            lines.push(Line::from(spans));
         }
-        lines.push(Line::from(spans));
     }
 
-    let mut legend_spans = vec![Span::raw(" ".repeat(GUTTER))];
-    legend_spans.extend(day_heat_legend().spans);
-    lines.push(Line::from(""));
-    lines.push(Line::from(legend_spans));
-
     let total = breakdown.values().fold(Duration::zero(), |acc, d| acc + *d);
-    let title = heat_block_title(total, breakdown.len());
-
     let paragraph = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::border()))
-            .title(Span::styled(title, Style::default().fg(theme::title()))),
+            .title(Span::styled(
+                heat_block_title(total, breakdown.len()),
+                Style::default().fg(theme::title()),
+            ))
+            .title_bottom(day_heat_legend().left_aligned()),
     );
     f.render_widget(paragraph, area);
 }
