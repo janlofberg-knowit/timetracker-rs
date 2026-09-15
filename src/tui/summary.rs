@@ -42,8 +42,7 @@ impl Grain {
     pub(crate) fn for_view(view: ViewMode) -> Self {
         match view {
             ViewMode::Day => Grain::Hour,
-            ViewMode::Week => Grain::Day,
-            ViewMode::Month => Grain::Day,
+            ViewMode::Week | ViewMode::Month => Grain::Day,
             ViewMode::All => Grain::Week,
             ViewMode::Year => Grain::Month,
         }
@@ -160,7 +159,8 @@ impl App {
     pub(crate) fn project_buckets(&self, rows: &[ProjectTotal]) -> BucketGrid {
         let grain = Grain::for_view(self.view_mode);
         let entries = self.summary_entries();
-        let Some((anchor, count)) = bucket_range(grain, &entries, self.selected_date) else {
+        let Some((anchor, count)) = bucket_range(self.view_mode, &entries, self.selected_date)
+        else {
             return BucketGrid {
                 grain,
                 anchor: self.selected_date.and_hms_opt(0, 0, 0).unwrap(),
@@ -319,31 +319,43 @@ fn project_key(entry: &TimeEntry) -> &str {
 }
 
 /// The first bucket's start and how many buckets follow it, or `None` when
-/// nothing is folded. Each grain but `Week` covers its whole period — the 24
-/// hours of the selected day, the 7 days of its week, the 12 months of its
-/// year — so the strip reads against the period, not against itself. `Week`
-/// has no bounded period to cover and spans the entries instead.
+/// nothing is folded. The **view** says which period the strip covers — the 24
+/// hours of the selected day, the 7 days of its week, the days of its month,
+/// the 12 months of its year — so the strip reads against the period, not
+/// against itself. `All` has no bounded period and spans the entries instead.
 fn bucket_range(
-    grain: Grain,
+    view: ViewMode,
     entries: &[&TimeEntry],
     selected: NaiveDate,
 ) -> Option<(NaiveDateTime, usize)> {
     let earliest = entries.iter().map(|e| e.start_time.naive_local()).min()?;
     let latest = entries.iter().map(|e| e.start_time.naive_local()).max()?;
     let midnight = |date: NaiveDate| date.and_hms_opt(0, 0, 0).unwrap();
-    let anchor = match grain {
-        Grain::Hour => midnight(selected),
-        Grain::Day => midnight(TimeData::week_start(selected)),
-        Grain::Week => midnight(TimeData::week_start(earliest.date())),
-        Grain::Month => midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
+    let first_of_month = NaiveDate::from_ymd_opt(selected.year(), selected.month(), 1)?;
+    let anchor = match view {
+        ViewMode::Day => midnight(selected),
+        ViewMode::Week => midnight(TimeData::week_start(selected)),
+        ViewMode::Month => midnight(first_of_month),
+        ViewMode::Year => midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
+        ViewMode::All => midnight(TimeData::week_start(earliest.date())),
     };
-    let count = match grain {
-        Grain::Hour => 24,
-        Grain::Day => 7,
-        Grain::Month => 12,
-        Grain::Week => (bucket_index(grain, anchor, latest) + 1).max(1) as usize,
+    let count = match view {
+        ViewMode::Day => 24,
+        ViewMode::Week => 7,
+        ViewMode::Month => days_in_month(first_of_month),
+        ViewMode::Year => 12,
+        ViewMode::All => (bucket_index(Grain::for_view(view), anchor, latest) + 1).max(1) as usize,
     };
     Some((anchor, count))
+}
+
+/// The days of the month `first` opens, counted off the calendar. `first` must
+/// be the first of its month.
+pub(crate) fn days_in_month(first: NaiveDate) -> usize {
+    first
+        .checked_add_months(Months::new(1))
+        .map(|next| (next - first).num_days() as usize)
+        .unwrap_or(31)
 }
 
 /// How many grains `start` sits past `anchor`. Reads the start alone, never the
@@ -410,6 +422,60 @@ mod tests {
             11
         );
         assert_eq!(bucket_index(Grain::Month, anchor, at(2027, 2, 1, 9, 0)), 13);
+    }
+
+    fn entry_at(start: NaiveDateTime) -> TimeEntry {
+        TimeEntry {
+            id: 0,
+            description: "seed".to_string(),
+            project: Some("tt".to_string()),
+            tags: Vec::new(),
+            start_time: start.and_local_timezone(chrono::Local).unwrap(),
+            end_time: None,
+            idle: Vec::new(),
+            data: None,
+        }
+    }
+
+    /// The month's own length, taken from the calendar rather than a table.
+    #[test]
+    fn a_month_view_buckets_the_days_of_the_selected_month() {
+        let seed = entry_at(at(2026, 2, 10, 9, 0));
+        let entries = vec![&seed];
+
+        let (anchor, count) = bucket_range(
+            ViewMode::Month,
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(anchor, at(2026, 2, 1, 0, 0), "bucket 0 opens the month");
+        assert_eq!(count, 28, "February 2026 has 28 days");
+
+        let (anchor, count) = bucket_range(
+            ViewMode::Month,
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(anchor, at(2026, 1, 1, 0, 0));
+        assert_eq!(count, 31, "January has 31 days");
+    }
+
+    /// The Week view keeps its own seven days while Month shares its grain.
+    #[test]
+    fn a_week_view_still_buckets_seven_days_from_its_monday() {
+        let seed = entry_at(at(2026, 2, 10, 9, 0));
+        let entries = vec![&seed];
+
+        let (anchor, count) = bucket_range(
+            ViewMode::Week,
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(anchor, at(2026, 2, 9, 0, 0), "the week opens on Monday");
+        assert_eq!(count, 7);
     }
 
     /// The cells fill the row: what is left over is under one cell's worth,
