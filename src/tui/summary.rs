@@ -289,6 +289,12 @@ impl App {
         self.persist_layout();
     }
 
+    /// `m`: show or hide the Summary's per-project heat strips.
+    pub(crate) fn toggle_summary_heat(&mut self) {
+        self.summary_heat = !self.summary_heat;
+        self.persist_layout();
+    }
+
     /// `f`: fold the filtered entries or the whole scope.
     pub(crate) fn toggle_summary_follows_filters(&mut self) {
         self.summary_follows_filters = !self.summary_follows_filters;

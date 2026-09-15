@@ -137,7 +137,8 @@ shades a week per column. `h` and `l` step one period back or forward.
 
 **Heatmaps.** `M` flips the open view between its entry list and a heatmap of
 the same period. The year view opens as a heatmap; the other views open as
-lists. The choice is kept for the next run.
+lists. `m` shows or hides the per-project heat strips in the Summary box,
+which start hidden. Both choices are kept for the next run.
 
 ---
 

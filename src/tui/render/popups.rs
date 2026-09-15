@@ -55,6 +55,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Shift-S", "project breakdown on / off"),
             ("v", "human / agent split (Summary focused)"),
             ("f", "follow the filters (Summary focused)"),
+            ("m", "summary heat strips"),
         ],
     ),
 ];

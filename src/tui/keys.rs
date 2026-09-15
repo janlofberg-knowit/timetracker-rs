@@ -73,6 +73,9 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         // Capital `M` only, and unconditional: it owns the content pane rather
         // than a focusable surface, so no focus state takes it away.
         KeyCode::Char('M') => app.toggle_heat_view(),
+        // Lowercase, and unconditional too: `m` pairs with `M`, so a focus
+        // check on one and not the other would break the pair.
+        KeyCode::Char('m') => app.toggle_summary_heat(),
         KeyCode::Char('v') => {
             if app.summary_is_focused() {
                 app.toggle_summary_split();
@@ -686,6 +689,32 @@ mod tests {
         assert!(app.selected_date < today, "`h` stopped stepping back");
     }
 
+    /// `m` pairs with `M`, so it works wherever `M` does — focus and all.
+    #[test]
+    fn m_flips_the_summary_heat_from_any_focus() {
+        let _guard = env_guard();
+        sandbox("keys-summary-heat");
+        let mut with_project = entry(0, "has a project");
+        with_project.project = Some("acme".to_string());
+        seed(vec![with_project], 1);
+        let mut app = App::new().unwrap();
+
+        assert!(!app.summary_heat, "the strips are opt-in");
+        press(&mut app, KeyCode::Char('m'));
+        assert!(app.summary_heat, "`m` was gated on the hidden Summary");
+        press(&mut app, KeyCode::Char('m'));
+        assert!(!app.summary_heat, "`m` did not flip back");
+
+        for focus in [Focus::Summary, Focus::Pane(Pane::Projects)] {
+            app.show_summary = true;
+            app.focus = focus;
+            press(&mut app, KeyCode::Char('m'));
+            assert!(app.summary_heat, "`m` was gated on {focus:?}");
+            press(&mut app, KeyCode::Char('m'));
+        }
+        assert!(!app.heat_view, "`m` reached the content pane's own flag");
+    }
+
     /// Every key the Normal-mode map claims, asserted to still land on its
     /// action rather than the arm's `_ => {}`.
     #[test]
@@ -736,6 +765,7 @@ mod tests {
             (KeyCode::Char('A'), "marks pane", |a| a.show_marks),
             (KeyCode::Char('S'), "summary pane", |a| a.show_summary),
             (KeyCode::Char('M'), "heat view", |a| a.heat_view),
+            (KeyCode::Char('m'), "summary heat", |a| a.summary_heat),
             (KeyCode::Char('o'), "sort order", |a| {
                 a.sort_order != SortOrder::NewestFirst
             }),

@@ -118,6 +118,8 @@ pub(crate) struct App {
     /// Whether the content area draws a heatmap instead of the entry list.
     /// One flag for every view, so switching view keeps the representation.
     pub(crate) heat_view: bool,
+    /// Whether the Summary's project rows carry their per-project heat strips.
+    pub(crate) summary_heat: bool,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -211,6 +213,7 @@ impl App {
             summary_follows_filters: layout.summary_follows_filters.unwrap_or(false),
             // Year is the only view whose own representation is the heatmap.
             heat_view: layout.heat_view.unwrap_or(START_VIEW == ViewMode::Year),
+            summary_heat: layout.summary_heat.unwrap_or(false),
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,
@@ -260,6 +263,7 @@ impl App {
             summary_split: Some(self.summary_split),
             summary_follows_filters: Some(self.summary_follows_filters),
             heat_view: Some(self.heat_view),
+            summary_heat: Some(self.summary_heat),
         }
     }
 
@@ -1498,6 +1502,25 @@ mod tests {
     }
 
     #[test]
+    fn toggling_the_summary_heat_persists_it_and_survives_another_write() {
+        let _guard = env_guard();
+        sandbox("summary-heat-persist");
+        seed(vec![entry(0, "first")], 1);
+
+        let mut app = App::new().unwrap();
+        assert!(!app.summary_heat, "the strips are opt-in");
+        app.toggle_summary_heat();
+        assert_eq!(saved_layout()["summary_heat"].as_bool(), Some(true));
+
+        app.toggle_summary_split();
+        assert_eq!(
+            saved_layout()["summary_heat"].as_bool(),
+            Some(true),
+            "another layout write erased the summary heat"
+        );
+    }
+
+    #[test]
     fn the_layout_key_seeds_the_heat_view() {
         let _guard = env_guard();
         let dir = sandbox("heat-view-seed");
@@ -2052,7 +2075,7 @@ mod tests {
         app.input_mode = InputMode::Help;
 
         // The last row of the last section: only ever on the last page.
-        const LAST_ROW: &str = "follow the filters";
+        const LAST_ROW: &str = "summary heat strips";
         let top = frame_lines(&mut app, 100, 20).join("\n");
         assert!(top.contains("▾ more"), "{top}");
         assert!(top.contains("j/k scroll"), "{top}");
@@ -2065,7 +2088,7 @@ mod tests {
         assert!(app.help_scroll < 1000, "render clamps the offset");
 
         app.input_mode = InputMode::Help;
-        let tall = frame_lines(&mut app, 100, 45).join("\n");
+        let tall = frame_lines(&mut app, 100, 47).join("\n");
         assert!(
             !tall.contains("▾ more") && !tall.contains("j/k scroll"),
             "{tall}"
@@ -4538,6 +4561,7 @@ mod tests {
         app.selected_date = week;
         app.view_mode = ViewMode::Week;
         app.toggle_summary();
+        app.summary_heat = true;
 
         for width in [60u16, 90, 120, 200] {
             let cells = summary_heat_cells(&mut app, width, 40);
@@ -4604,6 +4628,7 @@ mod tests {
         let mut app = seed_summary();
         app.view_mode = ViewMode::Week;
         app.toggle_summary();
+        app.summary_heat = true;
 
         let box_lines = summary_box(&mut app, 120, 40);
         // header, four projects, rule, total: the strips cost no line.
@@ -4670,6 +4695,7 @@ mod tests {
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
         app.toggle_summary();
+        app.summary_heat = true;
 
         let cells = summary_heat_cells(&mut app, 120, 40);
         let rows = app.project_summary();
@@ -4692,6 +4718,7 @@ mod tests {
         sandbox("summary-strip-axis");
         let mut app = seed_summary();
         app.toggle_summary();
+        app.summary_heat = true;
 
         for (mode, ticks) in [
             (ViewMode::Day, vec!["00", "06", "12", "18"]),
@@ -4721,15 +4748,42 @@ mod tests {
         );
     }
 
-    /// The collapsed box is the total line alone; no strip comes with it.
+    /// The collapsed box is the total line alone; no strip comes with it, even
+    /// with the strips asked for.
     #[test]
     fn a_collapsed_summary_draws_no_heat_strip() {
         let _guard = env_guard();
         sandbox("summary-strip-collapsed");
         let mut app = seed_summary();
         app.view_mode = ViewMode::Week;
+        app.summary_heat = true;
 
         assert!(summary_heat_cells(&mut app, 120, 40).is_empty());
+    }
+
+    /// The strips are opt-in: `m` is what asks for them.
+    #[test]
+    fn m_shows_and_hides_the_summary_heat_strips() {
+        let _guard = env_guard();
+        sandbox("summary-strip-toggle");
+        let mut app = seed_summary();
+        app.view_mode = ViewMode::Week;
+        app.toggle_summary();
+
+        assert!(
+            summary_heat_cells(&mut app, 120, 40).is_empty(),
+            "the strips drew without being asked for"
+        );
+        app.toggle_summary_heat();
+        assert!(
+            !summary_heat_cells(&mut app, 120, 40).is_empty(),
+            "`m` did not bring the strips"
+        );
+        app.toggle_summary_heat();
+        assert!(
+            summary_heat_cells(&mut app, 120, 40).is_empty(),
+            "`m` did not take the strips away again"
+        );
     }
 
     /// Too narrow for a strip worth reading, the row drops it whole rather
@@ -4742,6 +4796,7 @@ mod tests {
         app.view_mode = ViewMode::Week;
         app.toggle_summary();
         app.toggle_summary_split();
+        app.summary_heat = true;
 
         assert!(
             summary_heat_cells(&mut app, 60, 40).is_empty(),
@@ -4763,6 +4818,7 @@ mod tests {
         let mut app = seed_summary();
         app.view_mode = ViewMode::Week;
         app.toggle_summary();
+        app.summary_heat = true;
 
         for split in [false, true] {
             if split {
@@ -5018,7 +5074,7 @@ mod tests {
 
         let border = summary_bottom_border(&mut app, 100, 40);
         assert!(
-            border.starts_with("\u{2514} v: split \u{b7} f: filter "),
+            border.starts_with("\u{2514} v: split \u{b7} f: filter \u{b7} m: heat "),
             "the key legend is not on the left of its border: {border}"
         );
         assert!(
@@ -5050,6 +5106,7 @@ mod tests {
         let mut app = seed_summary();
         app.toggle_summary();
         app.heat_view = true;
+        app.summary_heat = true;
 
         let ramp_is_right = |border: &str, what: &str| {
             let middle = border.chars().count() / 2;

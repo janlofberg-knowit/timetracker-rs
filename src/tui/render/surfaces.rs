@@ -171,6 +171,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
     let mut keys = vec![("f", "filter", focused || app.summary_follows_filters)];
     if app.show_summary {
         keys.insert(0, ("v", "split", focused || app.summary_split));
+        keys.push(("m", "heat", focused || app.summary_heat));
     }
     let keys = legend(&keys, inner.width);
     let keys_width = keys.as_ref().map(|line| line.width()).unwrap_or(0) as u16;
@@ -259,7 +260,7 @@ pub(super) fn render_summary_surface(f: &mut Frame, app: &App, area: Rect) {
         let grid = app.project_buckets(rows);
         let (cell_width, cells) = strip_cells(free, grid.len());
         let first = grid.len() - cells;
-        let strip = cells >= MIN_STRIP_CELLS;
+        let strip = app.summary_heat && cells >= MIN_STRIP_CELLS;
         // One maximum over every cell drawn, so the rows stay comparable.
         let peak = grid
             .rows
