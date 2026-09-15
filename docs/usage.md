@@ -319,6 +319,11 @@ group_header_bg = "#302838"
 member_bg = "#201c2c"
 day_header_bg = "#263044"
 overlay_bg = "#1c1c1c"
+heatmap_empty = "#2d2d2d"
+heatmap_level1 = "#9be9a8"
+heatmap_level2 = "#40c463"
+heatmap_level3 = "#30a14e"
+heatmap_level4 = "#216e39"
 
 [icons]
 active = "▶️"
