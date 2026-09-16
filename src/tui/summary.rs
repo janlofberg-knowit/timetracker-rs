@@ -376,34 +376,46 @@ fn project_key(entry: &TimeEntry) -> &str {
 }
 
 /// The first bucket's start and how many buckets follow it, or `None` when
-/// nothing is folded. The **view** says which period the strip covers — the 24
-/// hours of the selected day, the 7 days of its week, the days of its month,
-/// the 12 months of its year — so the strip reads against the period, not
-/// against itself. `All` has no bounded period and spans the entries instead.
+/// nothing is folded. The **view** says which period the strip covers, so the
+/// strip reads against the period rather than against itself. `All` has no
+/// bounded period and spans the entries instead.
 fn bucket_range(
     view: ViewMode,
     entries: &[&TimeEntry],
     selected: NaiveDate,
 ) -> Option<(NaiveDateTime, usize)> {
+    if entries.is_empty() {
+        return None;
+    }
+    if let Some(bounds) = period_bounds(view, selected) {
+        return Some(bounds);
+    }
     let earliest = entries.iter().map(|e| e.start_time.naive_local()).min()?;
     let latest = entries.iter().map(|e| e.start_time.naive_local()).max()?;
-    let midnight = |date: NaiveDate| date.and_hms_opt(0, 0, 0).unwrap();
-    let first_of_month = NaiveDate::from_ymd_opt(selected.year(), selected.month(), 1)?;
-    let anchor = match view {
-        ViewMode::Day => midnight(selected),
-        ViewMode::Week => midnight(TimeData::week_start(selected)),
-        ViewMode::Month => midnight(first_of_month),
-        ViewMode::Year => midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
-        ViewMode::All => midnight(TimeData::week_start(earliest.date())),
-    };
-    let count = match view {
-        ViewMode::Day => 24,
-        ViewMode::Week => 7,
-        ViewMode::Month => days_in_month(first_of_month),
-        ViewMode::Year => 12,
-        ViewMode::All => (bucket_index(Grain::for_view(view), anchor, latest) + 1).max(1) as usize,
-    };
+    let anchor = midnight(TimeData::week_start(earliest.date()));
+    let count = (bucket_index(Grain::for_view(view), anchor, latest) + 1).max(1) as usize;
     Some((anchor, count))
+}
+
+/// The period a view with bounded one covers: the 24 hours of the selected
+/// day, the 7 days of its week, the days of its month, the 12 months of its
+/// year. `All` has none.
+pub(crate) fn period_bounds(view: ViewMode, selected: NaiveDate) -> Option<(NaiveDateTime, usize)> {
+    let first_of_month = NaiveDate::from_ymd_opt(selected.year(), selected.month(), 1)?;
+    Some(match view {
+        ViewMode::Day => (midnight(selected), 24),
+        ViewMode::Week => (midnight(TimeData::week_start(selected)), 7),
+        ViewMode::Month => (midnight(first_of_month), days_in_month(first_of_month)),
+        ViewMode::Year => (
+            midnight(NaiveDate::from_ymd_opt(selected.year(), 1, 1)?),
+            12,
+        ),
+        ViewMode::All => return None,
+    })
+}
+
+pub(crate) fn midnight(date: NaiveDate) -> NaiveDateTime {
+    date.and_hms_opt(0, 0, 0).unwrap()
 }
 
 /// The days of the month `first` opens, counted off the calendar. `first` must
