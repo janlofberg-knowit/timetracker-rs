@@ -75,13 +75,21 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Paragraph::new(Vec::<Line>::new()).block(block), area);
         return;
     }
-    // Every band keeps its axis line; the rows share what is left.
-    let cell_height = ((inner_height as usize).saturating_sub(drawn.len()) / rows_total).max(1);
+    // Every band keeps its axis line and a blank line before the next;
+    // the rows share what is left.
+    let fixed = drawn.len() + drawn.len().saturating_sub(1);
+    let cell_height = ((inner_height as usize).saturating_sub(fixed) / rows_total).max(1);
     let dim = Style::default().fg(theme::inactive());
 
     let room = inner_height as usize;
     let mut lines: Vec<Line> = Vec::with_capacity(room);
     'bands: for band in drawn {
+        if !lines.is_empty() {
+            if lines.len() == room {
+                break;
+            }
+            lines.push(Line::default());
+        }
         let (cell_width, columns) = strip_cells(available, band.columns());
         // Too narrow a box sheds the oldest columns, as every other strip
         // does: the newest weeks and the marker on today must survive.
@@ -139,9 +147,12 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
 fn scroll_max(grid: &HeatGrid, inner_height: u16, view: ViewMode) -> usize {
     let room = inner_height as usize;
     match view {
+        // A band is its axis and rows, plus a blank line before the next.
         ViewMode::All => {
-            let band_lines = grid.bands.first().map_or(1, |band| 1 + band.rows());
-            grid.bands.len().saturating_sub((room / band_lines).max(1))
+            let band_lines = grid.bands.first().map_or(1, |band| 2 + band.rows());
+            grid.bands
+                .len()
+                .saturating_sub(((room + 1) / band_lines).max(1))
         }
         // The axis costs a line; the rows take the rest, one each.
         ViewMode::Day => grid
@@ -414,6 +425,15 @@ mod tests {
             ticks[1].starts_with("2024 "),
             "no year before Jan: {}",
             ticks[1]
+        );
+        let second = lines
+            .iter()
+            .position(|(text, _)| text.starts_with("2024 "))
+            .unwrap();
+        assert!(
+            lines[second - 1].0.trim().is_empty(),
+            "no blank line before the second band: {}",
+            lines[second - 1].0
         );
 
         const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
