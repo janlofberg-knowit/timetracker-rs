@@ -171,10 +171,11 @@ fn marks_now(band: &HeatBand, row: usize, named: bool) -> bool {
         }
 }
 
-/// A row label right-aligned to `width`, cut to leave a column before the cells.
+/// A row label with one blank column each side inside `width`.
 fn gutter_label(text: &str, width: usize) -> String {
-    let label: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{label:>width$}")
+    let inner = width.saturating_sub(1);
+    let label: String = text.chars().take(inner.saturating_sub(1)).collect();
+    format!(" {label:<inner$}")
 }
 
 /// The tick row's gutter: the band's year left-aligned, or blank.

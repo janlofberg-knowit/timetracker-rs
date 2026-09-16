@@ -3364,7 +3364,7 @@ mod tests {
         assert_eq!(
             screen
                 .iter()
-                .filter(|line| line.starts_with("\u{2502}  Mon"))
+                .filter(|line| line.starts_with("\u{2502} Mon "))
                 .count(),
             1,
             "the weekday label repeats down its band:\n{}",
