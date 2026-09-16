@@ -29,9 +29,13 @@ pub(super) fn heat_block_title(total: Duration, active: usize, unit: &str) -> St
 /// gutter of row labels, a tick axis per band, and cells stretched to the room
 /// the box has in both axes. A cell is shaded by how full its own span is, so
 /// the shading does not re-scale as the user pages through periods.
-pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_width = area.width.saturating_sub(2);
     let inner_height = area.height.saturating_sub(2);
+    // Stamp the room before the fold, or the scroll clamps against the box
+    // the last frame had.
+    app.heat_box_height = inner_height;
+    let app = &*app;
     let grid = app.view_heat_grid(inner_width, inner_height);
     let day_sized = grid
         .bands
@@ -60,7 +64,7 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let available = (inner_width as usize).saturating_sub(grid.gutter);
-    let (drawn, first_row) = scrolled(app, &grid, inner_height);
+    let (drawn, first_row) = scrolled(app, &grid);
     let rows_total: usize = drawn
         .iter()
         .map(|band| band.rows())
@@ -124,24 +128,16 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The bands to draw and the first row of each, once `heat_scroll` is taken
-/// against the room the box has. `All` scrolls whole year bands; the Day view
-/// scrolls its project rows. Both clamp so the last one rests at the bottom.
-fn scrolled<'a>(
-    app: &App,
-    grid: &'a crate::tui::summary::HeatGrid,
-    inner_height: u16,
-) -> (&'a [HeatBand], usize) {
-    let room = inner_height as usize;
+/// The bands to draw and the first row of each, at `heat_scroll`. `All`
+/// scrolls whole year bands; the Day view scrolls its project rows. The
+/// offset is clamped where it is taken, so this only keeps it in bounds.
+fn scrolled<'a>(app: &App, grid: &'a crate::tui::summary::HeatGrid) -> (&'a [HeatBand], usize) {
     if app.view_mode == ViewMode::All {
-        let per_band = grid.bands.first().map_or(1, |band| 1 + band.rows());
-        let fits = (room / per_band).max(1);
-        let first = app.heat_scroll.min(grid.bands.len().saturating_sub(fits));
+        let first = app.heat_scroll.min(grid.bands.len().saturating_sub(1));
         return (&grid.bands[first..], 0);
     }
     let rows = grid.bands.first().map_or(0, HeatBand::rows);
-    let fits = room.saturating_sub(1);
-    (&grid.bands, app.heat_scroll.min(rows.saturating_sub(fits)))
+    (&grid.bands, app.heat_scroll.min(rows.saturating_sub(1)))
 }
 
 /// Whether the marker belongs on this line of `row`. A band whose rows are
@@ -327,7 +323,7 @@ mod tests {
     }
 
     /// Every inner line of the drawn block, as `(text, painted columns)`.
-    fn drawn(app: &App, width: u16, height: u16) -> Vec<(String, Vec<u16>)> {
+    fn drawn(app: &mut App, width: u16, height: u16) -> Vec<(String, Vec<u16>)> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|f| render_heat_grid(f, app, f.area()))
@@ -358,25 +354,26 @@ mod tests {
             ],
         );
 
-        let named = |app: &App| {
+        let named = |app: &mut App| {
             drawn(app, 80, 12)
                 .into_iter()
                 .filter(|(text, _)| text.trim() == "2026" || text.trim() == "2024")
                 .map(|(text, _)| text.trim().to_string())
                 .collect::<Vec<String>>()
         };
-        assert_eq!(named(&app)[0], "2026", "the newest year is not on top");
+        assert_eq!(named(&mut app)[0], "2026", "the newest year is not on top");
+        assert_eq!(app.heat_box_height, 10, "the draw did not stamp the room");
 
         app.heat_scroll = 1;
         assert_eq!(
-            named(&app),
+            named(&mut app),
             vec!["2024".to_string()],
             "the offset did not move the bands"
         );
 
         app.heat_scroll = 9;
         assert_eq!(
-            named(&app),
+            named(&mut app),
             vec!["2024".to_string()],
             "the last band scrolled off the box"
         );
@@ -389,7 +386,7 @@ mod tests {
         sandbox("heat-grid-day-render");
         let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
         let lines = drawn(
-            &app_for(
+            &mut app_for(
                 ViewMode::Day,
                 day,
                 vec![entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 60)],
@@ -428,7 +425,7 @@ mod tests {
         let _guard = env_guard();
         sandbox("heat-grid-fill");
         let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
-        let app = app_for(
+        let mut app = app_for(
             ViewMode::Day,
             day,
             vec![
@@ -439,7 +436,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
-            .draw(|f| render_heat_grid(f, &app, f.area()))
+            .draw(|f| render_heat_grid(f, &mut app, f.area()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let cells: Vec<Color> = (1..79).map(|x| buffer[(x, 2)].bg).collect();
@@ -462,13 +459,13 @@ mod tests {
         let _guard = env_guard();
         sandbox("heat-grid-week-render");
         let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
-        let app = app_for(
+        let mut app = app_for(
             ViewMode::Week,
             day,
             vec![entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 60)],
         );
 
-        let lines = drawn(&app, 80, 16);
+        let lines = drawn(&mut app, 80, 16);
         assert!(
             lines[0].0.contains("Mon"),
             "no weekday axis: {}",
@@ -492,13 +489,13 @@ mod tests {
         let _guard = env_guard();
         sandbox("heat-grid-month-render");
         let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
-        let app = app_for(
+        let mut app = app_for(
             ViewMode::Month,
             day,
             vec![entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 60)],
         );
 
-        let lines = drawn(&app, 80, 16);
+        let lines = drawn(&mut app, 80, 16);
         let widest = lines
             .iter()
             .map(|(_, cells)| cells.len())
@@ -518,7 +515,7 @@ mod tests {
         let _guard = env_guard();
         sandbox("heat-grid-title");
         let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
-        let app = app_for(
+        let mut app = app_for(
             ViewMode::Day,
             day,
             vec![
@@ -529,7 +526,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
-            .draw(|f| render_heat_grid(f, &app, f.area()))
+            .draw(|f| render_heat_grid(f, &mut app, f.area()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let title: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();

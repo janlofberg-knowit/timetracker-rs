@@ -299,11 +299,8 @@ impl App {
         /// Columns of a quarter hour each, the finest the day is drawn at.
         const QUARTERS: usize = 96;
 
-        let columns = if (inner_width as usize).saturating_sub(PROJECT_GUTTER) >= QUARTERS {
-            QUARTERS
-        } else {
-            24
-        };
+        let available = (inner_width as usize).saturating_sub(PROJECT_GUTTER);
+        let columns = if available >= QUARTERS { QUARTERS } else { 24 };
         let cell_span = Duration::minutes(24 * 60 / columns as i64);
         let opens = midnight(self.selected_date);
 
@@ -494,32 +491,36 @@ impl App {
     /// and `All`'s year bands. Reports whether the key was claimed, so every
     /// other view leaves it to the entries table.
     pub(crate) fn scroll_heat(&mut self, down: bool) -> bool {
-        let rows = self.heat_scroll_rows();
-        if rows == 0 {
+        if !self.heat_view || !matches!(self.view_mode, ViewMode::Day | ViewMode::All) {
             return false;
         }
+        let furthest = self.heat_scroll_max();
         self.heat_scroll = if down {
-            (self.heat_scroll + 1).min(rows - 1)
+            (self.heat_scroll + 1).min(furthest)
         } else {
             self.heat_scroll.saturating_sub(1)
         };
         true
     }
 
-    /// Rows the Day grid holds or bands `All` stacks, zero where neither the
-    /// heat nor the view can scroll. The renderer clamps again against the
-    /// room it has, so the last row can reach the bottom and no further.
-    fn heat_scroll_rows(&self) -> usize {
-        if !self.heat_view {
-            return 0;
-        }
+    /// The furthest the grid scrolls: the rows or bands the box has no room
+    /// for, so the last one rests at the bottom. The only clamp there is.
+    fn heat_scroll_max(&self) -> usize {
+        let room = self.heat_box_height as usize;
+        let grid = self.view_heat_grid(0, self.heat_box_height);
         match self.view_mode {
-            ViewMode::Day => self
-                .view_heat_grid(0, 0)
-                .bands
-                .first()
-                .map_or(0, HeatBand::rows),
-            ViewMode::All => self.view_heat_grid(0, 0).bands.len(),
+            ViewMode::Day => {
+                // The axis costs a line; the rows take the rest, one each.
+                let fits = room.saturating_sub(1).max(1);
+                grid.bands
+                    .first()
+                    .map_or(0, HeatBand::rows)
+                    .saturating_sub(fits)
+            }
+            ViewMode::All => {
+                let band_lines = grid.bands.first().map_or(1, |band| 1 + band.rows());
+                grid.bands.len().saturating_sub((room / band_lines).max(1))
+            }
             _ => 0,
         }
     }

@@ -947,4 +947,49 @@ mod tests {
         assert_eq!(app.heat_scroll, 0);
         assert_eq!(app.table_state.selected(), Some(1));
     }
+
+    /// The offset stops where the box does. Pressing on past the bottom used
+    /// to cost one dead `k` per press to come back.
+    #[test]
+    fn the_day_heat_scroll_stops_at_the_rows_the_box_holds() {
+        let _guard = env_guard();
+        sandbox("keys-heat-scroll-room");
+        let today = Local::now().date_naive();
+        seed(
+            (0..8)
+                .map(|id| {
+                    let start = today
+                        .and_hms_opt(8 + id as u32, 0, 0)
+                        .unwrap()
+                        .and_local_timezone(Local)
+                        .unwrap();
+                    TimeEntry {
+                        id,
+                        description: "seed".to_string(),
+                        project: Some(format!("p{id}")),
+                        tags: Vec::new(),
+                        start_time: start,
+                        end_time: Some(start + chrono::Duration::minutes(30)),
+                        idle: Vec::new(),
+                        data: None,
+                    }
+                })
+                .collect(),
+            8,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.heat_view = true;
+        // The axis line and the seven rows the box drew under it.
+        app.heat_box_height = 8;
+
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.heat_scroll, 1, "the offset outran the box");
+
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.heat_scroll, 0, "one press did not reach the top");
+    }
 }
