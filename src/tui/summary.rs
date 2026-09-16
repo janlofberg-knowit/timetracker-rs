@@ -429,6 +429,22 @@ fn bucket_index(grain: Grain, anchor: NaiveDateTime, start: NaiveDateTime) -> i6
     }
 }
 
+/// How much of `entry` falls inside the half-open window `[from, to)`, zero
+/// when the two are disjoint. The entry ends `duration()` after it starts, so
+/// a running one ends now and idle stretches stay counted.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn overlap(entry: &TimeEntry, from: NaiveDateTime, to: NaiveDateTime) -> Duration {
+    let start = entry.start_time.naive_local();
+    let end = start + entry.duration();
+    let first = start.max(from);
+    let last = end.min(to);
+    if last > first {
+        last - first
+    } else {
+        Duration::zero()
+    }
+}
+
 fn floor_hour(at: NaiveDateTime) -> NaiveDateTime {
     at.date().and_hms_opt(at.hour(), 0, 0).unwrap()
 }
@@ -558,5 +574,46 @@ mod tests {
             }
         }
         assert_eq!(strip_cells(40, 0), (1, 0), "nothing folded draws nothing");
+    }
+    #[test]
+    fn an_entry_splits_over_the_windows_it_crosses() {
+        let seed = {
+            let mut entry = entry_at(at(2026, 1, 1, 9, 30));
+            entry.end_time = Some(
+                at(2026, 1, 1, 12, 15)
+                    .and_local_timezone(chrono::Local)
+                    .unwrap(),
+            );
+            entry
+        };
+        let window = |hour: u32| {
+            (
+                at(2026, 1, 1, hour, 0),
+                at(2026, 1, 1, hour, 0) + Duration::hours(1),
+            )
+        };
+
+        let parts: Vec<i64> = (9..13)
+            .map(|hour| {
+                let (from, to) = window(hour);
+                overlap(&seed, from, to).num_minutes()
+            })
+            .collect();
+        assert_eq!(parts, vec![30, 60, 60, 15]);
+        assert_eq!(
+            parts.iter().sum::<i64>(),
+            seed.duration().num_minutes(),
+            "the windows lost time the entry held"
+        );
+
+        let (from, to) = window(8);
+        assert_eq!(overlap(&seed, from, to), Duration::zero(), "before it");
+        let (from, to) = window(13);
+        assert_eq!(overlap(&seed, from, to), Duration::zero(), "after it");
+        assert_eq!(
+            overlap(&seed, at(2026, 1, 1, 10, 0), at(2026, 1, 1, 11, 0)),
+            Duration::hours(1),
+            "a window inside the entry is full"
+        );
     }
 }
