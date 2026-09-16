@@ -45,12 +45,12 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         // Summary has no rows: j/k must not move the table.
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.pane_next() && !app.summary_is_focused() {
+            if !app.pane_next() && !app.summary_is_focused() && !app.scroll_heat(true) {
                 app.next();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if !app.pane_previous() && !app.summary_is_focused() {
+            if !app.pane_previous() && !app.summary_is_focused() && !app.scroll_heat(false) {
                 app.previous();
             }
         }
@@ -856,5 +856,95 @@ mod tests {
         seed(vec![entry(5, "written elsewhere")], 6);
         press(&mut app, KeyCode::Char('r'));
         assert_eq!(app.data.entries[0].description, "written elsewhere");
+    }
+
+    /// A Day heat with more projects than rows scrolls them; the table
+    /// selection stays where it was.
+    #[test]
+    fn j_and_k_scroll_the_day_heat_rows() {
+        let _guard = env_guard();
+        sandbox("keys-heat-scroll");
+        let today = Local::now().date_naive();
+        seed(
+            (0..4)
+                .map(|id| {
+                    let start = today
+                        .and_hms_opt(9 + id as u32, 0, 0)
+                        .unwrap()
+                        .and_local_timezone(Local)
+                        .unwrap();
+                    TimeEntry {
+                        id,
+                        description: "seed".to_string(),
+                        project: Some(format!("p{id}")),
+                        tags: Vec::new(),
+                        start_time: start,
+                        end_time: Some(start + chrono::Duration::minutes(30)),
+                        idle: Vec::new(),
+                        data: None,
+                    }
+                })
+                .collect(),
+            4,
+        );
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.view_mode = ViewMode::Day;
+        app.heat_view = true;
+        let selected = app.table_state.selected();
+
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.heat_scroll, 0, "the top is a floor");
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.heat_scroll, 1);
+        assert_eq!(
+            app.table_state.selected(),
+            selected,
+            "scrolling moved the table selection"
+        );
+
+        for _ in 0..10 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.heat_scroll, 3, "the last row is the bottom");
+
+        app.set_view_mode(ViewMode::Week);
+        assert_eq!(app.heat_scroll, 0, "a view change kept the offset");
+    }
+
+    /// Only the views that can overflow claim the keys.
+    #[test]
+    fn j_keeps_moving_the_table_in_a_week_heat() {
+        let _guard = env_guard();
+        sandbox("keys-heat-no-scroll");
+        seed(vec![entry(0, "a"), entry(1, "b")], 2);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Week;
+        app.heat_view = true;
+        app.table_state.select(Some(0));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.heat_scroll, 0, "the week heat cannot scroll");
+        assert_eq!(
+            app.table_state.selected(),
+            Some(1),
+            "the table stopped moving under a heat that cannot scroll"
+        );
+    }
+
+    /// The list keeps `j` for the table, heat mode or not.
+    #[test]
+    fn a_day_list_leaves_the_scroll_alone() {
+        let _guard = env_guard();
+        sandbox("keys-heat-list");
+        seed(vec![entry(0, "a"), entry(1, "b")], 2);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::All;
+        app.table_state.select(Some(0));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.heat_scroll, 0);
+        assert_eq!(app.table_state.selected(), Some(1));
     }
 }

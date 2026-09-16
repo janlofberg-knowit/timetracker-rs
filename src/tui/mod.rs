@@ -120,6 +120,9 @@ pub(crate) struct App {
     pub(crate) heat_view: bool,
     /// Whether the Summary's project rows carry their per-project heat strips.
     pub(crate) summary_heat: bool,
+    /// Rows or bands the heat grid is scrolled past. Session state: a view
+    /// change, a period step and `M` all reset it, and it is never persisted.
+    pub(crate) heat_scroll: usize,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -214,6 +217,7 @@ impl App {
             // Year is the only view whose own representation is the heatmap.
             heat_view: layout.heat_view.unwrap_or(START_VIEW == ViewMode::Year),
             summary_heat: layout.summary_heat.unwrap_or(false),
+            heat_scroll: 0,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,

@@ -486,7 +486,42 @@ impl App {
     /// `M`: draw the content area as a heatmap or as the entry list.
     pub(crate) fn toggle_heat_view(&mut self) {
         self.heat_view = !self.heat_view;
+        self.heat_scroll = 0;
         self.persist_layout();
+    }
+
+    /// `j`/`k` in a heat grid that can overflow: the Day view's project rows
+    /// and `All`'s year bands. Reports whether the key was claimed, so every
+    /// other view leaves it to the entries table.
+    pub(crate) fn scroll_heat(&mut self, down: bool) -> bool {
+        let rows = self.heat_scroll_rows();
+        if rows == 0 {
+            return false;
+        }
+        self.heat_scroll = if down {
+            (self.heat_scroll + 1).min(rows - 1)
+        } else {
+            self.heat_scroll.saturating_sub(1)
+        };
+        true
+    }
+
+    /// Rows the Day grid holds or bands `All` stacks, zero where neither the
+    /// heat nor the view can scroll. The renderer clamps again against the
+    /// room it has, so the last row can reach the bottom and no further.
+    fn heat_scroll_rows(&self) -> usize {
+        if !self.heat_view {
+            return 0;
+        }
+        match self.view_mode {
+            ViewMode::Day => self
+                .view_heat_grid(0, 0)
+                .bands
+                .first()
+                .map_or(0, HeatBand::rows),
+            ViewMode::All => self.view_heat_grid(0, 0).bands.len(),
+            _ => 0,
+        }
     }
 
     /// `m`: show or hide the Summary's per-project heat strips.

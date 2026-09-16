@@ -3,6 +3,7 @@
 
 use super::legend::content_legend;
 use crate::tui::summary::{BucketGrid, Grain, HeatBand, strip_cells};
+use crate::tui::types::ViewMode;
 use crate::tui::{App, theme};
 use chrono::{Datelike, Duration, Timelike};
 use ratatui::{
@@ -59,8 +60,12 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let available = (inner_width as usize).saturating_sub(grid.gutter);
-    let drawn: Vec<&HeatBand> = grid.bands.iter().collect();
-    let rows_total: usize = drawn.iter().map(|band| band.rows()).sum();
+    let (drawn, first_row) = scrolled(app, &grid, inner_height);
+    let rows_total: usize = drawn
+        .iter()
+        .map(|band| band.rows())
+        .sum::<usize>()
+        .saturating_sub(first_row);
     if rows_total == 0 || available == 0 {
         f.render_widget(Paragraph::new(Vec::<Line>::new()).block(block), area);
         return;
@@ -80,11 +85,11 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
             ),
             dim,
         )));
-        for (row, cells) in band.cells.iter().enumerate() {
+        for (row, cells) in band.cells.iter().enumerate().skip(first_row) {
             for line in 0..cell_height {
                 // The label names its band once, so a tall row does not stack it.
                 let named = line == cell_height / 2;
-                let opens = row == 0 && line == 0;
+                let opens = row == first_row && line == 0;
                 let label = match (&band.title, opens, named) {
                     (Some(title), true, _) => title.clone(),
                     (_, _, true) => gutter_label(&band.row_labels[row], grid.gutter),
@@ -117,6 +122,26 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &App, area: Rect) {
     }
     lines.truncate(inner_height as usize);
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The bands to draw and the first row of each, once `heat_scroll` is taken
+/// against the room the box has. `All` scrolls whole year bands; the Day view
+/// scrolls its project rows. Both clamp so the last one rests at the bottom.
+fn scrolled<'a>(
+    app: &App,
+    grid: &'a crate::tui::summary::HeatGrid,
+    inner_height: u16,
+) -> (&'a [HeatBand], usize) {
+    let room = inner_height as usize;
+    if app.view_mode == ViewMode::All {
+        let per_band = grid.bands.first().map_or(1, |band| 1 + band.rows());
+        let fits = (room / per_band).max(1);
+        let first = app.heat_scroll.min(grid.bands.len().saturating_sub(fits));
+        return (&grid.bands[first..], 0);
+    }
+    let rows = grid.bands.first().map_or(0, HeatBand::rows);
+    let fits = room.saturating_sub(1);
+    (&grid.bands, app.heat_scroll.min(rows.saturating_sub(fits)))
 }
 
 /// Whether the marker belongs on this line of `row`. A band whose rows are
@@ -264,6 +289,13 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    fn at_noon(year: i32, month: u32, day: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
+
     /// An entry of `minutes` opening at `at`.
     fn entry(id: u64, at: chrono::NaiveDateTime, minutes: i64) -> TimeEntry {
         let start = at.and_local_timezone(Local).unwrap();
@@ -310,6 +342,44 @@ mod tests {
                 (text.trim_end().to_string(), painted)
             })
             .collect()
+    }
+
+    /// `All` stacks a band per year; the scroll offset drops the ones above.
+    #[test]
+    fn the_all_grid_scrolls_past_its_first_year_band() {
+        let _guard = env_guard();
+        sandbox("heat-grid-all-scroll");
+        let mut app = app_for(
+            ViewMode::All,
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+            vec![
+                entry(0, at_noon(2026, 3, 4), 60),
+                entry(1, at_noon(2024, 3, 4), 60),
+            ],
+        );
+
+        let named = |app: &App| {
+            drawn(app, 80, 12)
+                .into_iter()
+                .filter(|(text, _)| text.trim() == "2026" || text.trim() == "2024")
+                .map(|(text, _)| text.trim().to_string())
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(named(&app)[0], "2026", "the newest year is not on top");
+
+        app.heat_scroll = 1;
+        assert_eq!(
+            named(&app),
+            vec!["2024".to_string()],
+            "the offset did not move the bands"
+        );
+
+        app.heat_scroll = 9;
+        assert_eq!(
+            named(&app),
+            vec!["2024".to_string()],
+            "the last band scrolled off the box"
+        );
     }
 
     /// The gutter names each project once and the cells fill what is left.

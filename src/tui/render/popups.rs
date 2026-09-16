@@ -12,7 +12,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("h / ←", "previous period"),
             ("l / →", "next period"),
-            ("j / ↓", "select next entry"),
+            ("j / ↓", "select next entry (scrolls a heat grid)"),
             ("k / ↑", "select previous entry"),
             ("t", "go to today"),
             ("1 / 2 / 3 / 4 / 5", "day / week / month / year / all"),

@@ -147,7 +147,8 @@ each row. The week view puts the weekdays across and the blocks of the day
 down, midnight at the top. The month view puts the days of the month across
 and the same blocks down. The year view puts one week in each column and one
 weekday on each row. The all view stacks one year band on another, the newest
-year at the top.
+year at the top. In the day view and the all view, `j` and `k` scroll the
+project rows or the year bands that do not fit.
 
 ---
 

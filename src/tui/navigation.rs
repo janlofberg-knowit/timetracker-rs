@@ -327,6 +327,7 @@ impl App {
             ViewMode::Year => self.selected_date = shift_year(self.selected_date, 1),
         }
         self.table_state.select(Some(0));
+        self.heat_scroll = 0;
     }
 
     pub(crate) fn previous_period(&mut self) {
@@ -338,16 +339,19 @@ impl App {
             ViewMode::Year => self.selected_date = shift_year(self.selected_date, -1),
         }
         self.table_state.select(Some(0));
+        self.heat_scroll = 0;
     }
 
     pub(crate) fn set_view_mode(&mut self, mode: ViewMode) {
         self.view_mode = mode;
         self.table_state.select(Some(0));
+        self.heat_scroll = 0;
     }
 
     pub(crate) fn go_to_today(&mut self) {
         self.selected_date = Local::now().date_naive();
         self.table_state.select(Some(0));
+        self.heat_scroll = 0;
     }
 
     pub(crate) fn toggle_sort_order(&mut self) {
