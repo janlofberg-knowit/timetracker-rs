@@ -163,6 +163,55 @@ impl HeatGrid {
     }
 }
 
+/// What the cell opening at `start` is called on an axis of `count` cells of
+/// `span` each, or `None` where no tick belongs. The span picks the
+/// vocabulary — a clock hour, a weekday, a date, a month — so every grid and
+/// every strip name their cells alike.
+pub(crate) fn axis_tick(start: NaiveDateTime, span: Duration, count: usize) -> Option<String> {
+    /// Hours between ticks, so a day reads `00 06 12 18`.
+    const TICK_HOURS: u32 = 6;
+    /// Day cells a week holds; more than this is a month, not a week.
+    const WEEK_DAYS: u32 = 7;
+
+    let day = Duration::days(1);
+    if span < day {
+        return (start.minute() == 0 && start.hour().is_multiple_of(TICK_HOURS))
+            .then(|| format!("{:02}", start.hour()));
+    }
+    if span == day {
+        // A month of weekday names orients nobody, so a day axis longer than
+        // a week takes the date of every seventh cell and nothing between.
+        return if count <= WEEK_DAYS as usize {
+            Some(start.format("%a").to_string())
+        } else {
+            (start.day() % WEEK_DAYS == 1).then(|| start.day().to_string())
+        };
+    }
+    if span <= day * 7 {
+        // The week opening a month carries its name.
+        return (start.day() <= 7).then(|| start.format("%b").to_string());
+    }
+    Some(start.format("%b").to_string())
+}
+
+/// The cells of a run of `count` spans from `origin` that `[from, to)`
+/// touches, so a fold walks the entry's own stretch and no further.
+fn touched(
+    origin: NaiveDateTime,
+    span: Duration,
+    count: usize,
+    from: NaiveDateTime,
+    to: NaiveDateTime,
+) -> std::ops::Range<usize> {
+    let seconds = span.num_seconds().max(1);
+    let cell = |at: NaiveDateTime, round_up: i64| {
+        (((at - origin).num_seconds() + round_up).div_euclid(seconds)).clamp(0, count as i64)
+            as usize
+    };
+    let first = cell(from, 0);
+    first..cell(to, seconds - 1).max(first)
+}
+
 /// Time each cell holds, where cell `(row, column)` opens at
 /// `origin + column_span * column + cell_span * row`.
 fn time_cells(
@@ -175,15 +224,13 @@ fn time_cells(
 ) -> Vec<Vec<Option<Duration>>> {
     let mut cells = vec![vec![Some(Duration::zero()); columns]; rows];
     for entry in entries {
-        for column in 0..columns {
+        let (start, end) = entry_span(entry);
+        for column in touched(origin, column_span, columns, start, end) {
             let opens = origin + column_span * column as i32;
-            if overlap(entry, opens, opens + column_span).is_zero() {
-                continue;
-            }
-            for (row, line) in cells.iter_mut().enumerate() {
+            for row in touched(opens, cell_span, rows, start, end) {
                 let from = opens + cell_span * row as i32;
                 let part = overlap(entry, from, from + cell_span);
-                if let Some(cell) = line[column].as_mut() {
+                if let Some(cell) = cells[row][column].as_mut() {
                     *cell += part;
                 }
             }
@@ -353,26 +400,19 @@ impl App {
             .map(|(index, project)| (project.as_str(), index))
             .collect();
 
-        let mut cells = vec![vec![Some(Duration::zero()); columns]; row_labels.len()];
+        let mut rows: Vec<Vec<&TimeEntry>> = vec![Vec::new(); row_labels.len()];
         for entry in entries {
-            let Some(&row) = row_of.get(project_key(entry)) else {
-                continue;
-            };
-            for (column, cell) in cells[row].iter_mut().enumerate() {
-                let from = opens + cell_span * column as i32;
-                let part = overlap(entry, from, from + cell_span);
-                if let Some(cell) = cell.as_mut() {
-                    *cell += part;
-                }
+            if let Some(&row) = row_of.get(project_key(entry)) {
+                rows[row].push(entry);
             }
         }
+        let cells = rows
+            .iter()
+            .flat_map(|row| time_cells(row, opens, columns, cell_span, 1, cell_span))
+            .collect();
 
         let column_ticks = (0..columns)
-            .map(|column| {
-                let at = opens + cell_span * column as i32;
-                (at.minute() == 0 && at.hour().is_multiple_of(TICK_HOURS))
-                    .then(|| format!("{:02}", at.hour()))
-            })
+            .map(|column| axis_tick(opens + cell_span * column as i32, cell_span, columns))
             .collect();
 
         HeatGrid {
@@ -414,14 +454,7 @@ impl App {
 
         let cells = time_cells(entries, opens, columns, column_span, rows, cell_span);
         let column_ticks = (0..columns)
-            .map(|column| {
-                let day = opens + column_span * column as i32;
-                if columns <= 7 {
-                    Some(day.format("%a").to_string())
-                } else {
-                    column.is_multiple_of(7).then(|| (column + 1).to_string())
-                }
-            })
+            .map(|column| axis_tick(opens + column_span * column as i32, column_span, columns))
             .collect();
         let row_labels = (0..rows)
             .map(|row| format!("{:02}", row as i64 * hours))
@@ -451,22 +484,29 @@ impl App {
     /// Day-sized cells: one column per week, one row per weekday. The Year is
     /// one band, `All` one band per year that holds an entry, newest first.
     fn day_cell_heat_grid(&self, entries: &[&TimeEntry]) -> HeatGrid {
+        // An entry crossing New Year belongs to both bands it runs through.
+        let mut by_year: HashMap<i32, Vec<&TimeEntry>> = HashMap::new();
+        for entry in entries {
+            let (start, end) = entry_span(entry);
+            for year in start.year()..=end.year() {
+                by_year.entry(year).or_default().push(entry);
+            }
+        }
         let years: Vec<i32> = if self.view_mode == ViewMode::Year {
             vec![self.selected_date.year()]
         } else {
-            let mut years: Vec<i32> = entries
-                .iter()
-                .map(|entry| entry.start_time.naive_local().year())
-                .collect();
+            let mut years: Vec<i32> = by_year.keys().copied().collect();
             years.sort_unstable_by(|a, b| b.cmp(a));
-            years.dedup();
             years
         };
         let titled = self.view_mode != ViewMode::Year;
         HeatGrid {
             bands: years
                 .into_iter()
-                .map(|year| year_band(entries, year, titled))
+                .map(|year| {
+                    let held = by_year.get(&year).map(Vec::as_slice).unwrap_or_default();
+                    year_band(held, year, titled)
+                })
                 .collect(),
             unit: "day",
             gutter: HEAT_GUTTER,
@@ -751,8 +791,9 @@ fn year_band(entries: &[&TimeEntry], year: i32, titled: bool) -> HeatBand {
         column_ticks: (0..columns)
             .map(|column| {
                 let monday = date_of(0, column);
-                (monday.year() == year && monday.day() <= 7)
-                    .then(|| monday.format("%b").to_string())
+                (monday.year() == year)
+                    .then(|| axis_tick(midnight(monday), week, columns))
+                    .flatten()
             })
             .collect(),
         cells,
@@ -761,9 +802,6 @@ fn year_band(entries: &[&TimeEntry], year: i32, titled: bool) -> HeatBand {
         now_column: now.map(|(_, column)| column),
     }
 }
-
-/// Hours between ticks on a clock axis, so a day reads `00 06 12 18`.
-const TICK_HOURS: u32 = 6;
 
 /// Which column holds this moment, or `None` when the period is not now.
 fn column_now(opens: NaiveDateTime, column_span: Duration, columns: usize) -> Option<usize> {
@@ -1253,5 +1291,109 @@ mod tests {
         assert_eq!(grid.total, Duration::hours(1), "the total outran the box");
         assert_eq!(band_total(band), grid.total);
         assert_eq!(grid.active(), 1);
+    }
+
+    /// One tick per cell would be a wall of numbers; a clock axis names every
+    /// sixth hour, whatever the cells are worth.
+    #[test]
+    fn a_clock_axis_names_every_sixth_hour() {
+        let hourly: Vec<Option<String>> = (0..24)
+            .map(|hour| {
+                axis_tick(
+                    at(2026, 1, 1, 0, 0) + Duration::hours(hour),
+                    Duration::hours(1),
+                    24,
+                )
+            })
+            .collect();
+        assert_eq!(hourly[0].as_deref(), Some("00"));
+        assert_eq!(hourly[6].as_deref(), Some("06"));
+        assert_eq!(hourly[7], None);
+
+        let quarters: Vec<Option<String>> = (0..96)
+            .map(|cell| {
+                axis_tick(
+                    at(2026, 1, 1, 0, 0) + Duration::minutes(15 * cell),
+                    Duration::minutes(15),
+                    96,
+                )
+            })
+            .collect();
+        assert_eq!(quarters[24].as_deref(), Some("06"), "06:00 is unnamed");
+        assert_eq!(quarters[25], None, "a quarter past six took a tick");
+    }
+
+    /// Seven day cells are a week, and a week names its weekdays.
+    #[test]
+    fn a_week_long_day_axis_keeps_its_weekday_names() {
+        let names: Option<Vec<String>> = (0..7)
+            .map(|day| {
+                axis_tick(
+                    at(2026, 1, 1, 0, 0) + Duration::days(day),
+                    Duration::days(1),
+                    7,
+                )
+            })
+            .collect();
+        assert_eq!(
+            names.expect("every weekday is named"),
+            vec!["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"],
+        );
+    }
+
+    /// A month of weekday names orients nobody, so the long day axis takes
+    /// the date of every seventh cell instead.
+    #[test]
+    fn a_day_axis_longer_than_a_week_is_labelled_every_seventh_date() {
+        let labelled: Vec<(usize, String)> = (0..31)
+            .filter_map(|day| {
+                axis_tick(
+                    at(2026, 1, 1, 0, 0) + Duration::days(day as i64),
+                    Duration::days(1),
+                    31,
+                )
+                .map(|text| (day, text))
+            })
+            .collect();
+        assert_eq!(
+            labelled,
+            vec![
+                (0, "1".to_string()),
+                (7, "8".to_string()),
+                (14, "15".to_string()),
+                (21, "22".to_string()),
+                (28, "29".to_string()),
+            ]
+        );
+    }
+
+    /// A week cell names the month it opens; a month cell names its own.
+    #[test]
+    fn the_week_and_month_axes_name_their_months() {
+        let weeks: Vec<Option<String>> = (0..10)
+            .map(|week| {
+                axis_tick(
+                    at(2026, 1, 1, 0, 0) + Duration::days(week * 7),
+                    Duration::days(7),
+                    10,
+                )
+            })
+            .collect();
+        assert_eq!(weeks[0].as_deref(), Some("Jan"), "the week opening a month");
+        assert_eq!(weeks[1], None);
+
+        let months: Vec<Option<String>> = (0..12)
+            .map(|month| {
+                let start = at(2026, 1, 1, 0, 0)
+                    .checked_add_months(Months::new(month))
+                    .unwrap();
+                let next = at(2026, 1, 1, 0, 0)
+                    .checked_add_months(Months::new(month + 1))
+                    .unwrap();
+                axis_tick(start, next - start, 12)
+            })
+            .collect();
+        assert_eq!(months[0].as_deref(), Some("Jan"));
+        assert_eq!(months[11].as_deref(), Some("Dec"));
     }
 }

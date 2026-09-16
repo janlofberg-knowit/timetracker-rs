@@ -2,10 +2,10 @@
 //! `Less … More` ramps, and the content pane's own two-dimensional grid.
 
 use super::legend::content_legend;
-use crate::tui::summary::{BucketGrid, Grain, HeatBand, strip_cells};
+use crate::tui::summary::{BucketGrid, HeatBand, axis_tick, strip_cells};
 use crate::tui::types::ViewMode;
 use crate::tui::{App, theme};
-use chrono::{Datelike, Duration, Timelike};
+use chrono::Duration;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
@@ -78,8 +78,9 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     let cell_height = ((inner_height as usize).saturating_sub(drawn.len()) / rows_total).max(1);
     let dim = Style::default().fg(theme::inactive());
 
-    let mut lines: Vec<Line> = Vec::new();
-    for band in drawn {
+    let room = inner_height as usize;
+    let mut lines: Vec<Line> = Vec::with_capacity(room);
+    'bands: for band in drawn {
         let (cell_width, columns) = strip_cells(available, band.columns());
         // Too narrow a box sheds the oldest columns, as every other strip
         // does: the newest weeks and the marker on today must survive.
@@ -94,6 +95,9 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
         )));
         for (row, cells) in band.cells.iter().enumerate().skip(first_row) {
             for line in 0..cell_height {
+                if lines.len() == room {
+                    break 'bands;
+                }
                 // The label names its band once, so a tall row does not stack it.
                 let named = line == cell_height / 2;
                 let opens = row == first_row && line == 0;
@@ -127,7 +131,6 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
-    lines.truncate(inner_height as usize);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -170,37 +173,12 @@ pub(super) fn heat_axis(
     cell_width: usize,
 ) -> String {
     let labels: Vec<Option<String>> = (0..cells)
-        .map(|cell| axis_tick(grid, first + cell))
+        .map(|cell| {
+            let start = grid.start(first + cell);
+            axis_tick(start, grid.start(first + cell + 1) - start, grid.len())
+        })
         .collect();
     axis_line(&labels, cell_width)
-}
-
-/// What bucket `index` is called on the axis, or `None` where no tick belongs.
-/// The period's own length decides, never the grain alone: `Grain::Day` covers
-/// both a seven-day week and a month, and a month of weekday names orients
-/// nobody.
-fn axis_tick(grid: &BucketGrid, index: usize) -> Option<String> {
-    /// Hours between ticks, so a day reads `00 06 12 18`.
-    const TICK_HOURS: u32 = 6;
-    /// Day buckets a week holds; more than this is a month, not a week.
-    const WEEK_DAYS: usize = 7;
-
-    let start = grid.start(index);
-    match grid.grain {
-        Grain::Hour => start
-            .hour()
-            .is_multiple_of(TICK_HOURS)
-            .then(|| format!("{:02}", start.hour())),
-        // A week names its weekdays; a longer day axis takes the date of every
-        // seventh bucket and nothing between, so a month reads `1 8 15 22 29`.
-        Grain::Day if grid.len() <= WEEK_DAYS => Some(start.format("%a").to_string()),
-        Grain::Day => index
-            .is_multiple_of(WEEK_DAYS)
-            .then(|| (index + 1).to_string()),
-        // The week opening a month carries its name, as the yearly overview does.
-        Grain::Week => (start.day() <= 7).then(|| start.format("%b").to_string()),
-        Grain::Month => Some(start.format("%b").to_string()),
-    }
 }
 
 /// One tick per labelled cell, each written over the cell it belongs to. A
