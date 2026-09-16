@@ -1,118 +1,15 @@
-use super::heat::{TODAY_MARKER, axis_line, day_heat_legend, heat_block_title};
 use super::legend::content_legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
 use crate::tui::rows::{GroupHeader, Member, VisibleRow};
-use crate::tui::summary::strip_cells;
 use crate::tui::{App, theme};
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{Duration, Local, NaiveDate};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 use std::collections::HashMap;
-
-/// A GitHub-style yearly contribution heatmap: one column band per week, one
-/// row band per weekday, each cell shaded by `theme::heat_color` for that
-/// day's total. The grid fills the block in both axes; when the width runs out
-/// the oldest weeks shed, since a window onto the year still reads as the year.
-pub(super) fn render_year_heatmap(f: &mut Frame, app: &App, area: Rect) {
-    const GUTTER: usize = 4; // weekday label width, e.g. "Mon "
-    const WEEKDAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-    let year = app.selected_date.year();
-    let breakdown = app.data.year_breakdown(year);
-    let today = Local::now().date_naive();
-
-    let grid_start = TimeData::week_start(NaiveDate::from_ymd_opt(year, 1, 1).unwrap());
-    let grid_end =
-        TimeData::week_start(NaiveDate::from_ymd_opt(year, 12, 31).unwrap()) + Duration::days(6);
-    let total_weeks = ((grid_end - grid_start).num_days() / 7 + 1) as usize;
-
-    // Cells are asked for in pairs of columns, so a week keeps its two-column
-    // minimum and the oldest weeks still shed once the room runs out.
-    let available = (area.width as usize)
-        .saturating_sub(2)
-        .saturating_sub(GUTTER);
-    let (pairs, visible_weeks) = strip_cells(available / 2, total_weeks);
-    let cell_width = pairs * 2;
-    let first_week = total_weeks - visible_weeks;
-
-    // Seven bands over the rows the month header leaves.
-    let cell_height = ((area.height as usize).saturating_sub(3) / 7).max(1);
-    let middle = cell_height / 2;
-
-    let monday_of = |week: usize| grid_start + Duration::days(((first_week + week) * 7) as i64);
-    let header = axis_line(
-        &(0..visible_weeks)
-            .map(|week| {
-                let monday = monday_of(week);
-                (monday.year() == year && monday.day() <= 7)
-                    .then(|| monday.format("%b").to_string())
-            })
-            .collect::<Vec<_>>(),
-        cell_width,
-    );
-    let mut lines = vec![Line::from(Span::styled(
-        format!("{}{}", " ".repeat(GUTTER), header),
-        Style::default().fg(theme::inactive()),
-    ))];
-
-    for (weekday, label) in WEEKDAY_LABELS.iter().enumerate() {
-        for row in 0..cell_height {
-            // The label names the band once, so the gutter does not read as
-            // seven repeated words.
-            let named = row == middle;
-            let mut spans = vec![Span::styled(
-                format!(
-                    "{:<width$}",
-                    if named { *label } else { "" },
-                    width = GUTTER
-                ),
-                Style::default().fg(theme::inactive()),
-            )];
-            for week in 0..visible_weeks {
-                let date = monday_of(week) + Duration::days(weekday as i64);
-                if date.year() != year {
-                    spans.push(Span::raw(" ".repeat(cell_width)));
-                    continue;
-                }
-                let hours = breakdown.get(&date).map(|d| d.num_hours()).unwrap_or(0);
-                let cell_style = Style::default().bg(theme::heat_color(hours));
-                if date == today && named {
-                    let pad = " ".repeat(cell_width.saturating_sub(1));
-                    spans.push(Span::styled(
-                        format!("{TODAY_MARKER}{pad}"),
-                        cell_style.fg(theme::highlight()).bold(),
-                    ));
-                } else {
-                    spans.push(Span::styled(" ".repeat(cell_width), cell_style));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-    }
-
-    let total = breakdown.values().fold(Duration::zero(), |acc, d| acc + *d);
-    let inner_width = area.width.saturating_sub(2);
-    let keys = content_legend(app, inner_width);
-    let keys_width = keys.as_ref().map(|line| line.width()).unwrap_or(0) as u16;
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
-        .title(Span::styled(
-            heat_block_title(total, breakdown.len(), "day"),
-            Style::default().fg(theme::title()),
-        ));
-    if let Some(keys) = keys {
-        block = block.title_bottom(keys.left_aligned());
-    }
-    if let Some(ramp) = day_heat_legend(keys_width, inner_width) {
-        block = block.title_bottom(ramp.right_aligned());
-    }
-    f.render_widget(Paragraph::new(lines).block(block), area);
-}
 
 pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     let week_start = TimeData::week_start(app.selected_date);

@@ -238,8 +238,8 @@ impl App {
 
     /// The grain of the current view plus one bucket list per row of `rows`,
     /// index for index, oldest bucket first. Every entry's whole duration goes
-    /// to the bucket holding its `start_time`, as `year_breakdown` does, so a
-    /// row's buckets sum to its [`ProjectTotal::total`]. Sheds nothing: the
+    /// to the bucket holding its `start_time`, so a row's buckets sum to its
+    /// [`ProjectTotal::total`]. Sheds nothing: the
     /// renderer owns the width and must take its maximum over what it draws.
     pub(crate) fn project_buckets(&self, rows: &[ProjectTotal]) -> BucketGrid {
         let grain = Grain::for_view(self.view_mode);
@@ -285,7 +285,8 @@ impl App {
         let entries = self.filtered_entries();
         let mut grid = match self.view_mode {
             ViewMode::Day => self.day_heat_grid(&entries, inner_width),
-            _ => self.block_heat_grid(&entries, inner_height),
+            ViewMode::Week | ViewMode::Month => self.block_heat_grid(&entries, inner_height),
+            ViewMode::Year | ViewMode::All => self.day_cell_heat_grid(&entries),
         };
         grid.total = entries
             .iter()
@@ -405,6 +406,32 @@ impl App {
                 now_column,
             }],
             unit: "block",
+            gutter: HEAT_GUTTER,
+            total: Duration::zero(),
+        }
+    }
+
+    /// Day-sized cells: one column per week, one row per weekday. The Year is
+    /// one band, `All` one band per year that holds an entry, newest first.
+    fn day_cell_heat_grid(&self, entries: &[&TimeEntry]) -> HeatGrid {
+        let years: Vec<i32> = if self.view_mode == ViewMode::Year {
+            vec![self.selected_date.year()]
+        } else {
+            let mut years: Vec<i32> = entries
+                .iter()
+                .map(|entry| entry.start_time.naive_local().year())
+                .collect();
+            years.sort_unstable_by(|a, b| b.cmp(a));
+            years.dedup();
+            years
+        };
+        let titled = self.view_mode != ViewMode::Year;
+        HeatGrid {
+            bands: years
+                .into_iter()
+                .map(|year| year_band(entries, year, titled))
+                .collect(),
+            unit: "day",
             gutter: HEAT_GUTTER,
             total: Duration::zero(),
         }
@@ -611,6 +638,50 @@ fn bucket_index(grain: Grain, anchor: NaiveDateTime, start: NaiveDateTime) -> i6
             (i64::from(start.year()) - i64::from(anchor.year())) * 12 + i64::from(start.month())
                 - i64::from(anchor.month())
         }
+    }
+}
+
+/// One year as weeks across and weekdays down, as a contribution graph draws
+/// it. A day outside the year is blank rather than empty.
+fn year_band(entries: &[&TimeEntry], year: i32, titled: bool) -> HeatBand {
+    const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+    let opens = TimeData::week_start(NaiveDate::from_ymd_opt(year, 1, 1).unwrap());
+    let closes =
+        TimeData::week_start(NaiveDate::from_ymd_opt(year, 12, 31).unwrap()) + Duration::days(6);
+    let columns = ((closes - opens).num_days() / 7 + 1) as usize;
+    let day = Duration::days(1);
+    let week = Duration::days(7);
+    let date_of = |row: usize, column: usize| opens + Duration::days((column * 7 + row) as i64);
+
+    let mut cells = time_cells(entries, midnight(opens), columns, week, 7, day);
+    for (row, line) in cells.iter_mut().enumerate() {
+        for (column, cell) in line.iter_mut().enumerate() {
+            if date_of(row, column).year() != year {
+                *cell = None;
+            }
+        }
+    }
+
+    let today = Local::now().date_naive();
+    let now = (today.year() == year).then(|| {
+        let offset = (today - opens).num_days();
+        ((offset % 7) as usize, (offset / 7) as usize)
+    });
+    HeatBand {
+        title: titled.then(|| year.to_string()),
+        row_labels: WEEKDAYS.iter().map(|day| day.to_string()).collect(),
+        column_ticks: (0..columns)
+            .map(|column| {
+                let monday = date_of(0, column);
+                (monday.year() == year && monday.day() <= 7)
+                    .then(|| monday.format("%b").to_string())
+            })
+            .collect(),
+        cells,
+        cell_span: day,
+        now_row: now.map(|(row, _)| row),
+        now_column: now.map(|(_, column)| column),
     }
 }
 
@@ -982,5 +1053,82 @@ mod tests {
         let grid = app.view_heat_grid(80, 20);
         assert_eq!(grid.bands[0].row_labels, vec!["beta".to_string()]);
         assert_eq!(grid.total, Duration::hours(2));
+    }
+
+    /// The year is weeks across and weekdays down, and the days of its
+    /// neighbours stay blank.
+    #[test]
+    fn a_year_grid_is_seven_weekday_rows_over_its_weeks() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-year");
+        let day = NaiveDate::from_ymd_opt(2026, 3, 4).unwrap();
+        let app = app_for(
+            ViewMode::Year,
+            day,
+            vec![spanning(0, "alpha", at(2026, 3, 4, 9, 0), 120)],
+        );
+
+        let grid = app.view_heat_grid(120, 20);
+        assert_eq!(grid.unit, "day");
+        let band = &grid.bands[0];
+        assert_eq!(band.rows(), 7);
+        assert_eq!(band.row_labels[0], "Mon");
+        assert_eq!(band.cell_span, Duration::days(1));
+        assert_eq!(band.title, None, "the Year view names no band");
+        assert_eq!(band.columns(), 53, "2026 spans 53 grid weeks");
+        // 2026 opens on a Thursday, so its first whole grid week is January's.
+        assert_eq!(band.column_ticks[0], None);
+        assert_eq!(band.column_ticks[1].as_deref(), Some("Jan"));
+        // 2026-03-04 is a Wednesday, in the ninth grid week.
+        assert_eq!(band.cells[2][9], Some(Duration::hours(2)));
+        assert_eq!(band.cells[0][0], None, "December is not part of 2026");
+    }
+
+    /// Every heat surface folds the filtered entries, the year grid included.
+    #[test]
+    fn a_project_filter_narrows_the_year_grid() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-year-filter");
+        let day = NaiveDate::from_ymd_opt(2026, 3, 4).unwrap();
+        let mut app = app_for(
+            ViewMode::Year,
+            day,
+            vec![
+                spanning(0, "alpha", at(2026, 3, 4, 9, 0), 120),
+                spanning(1, "beta", at(2026, 3, 5, 9, 0), 60),
+            ],
+        );
+        assert_eq!(app.view_heat_grid(120, 20).total, Duration::hours(3));
+
+        app.project_filter.cycle("alpha", true);
+        let grid = app.view_heat_grid(120, 20);
+        assert_eq!(grid.total, Duration::hours(2));
+        assert_eq!(grid.bands[0].cells[3][9], Some(Duration::zero()), "beta");
+    }
+
+    /// `All` stacks a band per year that holds time, newest at the top.
+    #[test]
+    fn the_all_view_stacks_one_band_per_year_newest_first() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-all");
+        let app = app_for(
+            ViewMode::All,
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+            vec![
+                spanning(0, "alpha", at(2024, 3, 4, 9, 0), 60),
+                spanning(1, "alpha", at(2026, 3, 4, 9, 0), 60),
+                spanning(2, "alpha", at(2022, 3, 4, 9, 0), 60),
+            ],
+        );
+
+        let grid = app.view_heat_grid(120, 30);
+        let titles: Vec<Option<&str>> = grid
+            .bands
+            .iter()
+            .map(|band| band.title.as_deref())
+            .collect();
+        assert_eq!(titles, vec![Some("2026"), Some("2024"), Some("2022")]);
+        assert_eq!(grid.total, Duration::hours(3));
+        assert_eq!(grid.active(), 3, "one day of each year holds time");
     }
 }

@@ -3308,8 +3308,8 @@ mod tests {
         let (narrow_width, narrow_weeks) = band(heat_block_cells(&mut app, 140, 30).1);
         let (wide_width, wide_weeks) = band(heat_block_cells(&mut app, 280, 30).1);
 
-        assert_eq!(narrow_width, 2, "a week is never under two columns");
-        assert_eq!(wide_width, 4, "twice the width did not widen the cells");
+        assert_eq!(narrow_width, 2, "138 inner columns over 53 weeks");
+        assert_eq!(wide_width, 5, "twice the width did not widen the cells");
         assert_eq!(
             narrow_weeks, wide_weeks,
             "the wider grid grew weeks instead of cells"
@@ -3321,16 +3321,17 @@ mod tests {
         );
     }
 
-    /// Too narrow a window still drops the oldest weeks, two columns each.
+    /// A narrow window narrows the cells; the year keeps every week of its own.
     #[test]
-    fn a_narrow_year_grid_sheds_its_oldest_weeks() {
+    fn a_narrow_year_grid_keeps_every_week_of_the_year() {
         let _guard = env_guard();
         sandbox("year-view-narrow");
         let mut app = year_view_2026();
 
-        // 58 inner columns less the gutter leave 27 pairs for 53 weeks.
+        // 58 inner columns less the gutter leave one each for 53 weeks; the
+        // Monday band opens in 2025, so one of its cells stays unpainted.
         let (_, rows) = heat_block_cells(&mut app, 60, 30);
-        assert_eq!(rows[0].len(), 27 * 2, "the shed grid is not two wide");
+        assert_eq!(rows[0].len(), WEEKS_IN_2026 - 1);
     }
 
     /// The grid takes the height it is given, and names each weekday once.
