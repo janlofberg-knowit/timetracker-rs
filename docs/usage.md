@@ -132,13 +132,22 @@ tt tui
 ```
 
 **Views.** The number keys pick the period the screen reports on, shortest
-first: `1` day, `2` week, `3` month, `4` year, `5` all entries. The year view
-shades a week per column. `h` and `l` step one period back or forward.
+first: `1` day, `2` week, `3` month, `4` year, `5` all entries. `h` and `l`
+step one period back or forward.
 
 **Heatmaps.** `M` flips the open view between its entry list and a heatmap of
-the same period. The year view opens as a heatmap; the other views open as
-lists. `m` shows or hides the per-project heat strips in the Summary box,
-which start hidden. Both choices are kept for the next run.
+the same period. Each heatmap is a grid with two axes. A cell becomes darker
+as more of its own span holds time. The year view opens as a heatmap; the
+other views open as lists. `m` shows or hides the per-project heat strips in
+the Summary box, which start hidden. The app keeps both choices for the next
+run.
+
+**Heatmap axes.** The day view puts the time of day across and one project on
+each row. The week view puts the weekdays across and the blocks of the day
+down, midnight at the top. The month view puts the days of the month across
+and the same blocks down. The year view puts one week in each column and one
+weekday on each row. The all view stacks one year band on another, the newest
+year at the top.
 
 ---
 
