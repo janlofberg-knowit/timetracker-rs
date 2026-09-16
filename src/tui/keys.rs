@@ -891,6 +891,7 @@ mod tests {
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
         app.heat_view = true;
+        app.heat_scroll_max = 3;
         let selected = app.table_state.selected();
 
         press(&mut app, KeyCode::Char('k'));
@@ -948,10 +949,9 @@ mod tests {
         assert_eq!(app.table_state.selected(), Some(1));
     }
 
-    /// The offset stops where the box does. Pressing on past the bottom used
-    /// to cost one dead `k` per press to come back.
+    /// The offset stops where the box does.
     #[test]
-    fn the_day_heat_scroll_stops_at_the_rows_the_box_holds() {
+    fn the_day_heat_scroll_stops_at_the_limit_the_draw_set() {
         let _guard = env_guard();
         sandbox("keys-heat-scroll-room");
         let today = Local::now().date_naive();
@@ -981,8 +981,8 @@ mod tests {
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
         app.heat_view = true;
-        // The axis line and the seven rows the box drew under it.
-        app.heat_box_height = 8;
+        // Eight project rows over the seven the last draw had room for.
+        app.heat_scroll_max = 1;
 
         for _ in 0..6 {
             press(&mut app, KeyCode::Char('j'));
@@ -991,5 +991,26 @@ mod tests {
 
         press(&mut app, KeyCode::Char('k'));
         assert_eq!(app.heat_scroll, 0, "one press did not reach the top");
+    }
+
+    /// A filter leaves other projects on the grid, so the offset goes home.
+    #[test]
+    fn a_pane_filter_resets_the_heat_scroll() {
+        let _guard = env_guard();
+        sandbox("keys-heat-filter-reset");
+        seed(vec![entry(0, "a"), entry(1, "b")], 2);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+        app.heat_view = true;
+        app.heat_scroll_max = 3;
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.heat_scroll, 1);
+
+        app.clear_filters();
+        assert_eq!(app.heat_scroll, 0, "a filter change kept the offset");
+
+        press(&mut app, KeyCode::Char('j'));
+        app.handle_search_char('a');
+        assert_eq!(app.heat_scroll, 0, "a search kept the offset");
     }
 }

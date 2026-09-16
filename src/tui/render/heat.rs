@@ -2,7 +2,7 @@
 //! `Less … More` ramps, and the content pane's own two-dimensional grid.
 
 use super::legend::content_legend;
-use crate::tui::summary::{BucketGrid, HeatBand, axis_tick, strip_cells};
+use crate::tui::summary::{BucketGrid, HeatBand, HeatGrid, axis_tick, strip_cells};
 use crate::tui::types::ViewMode;
 use crate::tui::{App, theme};
 use chrono::Duration;
@@ -32,11 +32,12 @@ pub(super) fn heat_block_title(total: Duration, active: usize, unit: &str) -> St
 pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_width = area.width.saturating_sub(2);
     let inner_height = area.height.saturating_sub(2);
-    // Stamp the room before the fold, or the scroll clamps against the box
-    // the last frame had.
-    app.heat_box_height = inner_height;
-    let app = &*app;
     let grid = app.view_heat_grid(inner_width, inner_height);
+    // The draw owns the clamp: it alone knows the room and the layout. `j`
+    // and `k` read the limit back off `App`.
+    app.heat_scroll_max = scroll_max(&grid, inner_height, app.view_mode);
+    app.heat_scroll = app.heat_scroll.min(app.heat_scroll_max);
+    let app = &*app;
     let day_sized = grid
         .bands
         .first()
@@ -134,16 +135,31 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// The bands to draw and the first row of each, at `heat_scroll`. `All`
-/// scrolls whole year bands; the Day view scrolls its project rows. The
-/// offset is clamped where it is taken, so this only keeps it in bounds.
-fn scrolled<'a>(app: &App, grid: &'a crate::tui::summary::HeatGrid) -> (&'a [HeatBand], usize) {
-    if app.view_mode == ViewMode::All {
-        let first = app.heat_scroll.min(grid.bands.len().saturating_sub(1));
-        return (&grid.bands[first..], 0);
+/// How far the offset may go: the rows or bands the box has no room for, at
+/// one line each. Only `All` scrolls its bands, only the Day view its rows.
+fn scroll_max(grid: &HeatGrid, inner_height: u16, view: ViewMode) -> usize {
+    let room = inner_height as usize;
+    match view {
+        ViewMode::All => {
+            let band_lines = grid.bands.first().map_or(1, |band| 1 + band.rows());
+            grid.bands.len().saturating_sub((room / band_lines).max(1))
+        }
+        // The axis costs a line; the rows take the rest, one each.
+        ViewMode::Day => grid
+            .bands
+            .first()
+            .map_or(0, HeatBand::rows)
+            .saturating_sub(room.saturating_sub(1)),
+        _ => 0,
     }
-    let rows = grid.bands.first().map_or(0, HeatBand::rows);
-    (&grid.bands, app.heat_scroll.min(rows.saturating_sub(1)))
+}
+
+/// The bands to draw and the first row of each, at the clamped `heat_scroll`.
+fn scrolled<'a>(app: &App, grid: &'a HeatGrid) -> (&'a [HeatBand], usize) {
+    if app.view_mode == ViewMode::All {
+        return (&grid.bands[app.heat_scroll..], 0);
+    }
+    (&grid.bands, app.heat_scroll)
 }
 
 /// Whether the marker belongs on this line of `row`. A band whose rows are
@@ -343,7 +359,7 @@ mod tests {
                 .collect::<Vec<String>>()
         };
         assert_eq!(named(&mut app)[0], "2026", "the newest year is not on top");
-        assert_eq!(app.heat_box_height, 10, "the draw did not stamp the room");
+        assert_eq!(app.heat_scroll_max, 1, "the draw did not set the limit");
 
         app.heat_scroll = 1;
         assert_eq!(
@@ -410,6 +426,36 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let title: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();
         assert!(title.contains("1 active hour"), "{title}");
+    }
+
+    /// The draw works out how far the grid may scroll and pulls an offset
+    /// left over from a taller box back with it.
+    #[test]
+    fn the_draw_sets_the_scroll_limit_and_clamps_the_offset() {
+        let _guard = env_guard();
+        sandbox("heat-grid-limit");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let mut app = app_for(
+            ViewMode::Day,
+            day,
+            (0..8)
+                .map(|id| entry(id, day.and_hms_opt(8 + id as u32, 0, 0).unwrap(), 30))
+                .collect(),
+        );
+        for (index, held) in app.data.entries.iter_mut().enumerate() {
+            held.project = Some(format!("p{index}"));
+        }
+        app.heat_scroll = 6;
+
+        // Eight inner lines: the axis, then seven of the eight rows.
+        drawn(&mut app, 80, 10);
+        assert_eq!(app.heat_scroll_max, 1);
+        assert_eq!(app.heat_scroll, 1, "the offset outlived the taller box");
+
+        // A box with room for every row scrolls nowhere.
+        drawn(&mut app, 80, 20);
+        assert_eq!(app.heat_scroll_max, 0);
+        assert_eq!(app.heat_scroll, 0);
     }
 
     /// The gutter names each project once and the cells fill what is left.

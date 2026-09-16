@@ -337,8 +337,10 @@ impl App {
             Pane::Projects => self.project_filter.cycle(&value, forward),
             Pane::Tags => self.tag_filter.cycle(&value, forward),
         }
-        // The row that was selected is very unlikely to still be the same row.
+        // The row that was selected is very unlikely to still be the same row,
+        // and the heat grid holds other projects now.
         self.table_state.select(Some(0));
+        self.heat_scroll = 0;
         true
     }
 

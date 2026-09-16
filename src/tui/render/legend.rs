@@ -3,17 +3,20 @@
 use crate::tui::{App, theme};
 use ratatui::prelude::*;
 
-/// The keys the content box owns, whichever way it is drawn, so the list, the
-/// heat row and the year grid all name the same ones. The toggle leads and is
-/// named by the mode it switches **to**, so it reads as the action.
+/// The keys the content box owns, in the way it is drawn: the list sorts and
+/// groups, the grid scrolls once it overflows. The toggle leads and is named
+/// by the mode it switches **to**, so it reads as the action.
 pub(super) fn content_legend(app: &App, width: u16) -> Option<Line<'static>> {
+    if app.heat_view {
+        let mut keys = vec![("M", "list", true)];
+        if app.heat_scroll_max > 0 {
+            keys.push(("j/k", "scroll", false));
+        }
+        return legend(&keys, width);
+    }
     legend(
         &[
-            (
-                "M",
-                if app.heat_view { "list" } else { "heatmap" },
-                app.heat_view,
-            ),
+            ("M", "heatmap", false),
             ("o", "sort order", false),
             ("g", "issue group", false),
         ],
@@ -125,5 +128,28 @@ mod tests {
             "a heatmap must offer the list: {}",
             text(&line)
         );
+    }
+
+    /// The grid offers the keys it really has: no sort order, and `j/k` only
+    /// once it has more rows than the box.
+    #[test]
+    fn the_heat_legend_names_the_scroll_only_while_it_scrolls() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("content-legend-heat");
+        crate::storage::save_data(&crate::tracker::TimeData {
+            entries: Vec::new(),
+            next_id: 0,
+            schema_version: 1,
+        })
+        .unwrap();
+
+        let mut app = App::new().unwrap();
+        app.heat_view = true;
+        let line = content_legend(&app, 60).expect("the legend fits 60 cells");
+        assert_eq!(text(&line), " M: list ", "a grid that fits offers no keys");
+
+        app.heat_scroll_max = 2;
+        let line = content_legend(&app, 60).expect("the legend fits 60 cells");
+        assert_eq!(text(&line), " M: list \u{b7} j/k: scroll ");
     }
 }

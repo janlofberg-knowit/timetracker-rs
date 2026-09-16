@@ -123,9 +123,9 @@ pub(crate) struct App {
     /// Rows or bands the heat grid is scrolled past. Session state: a view
     /// change, a period step and `M` all reset it, and it is never persisted.
     pub(crate) heat_scroll: usize,
-    /// Inner height of the content box, as the last frame drew it. The scroll
-    /// clamps against this, so stamp it before the grid reads it.
-    pub(crate) heat_box_height: u16,
+    /// How far `heat_scroll` may go, as the last frame worked it out. The
+    /// renderer owns the clamp; `j`/`k` only read the limit back.
+    pub(crate) heat_scroll_max: usize,
     /// What `Tab` has given focus to, and where each pane's cursor rests.
     pub(crate) focus: Focus,
     pub(crate) project_cursor: usize,
@@ -221,7 +221,7 @@ impl App {
             heat_view: layout.heat_view.unwrap_or(START_VIEW == ViewMode::Year),
             summary_heat: layout.summary_heat.unwrap_or(false),
             heat_scroll: 0,
-            heat_box_height: 0,
+            heat_scroll_max: 0,
             focus: Focus::Table,
             project_cursor: 0,
             tag_cursor: 0,

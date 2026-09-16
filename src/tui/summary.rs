@@ -568,42 +568,19 @@ impl App {
         self.persist_layout();
     }
 
-    /// `j`/`k` in a heat grid that can overflow: the Day view's project rows
-    /// and `All`'s year bands. Reports whether the key was claimed, so every
-    /// other view leaves it to the entries table.
+    /// `j`/`k` in a heat grid that overflows its box: the Day view's project
+    /// rows and `All`'s year bands. Reports whether the key was claimed, so a
+    /// grid with room for everything leaves it to the entries table.
     pub(crate) fn scroll_heat(&mut self, down: bool) -> bool {
-        if !self.heat_view || !matches!(self.view_mode, ViewMode::Day | ViewMode::All) {
+        if !self.heat_view || self.heat_scroll_max == 0 {
             return false;
         }
-        let furthest = self.heat_scroll_max();
         self.heat_scroll = if down {
-            (self.heat_scroll + 1).min(furthest)
+            (self.heat_scroll + 1).min(self.heat_scroll_max)
         } else {
             self.heat_scroll.saturating_sub(1)
         };
         true
-    }
-
-    /// The furthest the grid scrolls: the rows or bands the box has no room
-    /// for, so the last one rests at the bottom. The only clamp there is.
-    fn heat_scroll_max(&self) -> usize {
-        let room = self.heat_box_height as usize;
-        let grid = self.view_heat_grid(0, self.heat_box_height);
-        match self.view_mode {
-            ViewMode::Day => {
-                // The axis costs a line; the rows take the rest, one each.
-                let fits = room.saturating_sub(1).max(1);
-                grid.bands
-                    .first()
-                    .map_or(0, HeatBand::rows)
-                    .saturating_sub(fits)
-            }
-            ViewMode::All => {
-                let band_lines = grid.bands.first().map_or(1, |band| 1 + band.rows());
-                grid.bands.len().saturating_sub((room / band_lines).max(1))
-            }
-            _ => 0,
-        }
     }
 
     /// `m`: show or hide the Summary's per-project heat strips.
