@@ -298,9 +298,15 @@ impl App {
     fn day_heat_grid(&self, entries: &[&TimeEntry], inner_width: u16) -> HeatGrid {
         /// Columns of a quarter hour each, the finest the day is drawn at.
         const QUARTERS: usize = 96;
+        /// Columns one quarter hour takes before the day is drawn that fine.
+        const LEAST_CELL: usize = 2;
 
         let available = (inner_width as usize).saturating_sub(PROJECT_GUTTER);
-        let columns = if available >= QUARTERS { QUARTERS } else { 24 };
+        let columns = if available >= QUARTERS * LEAST_CELL {
+            QUARTERS
+        } else {
+            24
+        };
         let cell_span = Duration::minutes(24 * 60 / columns as i64);
         let opens = midnight(self.selected_date);
 
@@ -972,9 +978,12 @@ mod tests {
             ],
         );
 
-        let wide = app.view_heat_grid(120, 20);
+        let wide = app.view_heat_grid(204, 20);
         assert_eq!(wide.bands[0].columns(), 96, "a wide box takes quarters");
         assert_eq!(wide.unit, "slot");
+        // 198 columns less the gutter leave 186 for 96 quarters: under two
+        // each, so the day stays hourly and the hours stretch instead.
+        assert_eq!(app.view_heat_grid(200, 20).bands[0].columns(), 24);
 
         let grid = app.view_heat_grid(80, 20);
         let band = &grid.bands[0];
