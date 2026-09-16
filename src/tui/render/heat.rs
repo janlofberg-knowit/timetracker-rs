@@ -620,7 +620,6 @@ mod tests {
         texts.iter().map(|text| text.map(str::to_string)).collect()
     }
 
-    /// A grid of `buckets` empty cells at `grain`, opening on 2026-01-01.
     /// A crowded tick gives up its tail; the last one keeps the whole row.
     #[test]
     fn a_tick_is_cut_one_column_short_of_its_neighbour() {
