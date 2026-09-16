@@ -4426,27 +4426,35 @@ mod tests {
         );
     }
 
-    /// The one row's buckets as minutes, so a test reads the fold directly.
+    /// The grid's columns as minutes, summed down its rows, so a test reads
+    /// the fold directly.
     fn heat_minutes(app: &App) -> Vec<i64> {
-        let grid = app.view_heat_buckets();
-        assert_eq!(grid.rows.len(), 1, "the content heat folds one row");
-        grid.rows[0].iter().map(|cell| cell.num_minutes()).collect()
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        (0..band.columns())
+            .map(|column| {
+                band.cells
+                    .iter()
+                    .filter_map(|row| row[column])
+                    .fold(chrono::Duration::zero(), |acc, held| acc + held)
+                    .num_minutes()
+            })
+            .collect()
     }
 
-    /// The day's own 24 hours, with an entry in the hour it started.
+    /// The day's own 24 hours, with an entry in the hour it ran.
     #[test]
     fn a_day_view_folds_its_own_twenty_four_hours() {
         let _guard = env_guard();
-        sandbox("heat-buckets-day");
+        sandbox("heat-grid-day-fold");
         let today = Local::now().date_naive();
         seed(vec![logged(0, "a", "tt", &[], today, 45)], 1);
         let mut app = App::new().unwrap();
         app.selected_date = today;
         app.view_mode = ViewMode::Day;
 
-        let grid = app.view_heat_buckets();
-        assert_eq!(grid.grain, summary::Grain::Hour);
-        assert_eq!(grid.start(0), today.and_hms_opt(0, 0, 0).unwrap());
+        let grid = app.view_heat_grid(80, 20);
+        assert_eq!(grid.bands[0].cell_span, chrono::Duration::hours(1));
         let minutes = heat_minutes(&app);
         assert_eq!(minutes.len(), 24);
         // `logged` starts at 09:00.
@@ -4466,7 +4474,7 @@ mod tests {
 
         let minutes = heat_minutes(&app);
         assert_eq!(minutes.len(), 28, "February 2026 has 28 days");
-        assert_eq!(minutes[9], 60, "the 10th is bucket 9");
+        assert_eq!(minutes[9], 60, "the 10th is column 9");
     }
 
     /// The content heat folds what the table walks, so a pane filter moves it —

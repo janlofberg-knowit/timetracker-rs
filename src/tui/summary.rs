@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Datelike, Duration, Months, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Duration, Local, Months, NaiveDate, NaiveDateTime, Timelike};
 
 use super::App;
 use super::panes::surface_count;
@@ -47,16 +47,6 @@ impl Grain {
             ViewMode::Year => Grain::Month,
         }
     }
-
-    /// What one bucket is called, for a block that counts its active ones.
-    pub(crate) fn unit(self) -> &'static str {
-        match self {
-            Grain::Hour => "hour",
-            Grain::Day => "day",
-            Grain::Week => "week",
-            Grain::Month => "month",
-        }
-    }
 }
 
 /// Per-project time buckets over one period, oldest bucket first.
@@ -87,6 +77,91 @@ impl BucketGrid {
     pub(crate) fn len(&self) -> usize {
         self.rows.first().map(Vec::len).unwrap_or(0)
     }
+}
+
+/// Columns the gutter takes for a clock or weekday label.
+pub(crate) const HEAT_GUTTER: usize = 4;
+
+/// Columns the gutter takes for a project name, which it truncates.
+pub(crate) const PROJECT_GUTTER: usize = 12;
+
+/// One block of the content grid: its rows over its columns.
+pub(crate) struct HeatBand {
+    /// Named once on the band's first line; the year in the `All` view.
+    pub(crate) title: Option<String>,
+    /// One label per row, drawn in the gutter.
+    pub(crate) row_labels: Vec<String>,
+    /// One tick per column, drawn over the column it names.
+    pub(crate) column_ticks: Vec<Option<String>>,
+    /// Row-major; `None` is a cell outside the band's own period.
+    pub(crate) cells: Vec<Vec<Option<Duration>>>,
+    /// What one cell covers; its shade is how full of this it is.
+    pub(crate) cell_span: Duration,
+    /// Where this moment falls. A row of its own only where the rows are
+    /// time; the Day view's rows are projects and mark the column alone.
+    pub(crate) now_row: Option<usize>,
+    pub(crate) now_column: Option<usize>,
+}
+
+impl HeatBand {
+    pub(crate) fn rows(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub(crate) fn columns(&self) -> usize {
+        self.cells.first().map(Vec::len).unwrap_or(0)
+    }
+}
+
+/// The content pane's heat: one band per period drawn, newest band first.
+pub(crate) struct HeatGrid {
+    pub(crate) bands: Vec<HeatBand>,
+    /// The noun the block title counts.
+    pub(crate) unit: &'static str,
+    /// Columns the row labels take.
+    pub(crate) gutter: usize,
+    /// The folded entries' whole time, as the entry list totals it.
+    pub(crate) total: Duration,
+}
+
+impl HeatGrid {
+    /// Cells holding time, over every band.
+    pub(crate) fn active(&self) -> usize {
+        self.bands
+            .iter()
+            .flat_map(|band| band.cells.iter().flatten())
+            .filter(|cell| cell.is_some_and(|held| !held.is_zero()))
+            .count()
+    }
+}
+
+/// Time each cell holds, where cell `(row, column)` opens at
+/// `origin + column_span * column + cell_span * row`.
+fn time_cells(
+    entries: &[&TimeEntry],
+    origin: NaiveDateTime,
+    columns: usize,
+    column_span: Duration,
+    rows: usize,
+    cell_span: Duration,
+) -> Vec<Vec<Option<Duration>>> {
+    let mut cells = vec![vec![Some(Duration::zero()); columns]; rows];
+    for entry in entries {
+        for column in 0..columns {
+            let opens = origin + column_span * column as i32;
+            if overlap(entry, opens, opens + column_span).is_zero() {
+                continue;
+            }
+            for (row, line) in cells.iter_mut().enumerate() {
+                let from = opens + cell_span * row as i32;
+                let part = overlap(entry, from, from + cell_span);
+                if let Some(cell) = line[column].as_mut() {
+                    *cell += part;
+                }
+            }
+        }
+    }
+    cells
 }
 
 /// One row: a project, its time in the scope, its entry count and its share.
@@ -202,38 +277,136 @@ impl App {
         }
     }
 
-    /// The open view's period folded into one row of totals, oldest bucket
-    /// first — the content pane's heat, where [`project_buckets`](Self::project_buckets)
-    /// is the Summary's. **It folds `filtered_entries()`, never
+    /// The open view's period as a grid of heat cells, at the resolution the
+    /// inner box has room for. **It folds `filtered_entries()`, never
     /// `summary_entries()`:** the heat and the entry list must not disagree
-    /// about what is on screen, and `summary_follows_filters` is the Summary's
-    /// setting alone. Nothing folded gives one empty row, so no caller
-    /// special-cases it.
-    pub(crate) fn view_heat_buckets(&self) -> BucketGrid {
-        let grain = Grain::for_view(self.view_mode);
+    /// about what is on screen.
+    pub(crate) fn view_heat_grid(&self, inner_width: u16, inner_height: u16) -> HeatGrid {
         let entries = self.filtered_entries();
-        let Some((anchor, count)) = bucket_range(self.view_mode, &entries, self.selected_date)
-        else {
-            return BucketGrid {
-                grain,
-                anchor: self.selected_date.and_hms_opt(0, 0, 0).unwrap(),
-                rows: vec![Vec::new()],
-            };
+        let mut grid = match self.view_mode {
+            ViewMode::Day => self.day_heat_grid(&entries, inner_width),
+            _ => self.block_heat_grid(&entries, inner_height),
         };
+        grid.total = entries
+            .iter()
+            .fold(Duration::zero(), |acc, entry| acc + entry.duration());
+        grid
+    }
 
-        let mut buckets = vec![Duration::zero(); count];
-        for entry in &entries {
-            let slot = bucket_index(grain, anchor, entry.start_time.naive_local());
-            if let Ok(slot) = usize::try_from(slot)
-                && let Some(cell) = buckets.get_mut(slot)
-            {
-                *cell += entry.duration();
+    /// One row per project, largest total first, over the slots of the day.
+    fn day_heat_grid(&self, entries: &[&TimeEntry], inner_width: u16) -> HeatGrid {
+        /// Columns of a quarter hour each, the finest the day is drawn at.
+        const QUARTERS: usize = 96;
+
+        let columns = if (inner_width as usize).saturating_sub(PROJECT_GUTTER) >= QUARTERS {
+            QUARTERS
+        } else {
+            24
+        };
+        let cell_span = Duration::minutes(24 * 60 / columns as i64);
+        let opens = midnight(self.selected_date);
+
+        let folded: std::collections::HashSet<&str> =
+            entries.iter().map(|entry| project_key(entry)).collect();
+        // The rows keep `project_summary` order; a filtered-out project has none.
+        let row_labels: Vec<String> = self
+            .project_summary()
+            .into_iter()
+            .map(|row| row.project)
+            .filter(|project| folded.contains(project.as_str()))
+            .collect();
+        let row_of: HashMap<&str, usize> = row_labels
+            .iter()
+            .enumerate()
+            .map(|(index, project)| (project.as_str(), index))
+            .collect();
+
+        let mut cells = vec![vec![Some(Duration::zero()); columns]; row_labels.len()];
+        for entry in entries {
+            let Some(&row) = row_of.get(project_key(entry)) else {
+                continue;
+            };
+            for (column, cell) in cells[row].iter_mut().enumerate() {
+                let from = opens + cell_span * column as i32;
+                let part = overlap(entry, from, from + cell_span);
+                if let Some(cell) = cell.as_mut() {
+                    *cell += part;
+                }
             }
         }
-        BucketGrid {
-            grain,
-            anchor,
-            rows: vec![buckets],
+
+        let column_ticks = (0..columns)
+            .map(|column| {
+                let at = opens + cell_span * column as i32;
+                (at.minute() == 0 && at.hour().is_multiple_of(TICK_HOURS))
+                    .then(|| format!("{:02}", at.hour()))
+            })
+            .collect();
+
+        HeatGrid {
+            bands: vec![HeatBand {
+                title: None,
+                row_labels,
+                column_ticks,
+                cells,
+                cell_span,
+                now_row: None,
+                now_column: column_now(opens, cell_span, columns),
+            }],
+            unit: if columns == QUARTERS { "slot" } else { "hour" },
+            gutter: PROJECT_GUTTER,
+            total: Duration::zero(),
+        }
+    }
+
+    /// One column per day of the week or the month, one row per block of the
+    /// day, midnight at the top.
+    fn block_heat_grid(&self, entries: &[&TimeEntry], inner_height: u16) -> HeatGrid {
+        /// Hours a row covers, finest first; the day itself is the last resort.
+        const BLOCK_HOURS: [i64; 4] = [2, 4, 6, 24];
+
+        let (opens, columns) = period_bounds(self.view_mode, self.selected_date)
+            .unwrap_or_else(|| (midnight(self.selected_date), 7));
+        let hours = BLOCK_HOURS
+            .into_iter()
+            .find(|hours| 24 / hours < i64::from(inner_height))
+            .unwrap_or(24);
+        let rows = (24 / hours) as usize;
+        let cell_span = Duration::hours(hours);
+        let column_span = Duration::days(1);
+
+        let cells = time_cells(entries, opens, columns, column_span, rows, cell_span);
+        let column_ticks = (0..columns)
+            .map(|column| {
+                let day = opens + column_span * column as i32;
+                if columns <= 7 {
+                    Some(day.format("%a").to_string())
+                } else {
+                    column.is_multiple_of(7).then(|| (column + 1).to_string())
+                }
+            })
+            .collect();
+        let row_labels = (0..rows)
+            .map(|row| format!("{:02}", row as i64 * hours))
+            .collect();
+
+        let now_column = column_now(opens, column_span, columns);
+        HeatGrid {
+            bands: vec![HeatBand {
+                title: None,
+                row_labels,
+                column_ticks,
+                cells,
+                cell_span,
+                now_row: now_column.map(|_| {
+                    (i64::from(Local::now().naive_local().hour()) / hours).min(rows as i64 - 1)
+                        as usize
+                }),
+                now_column,
+            }],
+            unit: "block",
+            gutter: HEAT_GUTTER,
+            total: Duration::zero(),
         }
     }
 
@@ -441,10 +614,21 @@ fn bucket_index(grain: Grain, anchor: NaiveDateTime, start: NaiveDateTime) -> i6
     }
 }
 
+/// Hours between ticks on a clock axis, so a day reads `00 06 12 18`.
+const TICK_HOURS: u32 = 6;
+
+/// Which column holds this moment, or `None` when the period is not now.
+fn column_now(opens: NaiveDateTime, column_span: Duration, columns: usize) -> Option<usize> {
+    let now = Local::now().naive_local();
+    (0..columns).find(|column| {
+        let from = opens + column_span * *column as i32;
+        from <= now && now < from + column_span
+    })
+}
+
 /// How much of `entry` falls inside the half-open window `[from, to)`, zero
 /// when the two are disjoint. The entry ends `duration()` after it starts, so
 /// a running one ends now and idle stretches stay counted.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn overlap(entry: &TimeEntry, from: NaiveDateTime, to: NaiveDateTime) -> Duration {
     let start = entry.start_time.naive_local();
     let end = start + entry.duration();
@@ -627,5 +811,176 @@ mod tests {
             Duration::hours(1),
             "a window inside the entry is full"
         );
+    }
+
+    fn spanning(id: u64, project: &str, start: NaiveDateTime, minutes: i64) -> TimeEntry {
+        let start = start.and_local_timezone(chrono::Local).unwrap();
+        TimeEntry {
+            id,
+            description: "seed".to_string(),
+            project: Some(project.to_string()),
+            tags: Vec::new(),
+            start_time: start,
+            end_time: Some(start + Duration::minutes(minutes)),
+            idle: Vec::new(),
+            data: None,
+        }
+    }
+
+    fn app_for(view: ViewMode, on: NaiveDate, entries: Vec<TimeEntry>) -> App {
+        let next_id = entries.len() as u64;
+        crate::storage::save_data(&TimeData {
+            entries,
+            next_id,
+            schema_version: 1,
+        })
+        .unwrap();
+        let mut app = App::new().unwrap();
+        app.view_mode = view;
+        app.selected_date = on;
+        app
+    }
+
+    fn band_total(band: &HeatBand) -> Duration {
+        band.cells
+            .iter()
+            .flatten()
+            .flatten()
+            .fold(Duration::zero(), |acc, held| acc + *held)
+    }
+
+    /// The day is projects down and the time of day across, as fine as the
+    /// box is wide.
+    #[test]
+    fn a_day_grid_is_one_row_per_project_over_the_time_of_day() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-day");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let app = app_for(
+            ViewMode::Day,
+            day,
+            vec![
+                spanning(0, "alpha", at(2026, 1, 7, 9, 0), 60),
+                spanning(1, "beta", at(2026, 1, 7, 10, 0), 120),
+            ],
+        );
+
+        let wide = app.view_heat_grid(120, 20);
+        assert_eq!(wide.bands[0].columns(), 96, "a wide box takes quarters");
+        assert_eq!(wide.unit, "slot");
+
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        assert_eq!(band.columns(), 24, "80 columns is an hourly day");
+        assert_eq!(grid.unit, "hour");
+        assert_eq!(
+            band.row_labels,
+            vec!["beta".to_string(), "alpha".to_string()],
+            "the rows are not in project_summary order"
+        );
+        assert_eq!(band.cells[1][9], Some(Duration::hours(1)), "alpha at 09");
+        assert_eq!(band.cells[1][10], Some(Duration::zero()));
+        assert_eq!(band.cells[0][10], Some(Duration::hours(1)), "beta at 10");
+        assert_eq!(band_total(band), grid.total, "the band lost folded time");
+    }
+
+    /// A short box coarsens its rows instead of hiding a part of the day.
+    #[test]
+    fn week_rows_coarsen_until_they_fit_the_box() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-week");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let app = app_for(
+            ViewMode::Week,
+            day,
+            vec![spanning(0, "alpha", at(2026, 1, 7, 9, 0), 60)],
+        );
+
+        for (height, rows) in [(20, 12), (13, 12), (12, 6), (7, 6), (6, 4), (4, 1)] {
+            let grid = app.view_heat_grid(80, height);
+            assert_eq!(
+                grid.bands[0].rows(),
+                rows,
+                "{height} inner rows gave the wrong block size"
+            );
+        }
+
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        assert_eq!(band.columns(), 7, "the week is seven days across");
+        assert_eq!(band.row_labels[0], "00", "midnight is the top row");
+        assert_eq!(band.row_labels[11], "22");
+        assert_eq!(band.cell_span, Duration::hours(2));
+        assert_eq!(
+            band.column_ticks[0].as_deref(),
+            Some("Mon"),
+            "the week opens on Monday"
+        );
+        // Wednesday 09:00, in the 08-10 block.
+        assert_eq!(band.cells[4][2], Some(Duration::hours(1)));
+    }
+
+    /// A month is its own length across, ticked every seventh day.
+    #[test]
+    fn a_month_grid_has_one_column_per_day_of_the_month() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-month");
+        let day = NaiveDate::from_ymd_opt(2026, 2, 10).unwrap();
+        let app = app_for(
+            ViewMode::Month,
+            day,
+            vec![spanning(0, "alpha", at(2026, 2, 10, 9, 0), 30)],
+        );
+
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        assert_eq!(band.columns(), 28, "February 2026 has 28 days");
+        assert_eq!(band.column_ticks[0].as_deref(), Some("1"));
+        assert_eq!(band.column_ticks[7].as_deref(), Some("8"));
+        assert_eq!(band.column_ticks[1], None, "every day was ticked");
+        assert_eq!(band.cells[4][9], Some(Duration::minutes(30)));
+        assert_eq!(band_total(band), grid.total);
+    }
+
+    /// A cell takes the part of the entry that ran inside it, so a night
+    /// shift paints both of the days it touches.
+    #[test]
+    fn an_entry_crossing_midnight_paints_both_days() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-midnight");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let app = app_for(
+            ViewMode::Week,
+            day,
+            vec![spanning(0, "alpha", at(2026, 1, 7, 23, 0), 120)],
+        );
+
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        assert_eq!(band.cells[11][2], Some(Duration::hours(1)), "Wednesday 23");
+        assert_eq!(band.cells[0][3], Some(Duration::hours(1)), "Thursday 00");
+        assert_eq!(band_total(band), grid.total, "the crossing lost time");
+        assert_eq!(grid.active(), 2, "two cells hold the shift");
+    }
+
+    /// A filter narrows the grid as it narrows the list under it.
+    #[test]
+    fn a_project_filter_narrows_the_grid() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-filter");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let mut app = app_for(
+            ViewMode::Day,
+            day,
+            vec![
+                spanning(0, "alpha", at(2026, 1, 7, 9, 0), 60),
+                spanning(1, "beta", at(2026, 1, 7, 10, 0), 120),
+            ],
+        );
+        app.project_filter.cycle("beta", true);
+
+        let grid = app.view_heat_grid(80, 20);
+        assert_eq!(grid.bands[0].row_labels, vec!["beta".to_string()]);
+        assert_eq!(grid.total, Duration::hours(2));
     }
 }
