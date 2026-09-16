@@ -81,11 +81,14 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for band in drawn {
         let (cell_width, columns) = strip_cells(available, band.columns());
+        // Too narrow a box sheds the oldest columns, as every other strip
+        // does: the newest weeks and the marker on today must survive.
+        let first = band.columns() - columns;
         lines.push(Line::from(Span::styled(
             format!(
                 "{}{}",
                 " ".repeat(grid.gutter),
-                axis_line(&band.column_ticks[..columns], cell_width)
+                axis_line(&band.column_ticks[first..], cell_width)
             ),
             dim,
         )));
@@ -100,7 +103,7 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
                     _ => " ".repeat(grid.gutter),
                 };
                 let mut spans = vec![Span::styled(label, dim)];
-                for (column, cell) in cells.iter().take(columns).enumerate() {
+                for (column, cell) in cells.iter().enumerate().skip(first) {
                     let Some(held) = cell else {
                         spans.push(Span::raw(" ".repeat(cell_width)));
                         continue;
@@ -377,6 +380,58 @@ mod tests {
             vec!["2024".to_string()],
             "the last band scrolled off the box"
         );
+    }
+
+    /// A box too narrow for the year sheds its oldest weeks, so the marker on
+    /// today is still on screen.
+    #[test]
+    fn a_narrow_year_grid_sheds_its_oldest_weeks() {
+        let _guard = env_guard();
+        sandbox("heat-grid-year-narrow");
+        let today = Local::now().date_naive();
+        let mut app = app_for(
+            ViewMode::Year,
+            today,
+            vec![entry(0, today.and_hms_opt(9, 0, 0).unwrap(), 60)],
+        );
+
+        let wide = drawn(&mut app, 120, 14);
+        assert!(
+            wide.iter().any(|(text, _)| text.contains(TODAY_MARKER)),
+            "the wide grid lost today"
+        );
+        let narrow = drawn(&mut app, 30, 14);
+        assert!(
+            narrow.iter().any(|(text, _)| text.contains(TODAY_MARKER)),
+            "the shed grid dropped the newest weeks instead of the oldest"
+        );
+    }
+
+    /// One hour worked by three projects is one active hour, not three.
+    #[test]
+    fn the_day_title_counts_the_hours_not_the_project_cells() {
+        let _guard = env_guard();
+        sandbox("heat-grid-day-active");
+        let day = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let mut app = app_for(
+            ViewMode::Day,
+            day,
+            vec![
+                entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 20),
+                entry(1, day.and_hms_opt(9, 20, 0).unwrap(), 20),
+                entry(2, day.and_hms_opt(9, 40, 0).unwrap(), 20),
+            ],
+        );
+        app.data.entries[1].project = Some("beta".to_string());
+        app.data.entries[2].project = Some("gamma".to_string());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|f| render_heat_grid(f, &mut app, f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let title: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(title.contains("1 active hour"), "{title}");
     }
 
     /// The gutter names each project once and the cells fill what is left.

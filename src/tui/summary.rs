@@ -120,18 +120,46 @@ pub(crate) struct HeatGrid {
     pub(crate) unit: &'static str,
     /// Columns the row labels take.
     pub(crate) gutter: usize,
-    /// The folded entries' whole time, as the entry list totals it.
+    /// The time the cells hold, so the title counts what the grid paints.
     pub(crate) total: Duration,
+    /// The title counts columns rather than cells, where the rows are
+    /// projects and several may hold the same hour.
+    pub(crate) counts_columns: bool,
 }
 
 impl HeatGrid {
-    /// Cells holding time, over every band.
+    /// What the title counts: the columns holding time where the rows share a
+    /// clock, else every cell holding time.
     pub(crate) fn active(&self) -> usize {
         self.bands
             .iter()
+            .map(|band| {
+                if self.counts_columns {
+                    (0..band.columns())
+                        .filter(|column| {
+                            band.cells
+                                .iter()
+                                .any(|row| row[*column].is_some_and(|held| !held.is_zero()))
+                        })
+                        .count()
+                } else {
+                    band.cells
+                        .iter()
+                        .flatten()
+                        .filter(|cell| cell.is_some_and(|held| !held.is_zero()))
+                        .count()
+                }
+            })
+            .sum()
+    }
+
+    /// Every cell's time, over every band.
+    fn painted(&self) -> Duration {
+        self.bands
+            .iter()
             .flat_map(|band| band.cells.iter().flatten())
-            .filter(|cell| cell.is_some_and(|held| !held.is_zero()))
-            .count()
+            .flatten()
+            .fold(Duration::zero(), |acc, held| acc + *held)
     }
 }
 
@@ -288,9 +316,9 @@ impl App {
             ViewMode::Week | ViewMode::Month => self.block_heat_grid(&entries, inner_height),
             ViewMode::Year | ViewMode::All => self.day_cell_heat_grid(&entries),
         };
-        grid.total = entries
-            .iter()
-            .fold(Duration::zero(), |acc, entry| acc + entry.duration());
+        // The title counts what the grid paints, so the two cannot disagree
+        // about an entry that runs past the period.
+        grid.total = grid.painted();
         grid
     }
 
@@ -357,9 +385,14 @@ impl App {
                 now_row: None,
                 now_column: column_now(opens, cell_span, columns),
             }],
-            unit: if columns == QUARTERS { "slot" } else { "hour" },
+            unit: if columns == QUARTERS {
+                "quarter"
+            } else {
+                "hour"
+            },
             gutter: PROJECT_GUTTER,
             total: Duration::zero(),
+            counts_columns: true,
         }
     }
 
@@ -411,6 +444,7 @@ impl App {
             unit: "block",
             gutter: HEAT_GUTTER,
             total: Duration::zero(),
+            counts_columns: false,
         }
     }
 
@@ -437,6 +471,7 @@ impl App {
             unit: "day",
             gutter: HEAT_GUTTER,
             total: Duration::zero(),
+            counts_columns: false,
         }
     }
 
@@ -988,7 +1023,7 @@ mod tests {
 
         let wide = app.view_heat_grid(204, 20);
         assert_eq!(wide.bands[0].columns(), 96, "a wide box takes quarters");
-        assert_eq!(wide.unit, "slot");
+        assert_eq!(wide.unit, "quarter");
         // 198 columns less the gutter leave 186 for 96 quarters: under two
         // each, so the day stays hourly and the hours stretch instead.
         assert_eq!(app.view_heat_grid(200, 20).bands[0].columns(), 24);
@@ -1196,5 +1231,27 @@ mod tests {
         let running = entry_at(at(2026, 3, 29, 1, 0));
         let (start, end) = entry_span(&running);
         assert_eq!(overlap(&running, start, end), end - start);
+    }
+
+    /// An entry running past the period's edge is painted up to the edge, and
+    /// the total says so: the title cannot promise time the grid never drew.
+    #[test]
+    fn the_total_counts_the_time_the_grid_paints() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("heat-grid-edge");
+        // Sunday, the last day of its week.
+        let sunday = NaiveDate::from_ymd_opt(2026, 1, 11).unwrap();
+        let app = app_for(
+            ViewMode::Week,
+            sunday,
+            vec![spanning(0, "alpha", at(2026, 1, 11, 23, 0), 120)],
+        );
+
+        let grid = app.view_heat_grid(80, 20);
+        let band = &grid.bands[0];
+        assert_eq!(band.cells[11][6], Some(Duration::hours(1)), "Sunday 23");
+        assert_eq!(grid.total, Duration::hours(1), "the total outran the box");
+        assert_eq!(band_total(band), grid.total);
+        assert_eq!(grid.active(), 1);
     }
 }
