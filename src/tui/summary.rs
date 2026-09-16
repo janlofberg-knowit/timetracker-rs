@@ -739,12 +739,20 @@ fn column_now(opens: NaiveDateTime, column_span: Duration, columns: usize) -> Op
     })
 }
 
+/// The entry's wall-clock span, both ends local. A running entry ends now, as
+/// `TimeEntry::duration()` reads it. Never add `duration()` to the start: the
+/// two differ by an hour across a daylight-saving step.
+pub(crate) fn entry_span(entry: &TimeEntry) -> (NaiveDateTime, NaiveDateTime) {
+    (
+        entry.start_time.naive_local(),
+        entry.end_time.unwrap_or_else(Local::now).naive_local(),
+    )
+}
+
 /// How much of `entry` falls inside the half-open window `[from, to)`, zero
-/// when the two are disjoint. The entry ends `duration()` after it starts, so
-/// a running one ends now and idle stretches stay counted.
+/// when the two are disjoint. Idle stretches stay counted.
 pub(crate) fn overlap(entry: &TimeEntry, from: NaiveDateTime, to: NaiveDateTime) -> Duration {
-    let start = entry.start_time.naive_local();
-    let end = start + entry.duration();
+    let (start, end) = entry_span(entry);
     let first = start.max(from);
     let last = end.min(to);
     if last > first {
@@ -1175,5 +1183,18 @@ mod tests {
         assert_eq!(titles, vec![Some("2026"), Some("2024"), Some("2022")]);
         assert_eq!(grid.total, Duration::hours(3));
         assert_eq!(grid.active(), 3, "one day of each year holds time");
+    }
+
+    /// The window from an entry's own start to its own end holds all of it,
+    /// whatever the clock did in between.
+    #[test]
+    fn an_entry_fills_the_window_of_its_own_span() {
+        let seed = spanning(0, "alpha", at(2026, 3, 29, 1, 0), 180);
+        let (start, end) = entry_span(&seed);
+        assert_eq!(overlap(&seed, start, end), end - start);
+
+        let running = entry_at(at(2026, 3, 29, 1, 0));
+        let (start, end) = entry_span(&running);
+        assert_eq!(overlap(&running, start, end), end - start);
     }
 }
