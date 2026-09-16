@@ -3277,8 +3277,8 @@ mod tests {
     const WEEKS_IN_2026: usize = 53;
 
     /// The first inner column of the year grid: the block border and the
-    /// four-column weekday gutter.
-    const GRID_LEFT: u16 = 5;
+    /// five-column year gutter.
+    const GRID_LEFT: u16 = 6;
 
     fn year_view_2026() -> App {
         seed(
@@ -3364,7 +3364,7 @@ mod tests {
         assert_eq!(
             screen
                 .iter()
-                .filter(|line| line.starts_with("\u{2502}Mon"))
+                .filter(|line| line.starts_with("\u{2502}  Mon"))
                 .count(),
             1,
             "the weekday label repeats down its band:\n{}",

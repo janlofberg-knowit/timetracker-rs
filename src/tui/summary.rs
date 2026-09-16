@@ -79,15 +79,18 @@ impl BucketGrid {
     }
 }
 
-/// Columns the gutter takes for a clock or weekday label.
+/// Columns the gutter takes for a clock label.
 pub(crate) const HEAT_GUTTER: usize = 4;
 
 /// Columns the gutter takes for a project name, which it truncates.
 pub(crate) const PROJECT_GUTTER: usize = 12;
 
+/// Columns the gutter takes for a year band: the year plus one space.
+pub(crate) const YEAR_GUTTER: usize = 5;
+
 /// One block of the content grid: its rows over its columns.
 pub(crate) struct HeatBand {
-    /// Named once on the band's first line; the year in the `All` view.
+    /// Named once, in the gutter of the tick row: the year band's year.
     pub(crate) title: Option<String>,
     /// One label per row, drawn in the gutter.
     pub(crate) row_labels: Vec<String>,
@@ -499,17 +502,16 @@ impl App {
             years.sort_unstable_by(|a, b| b.cmp(a));
             years
         };
-        let titled = self.view_mode != ViewMode::Year;
         HeatGrid {
             bands: years
                 .into_iter()
                 .map(|year| {
                     let held = by_year.get(&year).map(Vec::as_slice).unwrap_or_default();
-                    year_band(held, year, titled)
+                    year_band(held, year)
                 })
                 .collect(),
             unit: "day",
-            gutter: HEAT_GUTTER,
+            gutter: YEAR_GUTTER,
             total: Duration::zero(),
             counts_columns: false,
         }
@@ -737,7 +739,7 @@ fn bucket_index(grain: Grain, anchor: NaiveDateTime, start: NaiveDateTime) -> i6
 
 /// One year as weeks across and weekdays down, as a contribution graph draws
 /// it. A day outside the year is blank rather than empty.
-fn year_band(entries: &[&TimeEntry], year: i32, titled: bool) -> HeatBand {
+fn year_band(entries: &[&TimeEntry], year: i32) -> HeatBand {
     const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
     let opens = TimeData::week_start(NaiveDate::from_ymd_opt(year, 1, 1).unwrap());
@@ -763,7 +765,7 @@ fn year_band(entries: &[&TimeEntry], year: i32, titled: bool) -> HeatBand {
         ((offset % 7) as usize, (offset / 7) as usize)
     });
     HeatBand {
-        title: titled.then(|| year.to_string()),
+        title: Some(year.to_string()),
         row_labels: WEEKDAYS.iter().map(|day| day.to_string()).collect(),
         column_ticks: (0..columns)
             .map(|column| {
@@ -1177,7 +1179,11 @@ mod tests {
         assert_eq!(band.rows(), 7);
         assert_eq!(band.row_labels[0], "Mon");
         assert_eq!(band.cell_span, Duration::days(1));
-        assert_eq!(band.title, None, "the Year view names no band");
+        assert_eq!(
+            band.title.as_deref(),
+            Some("2026"),
+            "the Year view names its band too"
+        );
         assert_eq!(band.columns(), 53, "2026 spans 53 grid weeks");
         // 2026 opens on a Thursday, so its first whole grid week is January's.
         assert_eq!(band.column_ticks[0], None);

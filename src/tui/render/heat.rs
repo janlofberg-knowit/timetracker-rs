@@ -89,7 +89,7 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(Span::styled(
             format!(
                 "{}{}",
-                " ".repeat(grid.gutter),
+                tick_gutter(band.title.as_deref(), grid.gutter),
                 axis_line(&band.column_ticks[first..], cell_width)
             ),
             dim,
@@ -99,13 +99,12 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
                 if lines.len() == room {
                     break 'bands;
                 }
-                // The label names its band once, so a tall row does not stack it.
+                // The label names its row once, so a tall row does not stack it.
                 let named = line == cell_height / 2;
-                let opens = row == first_row && line == 0;
-                let label = match (&band.title, opens, named) {
-                    (Some(title), true, _) => title.clone(),
-                    (_, _, true) => gutter_label(&band.row_labels[row], grid.gutter),
-                    _ => " ".repeat(grid.gutter),
+                let label = if named {
+                    gutter_label(&band.row_labels[row], grid.gutter)
+                } else {
+                    " ".repeat(grid.gutter)
                 };
                 let mut spans = vec![Span::styled(label, dim)];
                 for (column, cell) in cells.iter().enumerate().skip(first) {
@@ -172,11 +171,18 @@ fn marks_now(band: &HeatBand, row: usize, named: bool) -> bool {
         }
 }
 
-/// A gutter label padded to `width`, cut to leave a column before the cells.
-/// A band title takes the whole width, so a year is not cut to three digits.
+/// A row label right-aligned to `width`, cut to leave a column before the cells.
 fn gutter_label(text: &str, width: usize) -> String {
     let label: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{label:<width$}")
+    format!("{label:>width$}")
+}
+
+/// The tick row's gutter: the band's year left-aligned, or blank.
+fn tick_gutter(title: Option<&str>, width: usize) -> String {
+    match title {
+        Some(text) => format!("{text:<width$}"),
+        None => " ".repeat(width),
+    }
 }
 
 /// The axis that heads a strip of `cells` buckets, the first of them `first`:
@@ -354,8 +360,8 @@ mod tests {
         let named = |app: &mut App| {
             drawn(app, 80, 12)
                 .into_iter()
-                .filter(|(text, _)| text.trim() == "2026" || text.trim() == "2024")
-                .map(|(text, _)| text.trim().to_string())
+                .filter(|(text, _)| text.starts_with("2026 ") || text.starts_with("2024 "))
+                .map(|(text, _)| text[..4].to_string())
                 .collect::<Vec<String>>()
         };
         assert_eq!(named(&mut app)[0], "2026", "the newest year is not on top");
@@ -373,6 +379,56 @@ mod tests {
             named(&mut app),
             vec!["2024".to_string()],
             "the last band scrolled off the box"
+        );
+    }
+
+    /// Every band's tick row opens with its own year, and every band's rows
+    /// are named Mon..Sun, not just the first.
+    #[test]
+    fn every_year_band_gutter_names_its_year_and_its_weekdays() {
+        let _guard = env_guard();
+        sandbox("heat-grid-year-gutter");
+        let mut app = app_for(
+            ViewMode::All,
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+            vec![
+                entry(0, at_noon(2026, 3, 4), 60),
+                entry(1, at_noon(2024, 3, 4), 60),
+            ],
+        );
+
+        let lines = drawn(&mut app, 80, 20);
+        let ticks: Vec<&str> = lines
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .filter(|text| text.contains("Jan"))
+            .collect();
+        assert_eq!(ticks.len(), 2, "expected one tick row per band: {ticks:?}");
+        assert!(
+            ticks[0].starts_with("2026 "),
+            "no year before Jan: {}",
+            ticks[0]
+        );
+        assert!(
+            ticks[1].starts_with("2024 "),
+            "no year before Jan: {}",
+            ticks[1]
+        );
+
+        const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let weekdays: Vec<&str> = lines
+            .iter()
+            .map(|(text, _)| text[..5.min(text.len())].trim())
+            .filter(|text| WEEKDAYS.contains(text))
+            .collect();
+        assert_eq!(
+            weekdays,
+            WEEKDAYS
+                .iter()
+                .chain(WEEKDAYS.iter())
+                .copied()
+                .collect::<Vec<_>>(),
+            "every band's rows are not Mon..Sun: {weekdays:?}"
         );
     }
 
