@@ -117,6 +117,11 @@ pub enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Install the tt-time-logging agent skill, and Claude Code's hooks for it
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
     /// Print the shell completion hook, for `eval "$(tt completions zsh)"`
     Completions {
         /// Detected from $SHELL when omitted
@@ -125,18 +130,45 @@ pub enum Commands {
     },
 }
 
+/// The skill layer's commands. Re-running `install` is also the update path:
+/// it overwrites the files it owns with the copies this binary was built from.
+#[derive(Subcommand)]
+pub enum SkillCommands {
+    /// Write the skill, then wire Claude Code's hooks for it. Run it again to
+    /// update both.
+    Install {
+        /// Install for these agents instead of the ones found on this machine.
+        /// Repeatable. See `tt skill targets` for the names.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["dir", "all"])]
+        agent: Vec<String>,
+        /// Install for every agent this knows, whether or not it is present.
+        #[arg(long, conflicts_with = "dir")]
+        all: bool,
+        /// Install into this directory verbatim, for an agent the table does
+        /// not know. Also settable as `$TT_SKILL_DIR`.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<std::path::PathBuf>,
+        /// Write the skill only; leave Claude Code's settings.json alone.
+        #[arg(long)]
+        no_hooks: bool,
+    },
+    /// List the agents this knows, and which of them are on this machine
+    Targets,
+}
+
 impl Commands {
     /// Whether this command should trigger the passive startup update check.
     /// `Active` (shell-prompt integration) and `Agent` (the tt-time-logging
     /// hook contract, invoked on every phase begin/touch/end) must stay fast
     /// and silent; `Update` would be a redundant check right before a real
-    /// one.
+    /// one; `Skill` runs a child process whose output the notice would split.
     pub fn wants_update_check(&self) -> bool {
         !matches!(
             self,
             Commands::Update { .. }
                 | Commands::Active
                 | Commands::Agent { .. }
+                | Commands::Skill { .. }
                 | Commands::Completions { .. }
         )
     }
