@@ -1,8 +1,10 @@
+use super::columns::EntryColumn;
 use super::legend::content_legend;
 use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
 use crate::tui::rows::{GroupHeader, Member, VisibleRow};
+use crate::tui::summary::NO_PROJECT;
 use crate::tui::{App, theme};
 use chrono::{Duration, Local, NaiveDate};
 use ratatui::{
@@ -70,13 +72,51 @@ pub(super) fn render_weekly_breakdown(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
+/// One configured column's cell for an entry row. `description` already
+/// carries the member tree connector, if any.
+fn entry_cell(
+    column: EntryColumn,
+    entry: &crate::tracker::TimeEntry,
+    description: &str,
+    dur_color: Color,
+) -> Cell<'static> {
+    match column {
+        EntryColumn::Date => {
+            Cell::from(entry.format_date()).style(Style::default().fg(theme::title()))
+        }
+        EntryColumn::Start => {
+            Cell::from(entry.format_start_time()).style(Style::default().fg(theme::accent()))
+        }
+        EntryColumn::End => {
+            Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive()))
+        }
+        EntryColumn::Description => Cell::from(description.to_string()),
+        EntryColumn::Project => Cell::from(
+            entry
+                .project
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or(NO_PROJECT)
+                .to_string(),
+        )
+        .style(Style::default().fg(theme::accent())),
+        EntryColumn::Tags => {
+            Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight()))
+        }
+        EntryColumn::Duration => {
+            Cell::from(entry.format_duration()).style(Style::default().fg(dur_color))
+        }
+    }
+}
+
 /// One entry's row. A member row hangs off its group header's tree connector
 /// and carries the tint rather than the stripe.
-fn entry_row<'e>(
-    entry: &'e crate::tracker::TimeEntry,
+fn entry_row(
+    columns: &[EntryColumn],
+    entry: &crate::tracker::TimeEntry,
     stripe: bool,
     member: Option<&Member>,
-) -> Row<'e> {
+) -> Row<'static> {
     let hours = entry.duration().num_hours();
     let dur_color = theme::duration_color(
         hours,
@@ -103,16 +143,13 @@ fn entry_row<'e>(
         None => entry.description.clone(),
     };
 
-    Row::new(vec![
-        Cell::from(entry.format_date()).style(Style::default().fg(theme::title())),
-        Cell::from(entry.format_start_time()).style(Style::default().fg(theme::accent())),
-        Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive())),
-        Cell::from(description),
-        Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight())),
-        Cell::from(entry.format_duration()).style(Style::default().fg(dur_color)),
-        Cell::from(entry.status_icon()).style(status_style),
-    ])
-    .style(row_style)
+    let mut cells: Vec<Cell<'static>> = columns
+        .iter()
+        .map(|c| entry_cell(*c, entry, &description, dur_color))
+        .collect();
+    cells.push(Cell::from(entry.status_icon()).style(status_style));
+
+    Row::new(cells).style(row_style)
 }
 
 /// The live sum of the entries at `members`. Summed per frame and never
@@ -200,23 +237,18 @@ fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry])
 }
 
 pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
-    let header_cells = [
-        "Date",
-        "Start",
-        "End",
-        "Description",
-        "Tags",
-        "Duration",
-        "",
-    ]
-    .into_iter()
-    .map(|h| {
-        Cell::from(h).style(
-            Style::default()
-                .fg(theme::accent())
-                .add_modifier(Modifier::BOLD),
-        )
-    });
+    let header_cells = app
+        .entry_columns
+        .iter()
+        .map(|c| c.label())
+        .chain(std::iter::once(""))
+        .map(|h| {
+            Cell::from(h).style(
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
     let header_row = Row::new(header_cells)
         .height(1)
         .style(Style::default().bg(theme::header_bg()));
@@ -251,7 +283,12 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
             VisibleRow::Entry { index, member } => {
                 if let Some(entry) = app.data.entries.get(*index) {
                     visual_of_selectable.push(rows.len());
-                    rows.push(entry_row(entry, stripe, member.as_ref()));
+                    rows.push(entry_row(
+                        &app.entry_columns,
+                        entry,
+                        stripe,
+                        member.as_ref(),
+                    ));
                     // A member carries no stripe, so an expansion leaves the
                     // top-level alternation around it as it was.
                     if member.is_none() {
@@ -295,22 +332,17 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     // `Fill(1)` and `Min(12)` share what the fixed columns leave, so both grow with
     // the terminal. The fixed widths are exactly what they render, with no padding.
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Min(12),
-            Constraint::Fill(1),
-            Constraint::Length(8),
-            Constraint::Length(3),
-        ],
-    )
-    .header(header_row)
-    .block(block)
-    .row_highlight_style(Style::default().bg(theme::selected_bg()))
-    .highlight_symbol(CURSOR_MARKER);
+    let widths: Vec<Constraint> = app
+        .entry_columns
+        .iter()
+        .map(|c| c.constraint())
+        .chain(std::iter::once(Constraint::Length(3)))
+        .collect();
+    let table = Table::new(rows, widths)
+        .header(header_row)
+        .block(block)
+        .row_highlight_style(Style::default().bg(theme::selected_bg()))
+        .highlight_symbol(CURSOR_MARKER);
 
     let mut render_state = TableState::default().with_selected(visual_selected);
     f.render_stateful_widget(table, area, &mut render_state);

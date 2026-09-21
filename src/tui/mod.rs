@@ -2962,6 +2962,66 @@ mod tests {
     }
 
     #[test]
+    fn the_default_entries_table_header_is_unchanged_at_80_and_120_columns() {
+        let _guard = env_guard();
+        sandbox("entries-header-default");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = App::new().unwrap();
+
+        for width in [80, 120] {
+            let screen = frame_lines(&mut app, width, 10).join("\n");
+            assert!(
+                screen.contains("Date") && screen.contains("Start") && screen.contains("End"),
+                "default header missing at {width} columns:\n{screen}"
+            );
+            assert!(
+                !screen.contains("Project"),
+                "Project shows without being configured at {width} columns:\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_column_list_renders_only_those_headers_in_order() {
+        let _guard = env_guard();
+        let dir = sandbox("entries-header-configured");
+        seed(
+            vec![dated(0, "first", "tt", &[], Local::now().date_naive())],
+            1,
+        );
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"date\", \"project\", \"description\", \"duration\"]\n",
+        )
+        .unwrap();
+        let mut app = App::new().unwrap();
+
+        let screen = frame_lines(&mut app, 120, 10).join("\n");
+        let header = screen
+            .lines()
+            .find(|l| l.contains("Date"))
+            .expect("no header line");
+        let date_at = header.find("Date").unwrap();
+        let project_at = header.find("Project").expect("no Project header");
+        let description_at = header.find("Description").expect("no Description header");
+        let duration_at = header.find("Duration").expect("no Duration header");
+        assert!(date_at < project_at, "Date must lead Project:\n{header}");
+        assert!(
+            project_at < description_at,
+            "Project must lead Description:\n{header}"
+        );
+        assert!(
+            description_at < duration_at,
+            "Description must lead Duration:\n{header}"
+        );
+        assert!(!header.contains("Start"), "Start leaked:\n{header}");
+        assert!(!header.contains("End"), "End leaked:\n{header}");
+        assert!(!header.contains("Tags"), "Tags leaked:\n{header}");
+        assert!(screen.contains("tt"), "project cell missing:\n{screen}");
+        drop(dir);
+    }
+
+    #[test]
     fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
         let _guard = env_guard();
         sandbox("group-render");
