@@ -37,6 +37,8 @@ pub struct ThemeConfig {
     pub duration_high: Option<String>,
     pub duration_med: Option<String>,
     pub duration_low: Option<String>,
+    /// Text that flags an invalid state, such as two columns sharing a number.
+    pub error: Option<String>,
     pub border: Option<String>,
     pub title: Option<String>,
     pub group_header_bg: Option<String>,
@@ -320,6 +322,7 @@ fn merge_theme(b: ThemeConfig, o: ThemeConfig) -> ThemeConfig {
         duration_high: o.duration_high.or(b.duration_high),
         duration_med: o.duration_med.or(b.duration_med),
         duration_low: o.duration_low.or(b.duration_low),
+        error: o.error.or(b.error),
         border: o.border.or(b.border),
         title: o.title.or(b.title),
         group_header_bg: o.group_header_bg.or(b.group_header_bg),

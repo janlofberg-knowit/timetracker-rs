@@ -37,6 +37,18 @@ impl App {
         self.column_ranks[self.column_cursor] = None;
     }
 
+    /// Whether another row carries the same number as `index`.
+    pub(crate) fn rank_is_shared(&self, index: usize) -> bool {
+        match self.column_ranks[index] {
+            Some(rank) => self
+                .column_ranks
+                .iter()
+                .enumerate()
+                .any(|(other, r)| other != index && *r == Some(rank)),
+            None => false,
+        }
+    }
+
     /// The numbered columns, sorted by `(rank, canonical index)`. Ties keep
     /// canonical order; duplicate ranks are legal.
     pub(crate) fn column_picker_order(&self) -> Vec<EntryColumn> {

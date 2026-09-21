@@ -4,7 +4,8 @@ use crate::tui::{App, theme};
 use ratatui::{prelude::*, widgets::Paragraph};
 
 /// The `c` popup: one row per column, its number or a dash, and the order
-/// the current ranks derive. Never reordered while the user types.
+/// the current ranks derive. Never reordered while the user types. A number
+/// two rows share draws red until the tie is gone.
 pub(super) fn render_column_picker_popup(f: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     for (index, column) in EntryColumn::ALL_WITH_PROJECT.into_iter().enumerate() {
@@ -17,12 +18,21 @@ pub(super) fn render_column_picker_popup(f: &mut Frame, app: &App) {
             Some(rank) => rank.to_string(),
             None => "-".to_string(),
         };
-        let row_style = if index == app.column_cursor {
-            Style::default().fg(theme::highlight()).bold()
+        let selected = index == app.column_cursor;
+        let colour = if app.rank_is_shared(index) {
+            theme::error()
+        } else if selected {
+            theme::highlight()
         } else if app.column_ranks[index].is_some() {
-            Style::default().fg(theme::active())
+            theme::active()
         } else {
-            Style::default().fg(theme::inactive())
+            theme::inactive()
+        };
+        // Bold marks the cursor row only; colour carries the state.
+        let row_style = if selected {
+            Style::default().fg(colour).bold()
+        } else {
+            Style::default().fg(colour)
         };
         lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(theme::accent()).bold()),

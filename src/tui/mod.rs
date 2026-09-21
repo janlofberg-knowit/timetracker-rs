@@ -2151,6 +2151,25 @@ mod tests {
     }
 
     #[test]
+    fn the_column_picker_draws_a_shared_number_red_until_the_tie_is_gone() {
+        let _guard = env_guard();
+        sandbox("column-picker-render-tie");
+        let mut app = seed_panes();
+        app.open_column_picker();
+        // Start and End (canonical rows 1 and 2) both get 8; Date keeps 1.
+        app.column_ranks[1] = Some(8);
+        app.column_ranks[2] = Some(8);
+
+        let red = theme::error();
+        assert_eq!(row_fg(&mut app, " 8 Start"), red);
+        assert_eq!(row_fg(&mut app, " 8 End"), red);
+        assert_ne!(row_fg(&mut app, " 1 Date"), red);
+
+        app.column_ranks[2] = Some(9);
+        assert_ne!(row_fg(&mut app, " 8 Start"), red, "tie resolved");
+    }
+
+    #[test]
     fn the_column_picker_asks_for_a_number_once_everything_is_cleared() {
         let _guard = env_guard();
         sandbox("column-picker-render-empty");
@@ -2617,6 +2636,24 @@ mod tests {
             .unwrap_or_else(|| panic!("no drawn row carries {needle}"));
         // Column 3 is inside the table and left of every cursor marker.
         buffer[(3, row)].bg
+    }
+
+    /// The foreground colour of the first label character of the drawn row
+    /// carrying `needle`.
+    fn row_fg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        let (width, height) = (100u16, 30u16);
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        for y in 0..height {
+            let text: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(byte) = text.find(needle) {
+                let x = text[..byte].chars().count() as u16;
+                return buffer[(x, y)].fg;
+            }
+        }
+        panic!("no drawn row carries {needle}");
     }
 
     /// One rendered frame plus the cursor it asked for.

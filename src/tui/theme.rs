@@ -13,6 +13,8 @@ pub struct Theme {
     pub duration_high: Color,
     pub duration_med: Color,
     pub duration_low: Color,
+    /// Text that flags an invalid state.
+    pub error: Color,
     pub border: Color,
     pub title: Color,
 
@@ -58,6 +60,7 @@ impl Theme {
             duration_high: color(&cfg.duration_high, (239, 154, 154)), // Light red
             duration_med: color(&cfg.duration_med, (255, 224, 130)), // Light yellow
             duration_low: color(&cfg.duration_low, (165, 214, 167)), // Light green
+            error: color(&cfg.error, (239, 83, 80)),     // Red
             border: color(&cfg.border, (88, 88, 88)),    // Border gray
             title: color(&cfg.title, (186, 186, 186)),   // Light gray
 
@@ -108,6 +111,9 @@ pub fn selected_bg() -> Color {
 }
 pub fn highlight() -> Color {
     theme().highlight
+}
+pub fn error() -> Color {
+    theme().error
 }
 pub fn border() -> Color {
     theme().border
