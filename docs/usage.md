@@ -412,6 +412,12 @@ summary_split = false           # whether the Summary starts split into human an
 summary_follows_filters = false # whether the Summary starts folding the filtered
                                 # entries instead of the whole scope (f). Off
                                 # by default.
+columns = ["date", "start", "end", "description", "tags", "duration"]
+                            # the Entries table's columns, in render order. An
+                            # omitted name hides that column. Vocabulary: date,
+                            # start, end, description, project, tags, duration.
+                            # The status icon always draws last and is not a name
+                            # here. Absent or empty falls back to the order shown.
 
 [general]
 onboarding = true          # shown until answered; the app then sets this to false

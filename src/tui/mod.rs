@@ -142,6 +142,9 @@ pub(crate) struct App {
     /// A newer version than this build, if `main` found one before the TUI
     /// took the terminal over. Shown as a banner, never blocking.
     pub(crate) update_notice: Option<String>,
+    /// The entries table's columns, in render order. Resolved once from
+    /// `[layout].columns` — see `EntryColumn::resolve`.
+    pub(crate) entry_columns: Vec<render::columns::EntryColumn>,
 }
 
 impl App {
@@ -234,6 +237,7 @@ impl App {
             ],
             request_skill_install: false,
             update_notice: None,
+            entry_columns: render::columns::EntryColumn::resolve(layout.columns.as_deref()),
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
@@ -268,6 +272,12 @@ impl App {
             summary_follows_filters: Some(self.summary_follows_filters),
             heat_view: Some(self.heat_view),
             summary_heat: Some(self.summary_heat),
+            columns: Some(
+                self.entry_columns
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect(),
+            ),
         }
     }
 
@@ -1461,6 +1471,48 @@ mod tests {
         std::fs::write(dir.join("config.toml"), "[layout]\nheat_view = true\n").unwrap();
 
         assert!(App::new().unwrap().heat_view);
+    }
+
+    #[test]
+    fn a_configured_column_list_round_trips_through_layout_config() {
+        let _guard = env_guard();
+        let dir = sandbox("columns-round-trip");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"date\", \"project\", \"duration\"]\n",
+        )
+        .unwrap();
+
+        let app = App::new().unwrap();
+        assert_eq!(
+            app.layout_config().columns,
+            Some(vec![
+                "date".to_string(),
+                "project".to_string(),
+                "duration".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn an_absent_columns_key_resolves_and_writes_the_default_order() {
+        let _guard = env_guard();
+        sandbox("columns-default-write-back");
+        seed(vec![entry(0, "first")], 1);
+
+        let app = App::new().unwrap();
+        assert_eq!(
+            app.layout_config().columns,
+            Some(vec![
+                "date".to_string(),
+                "start".to_string(),
+                "end".to_string(),
+                "description".to_string(),
+                "tags".to_string(),
+                "duration".to_string(),
+            ])
+        );
     }
 
     #[test]

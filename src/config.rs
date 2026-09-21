@@ -114,6 +114,9 @@ pub struct LayoutConfig {
     pub heat_view: Option<bool>,
     /// Whether the Summary starts showing its per-project heat strips.
     pub summary_heat: Option<bool>,
+    /// The entries table's columns, in render order. Absent or empty falls
+    /// back to the default order — see `EntryColumn::resolve`.
+    pub columns: Option<Vec<String>>,
 }
 
 /// Cross-cutting settings. The first-run popup shows until it has run once,
@@ -378,6 +381,7 @@ fn merge_layout(b: LayoutConfig, o: LayoutConfig) -> LayoutConfig {
         summary_follows_filters: o.summary_follows_filters.or(b.summary_follows_filters),
         heat_view: o.heat_view.or(b.heat_view),
         summary_heat: o.summary_heat.or(b.summary_heat),
+        columns: o.columns.or(b.columns),
     }
 }
 
