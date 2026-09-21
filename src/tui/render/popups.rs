@@ -58,6 +58,14 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("m", "summary heat strips"),
         ],
     ),
+    (
+        "Columns",
+        &[
+            ("c", "open the column picker"),
+            ("1-9", "number the highlighted column"),
+            ("0 / space / Backspace", "clear the highlighted column"),
+        ],
+    ),
 ];
 
 /// Width and height follow the table, and `app.help_scroll` is clamped here

@@ -150,6 +150,12 @@ weekday on each row. The all view stacks one year band on another, the newest
 year at the top. In the day view and the all view, `j` and `k` scroll the
 project rows or the year bands that do not fit.
 
+**Columns.** `c` opens the column picker. `j`/`k` move the highlighted row,
+`1`-`9` gives it a number, and `0`, space or Backspace clears it. A lower
+number sits further left; a column with no number stays hidden. `Enter`
+applies the order and writes it to `[layout].columns`; `Esc` cancels and
+changes nothing.
+
 ---
 
 ### `tt update [--check] [-y|--yes]`
@@ -418,6 +424,7 @@ columns = ["date", "start", "end", "description", "tags", "duration"]
                             # start, end, description, project, tags, duration.
                             # The status icon always draws last and is not a name
                             # here. Absent or empty falls back to the order shown.
+                            # The `c` column picker writes this key.
 
 [general]
 onboarding = true          # shown until answered; the app then sets this to false
@@ -426,8 +433,9 @@ auto_check_updates = true  # startup check for a newer release; see `tt update`
 
 `[layout]` and `[general].onboarding` are written automatically the first time
 the TUI runs and its onboarding popup is answered (`s` to move on, `Esc` to
-skip); `[layout]` is rewritten on every later `P`/`A`/`S`/`T`/`v`/`f` toggle too, which
-leaves `onboarding` alone. Neither needs to be hand-edited, though both can be.
+skip); `[layout]` is rewritten on every later `P`/`A`/`S`/`T`/`v`/`f` toggle, and
+on `Enter` in the `c` column picker, too, which leaves `onboarding` alone.
+Neither needs to be hand-edited, though both can be.
 Onboarding's second screen offers to run
 [`tt skill install`](#tt-skill-install---agent-name---all---dir-path---no-hooks), which installs
 the `AGENTS.md` time-logging contract as a skill for your coding agent.

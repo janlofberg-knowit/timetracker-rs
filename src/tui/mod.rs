@@ -2080,6 +2080,7 @@ mod tests {
             "Projects & Tags",
             "Agents",
             "Summary",
+            "Columns",
         ]
         .iter()
         .map(|name| heading(name))
@@ -2103,7 +2104,7 @@ mod tests {
         app.input_mode = InputMode::Help;
 
         // The last row of the last section: only ever on the last page.
-        const LAST_ROW: &str = "summary heat strips";
+        const LAST_ROW: &str = "clear the highlighted column";
         let top = frame_lines(&mut app, 100, 20).join("\n");
         assert!(top.contains("▾ more"), "{top}");
         assert!(top.contains("j/k scroll"), "{top}");
@@ -2116,11 +2117,49 @@ mod tests {
         assert!(app.help_scroll < 1000, "render clamps the offset");
 
         app.input_mode = InputMode::Help;
-        let tall = frame_lines(&mut app, 100, 47).join("\n");
+        let tall = frame_lines(&mut app, 100, 52).join("\n");
         assert!(
             !tall.contains("▾ more") && !tall.contains("j/k scroll"),
             "{tall}"
         );
+    }
+
+    #[test]
+    fn the_column_picker_lists_every_column_and_the_order() {
+        let _guard = env_guard();
+        sandbox("column-picker-render");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::ColumnPicker;
+        app.open_column_picker();
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        for label in [
+            "Date",
+            "Start",
+            "End",
+            "Description",
+            "Project",
+            "Tags",
+            "Duration",
+        ] {
+            assert!(screen.contains(label), "no {label} row:\n{screen}");
+        }
+        assert!(
+            screen.contains("Order: Date Start End Description Tags Duration"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn the_column_picker_asks_for_a_number_once_everything_is_cleared() {
+        let _guard = env_guard();
+        sandbox("column-picker-render-empty");
+        let mut app = seed_panes();
+        app.open_column_picker();
+        app.column_ranks = [None; 7];
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("Number at least one column"), "{screen}");
     }
 
     #[test]
