@@ -3022,6 +3022,49 @@ mod tests {
     }
 
     #[test]
+    fn the_day_and_group_headers_follow_a_reordered_column_list() {
+        let _guard = env_guard();
+        let dir = sandbox("headers-reordered");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                dated(0, "round one", "tt", &["tt/174", "impl"], today),
+                dated(1, "round two", "tt", &["tt/174", "impl"], today),
+                dated(2, "round three", "tt", &["tt/174", "impl"], today),
+            ],
+            3,
+        );
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"duration\", \"description\", \"date\"]\n",
+        )
+        .unwrap();
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.table_state.select(Some(0));
+
+        let screen = frame_lines(&mut app, 120, 30).join("\n");
+        let weekday = today.format("%A").to_string();
+        let long_date = today.format("%B %d, %Y").to_string();
+        assert!(screen.contains(&weekday), "weekday missing:\n{screen}");
+        assert!(screen.contains(&long_date), "long date missing:\n{screen}");
+        assert!(screen.contains("3h 0m"), "total missing:\n{screen}");
+
+        let header = screen
+            .lines()
+            .find(|l| l.contains("Duration"))
+            .expect("no header line");
+        let dur_at = header.find("Duration").unwrap();
+        let desc_at = header.find("Description").expect("no Description header");
+        let date_at = header.find("Date").expect("no Date header");
+        assert!(
+            dur_at < desc_at && desc_at < date_at,
+            "header order wrong:\n{header}"
+        );
+        drop(dir);
+    }
+
+    #[test]
     fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
         let _guard = env_guard();
         sandbox("group-render");

@@ -161,35 +161,94 @@ fn members_total(entries: &[crate::tracker::TimeEntry], members: &[usize]) -> Du
         .fold(Duration::zero(), |acc, entry| acc + entry.duration())
 }
 
-fn day_header_row(date: NaiveDate, total: Duration) -> Row<'static> {
-    let weekday = format!("\n{}", date.format("%A"));
-    let date_str = format!("\n{}", date.format("%B %d, %Y"));
-    let total_str = format!("\n{}", crate::duration::format(total));
-
-    Row::new(vec![
-        Cell::from(weekday).style(
+/// The day banner's cell for one configured column: the weekday, the long
+/// date and the day total each sit in their matching column; every other
+/// column is blank.
+fn day_header_cell(
+    column: EntryColumn,
+    weekday: &str,
+    date_str: &str,
+    total_str: &str,
+) -> Cell<'static> {
+    match column {
+        EntryColumn::Date => Cell::from(weekday.to_string()).style(
             Style::default()
                 .fg(theme::highlight())
                 .add_modifier(Modifier::BOLD),
         ),
-        Cell::from(""),
-        Cell::from(""),
-        Cell::from(date_str).style(Style::default().fg(theme::title())),
-        Cell::from(""),
-        Cell::from(total_str).style(
+        EntryColumn::Description => {
+            Cell::from(date_str.to_string()).style(Style::default().fg(theme::title()))
+        }
+        EntryColumn::Duration => Cell::from(total_str.to_string()).style(
             Style::default()
                 .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Cell::from(""),
-    ])
-    .height(2)
-    .style(Style::default().bg(theme::day_header_bg()))
+        EntryColumn::Start | EntryColumn::End | EntryColumn::Project | EntryColumn::Tags => {
+            Cell::from("")
+        }
+    }
+}
+
+fn day_header_row(columns: &[EntryColumn], date: NaiveDate, total: Duration) -> Row<'static> {
+    let weekday = format!("\n{}", date.format("%A"));
+    let date_str = format!("\n{}", date.format("%B %d, %Y"));
+    let total_str = format!("\n{}", crate::duration::format(total));
+
+    let mut cells: Vec<Cell<'static>> = columns
+        .iter()
+        .map(|c| day_header_cell(*c, &weekday, &date_str, &total_str))
+        .collect();
+    cells.push(Cell::from(""));
+
+    Row::new(cells)
+        .height(2)
+        .style(Style::default().bg(theme::day_header_bg()))
+}
+
+/// The group header's cell for one configured column: its span in
+/// Date/Start/End, its label in Description, its tag in Tags and its summed
+/// duration in Duration; `Project` is blank.
+fn group_header_cell(
+    column: EntryColumn,
+    header: &GroupHeader,
+    label: &str,
+    end: &str,
+    total_str: &str,
+    dur_color: Color,
+) -> Cell<'static> {
+    match column {
+        EntryColumn::Date => Cell::from(header.start.format("%Y-%m-%d").to_string())
+            .style(Style::default().fg(theme::title())),
+        EntryColumn::Start => Cell::from(header.start.format("%H:%M").to_string())
+            .style(Style::default().fg(theme::accent())),
+        EntryColumn::End => {
+            Cell::from(end.to_string()).style(Style::default().fg(theme::inactive()))
+        }
+        // The count leads: this column is 19 cells at 80 columns, so whatever
+        // comes second is what the clip takes.
+        EntryColumn::Description => {
+            Cell::from(label.to_string()).style(Style::default().add_modifier(Modifier::BOLD))
+        }
+        // Stored tags carry no `#`; the display prefix comes from `format_tags`.
+        EntryColumn::Tags => Cell::from(crate::tracker::format_tags(std::slice::from_ref(
+            &header.tag,
+        )))
+        .style(Style::default().fg(theme::highlight())),
+        EntryColumn::Duration => {
+            Cell::from(total_str.to_string()).style(Style::default().fg(dur_color))
+        }
+        EntryColumn::Project => Cell::from(""),
+    }
 }
 
 /// One issue's collapsed row: its span, its member count and id behind a
 /// chevron, and the members' summed duration.
-fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry]) -> Row<'static> {
+fn group_header_row(
+    columns: &[EntryColumn],
+    header: &GroupHeader,
+    entries: &[crate::tracker::TimeEntry],
+) -> Row<'static> {
     let total = members_total(entries, &header.members);
     let dur_color = theme::duration_color(
         total.num_hours(),
@@ -210,30 +269,20 @@ fn group_header_row(header: &GroupHeader, entries: &[crate::tracker::TimeEntry])
     } else {
         ""
     };
+    let label = format!(
+        "{chevron} {} entries - {}",
+        header.members.len(),
+        header.tag
+    );
+    let total_str = crate::duration::format(total);
 
-    Row::new(vec![
-        Cell::from(header.start.format("%Y-%m-%d").to_string())
-            .style(Style::default().fg(theme::title())),
-        Cell::from(header.start.format("%H:%M").to_string())
-            .style(Style::default().fg(theme::accent())),
-        Cell::from(end).style(Style::default().fg(theme::inactive())),
-        // The count leads: this column is 19 cells at 80 columns, so whatever
-        // comes second is what the clip takes.
-        Cell::from(format!(
-            "{chevron} {} entries - {}",
-            header.members.len(),
-            header.tag
-        ))
-        .style(Style::default().add_modifier(Modifier::BOLD)),
-        // Stored tags carry no `#`; the display prefix comes from `format_tags`.
-        Cell::from(crate::tracker::format_tags(std::slice::from_ref(
-            &header.tag,
-        )))
-        .style(Style::default().fg(theme::highlight())),
-        Cell::from(crate::duration::format(total)).style(Style::default().fg(dur_color)),
-        Cell::from(icon).style(Style::default().fg(theme::active())),
-    ])
-    .style(Style::default().bg(theme::group_header_bg()))
+    let mut cells: Vec<Cell<'static>> = columns
+        .iter()
+        .map(|c| group_header_cell(*c, header, &label, &end, &total_str, dur_color))
+        .collect();
+    cells.push(Cell::from(icon).style(Style::default().fg(theme::active())));
+
+    Row::new(cells).style(Style::default().bg(theme::group_header_bg()))
 }
 
 pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
@@ -274,11 +323,15 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
                 // The stripe alternation restarts inside each day partition.
                 stripe = false;
                 let total = day_totals.get(date).copied().unwrap_or_else(Duration::zero);
-                rows.push(day_header_row(*date, total));
+                rows.push(day_header_row(&app.entry_columns, *date, total));
             }
             VisibleRow::GroupHeader(header) => {
                 visual_of_selectable.push(rows.len());
-                rows.push(group_header_row(header, &app.data.entries));
+                rows.push(group_header_row(
+                    &app.entry_columns,
+                    header,
+                    &app.data.entries,
+                ));
             }
             VisibleRow::Entry { index, member } => {
                 if let Some(entry) = app.data.entries.get(*index) {
