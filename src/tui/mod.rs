@@ -17,6 +17,7 @@ use std::io::{self, Stdout};
 use text_input::TextInput;
 
 mod cache;
+mod column_picker;
 mod entry_form;
 mod keys;
 mod marks_surface;
@@ -145,6 +146,12 @@ pub(crate) struct App {
     /// The entries table's columns, in render order. Resolved once from
     /// `[layout].columns` — see `EntryColumn::resolve`.
     pub(crate) entry_columns: Vec<render::columns::EntryColumn>,
+    /// The column picker's draft ranks, indexed by
+    /// `EntryColumn::ALL_WITH_PROJECT` position. Session state, reseeded on
+    /// every open — never persisted directly.
+    pub(crate) column_ranks: [Option<u8>; 7],
+    /// The column picker's highlighted row.
+    pub(crate) column_cursor: usize,
 }
 
 impl App {
@@ -248,6 +255,8 @@ impl App {
             request_skill_install: false,
             update_notice: None,
             entry_columns,
+            column_ranks: [None; 7],
+            column_cursor: 0,
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();

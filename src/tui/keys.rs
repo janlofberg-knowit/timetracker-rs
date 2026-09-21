@@ -19,6 +19,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // Which key is a yes depends on the pending action, so the
         // whole answer lives in `answer_confirm`.
         InputMode::Confirm => app.answer_confirm(key.code)?,
+        // Wired up once `c` opens the picker.
+        InputMode::ColumnPicker => {}
     }
     Ok(())
 }

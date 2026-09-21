@@ -72,7 +72,7 @@ impl EntryColumn {
 
     /// [`ALL`](Self::ALL) plus `Project`, for name lookup — `ALL` alone is the
     /// default *order*, not the whole vocabulary.
-    const ALL_WITH_PROJECT: [EntryColumn; 7] = [
+    pub(crate) const ALL_WITH_PROJECT: [EntryColumn; 7] = [
         EntryColumn::Date,
         EntryColumn::Start,
         EntryColumn::End,
