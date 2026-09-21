@@ -1,6 +1,7 @@
 //! The frame's vertical layout and the top-level draw. Where each surface goes
 //! is decided here; how it is drawn lives in the sibling modules.
 
+pub(crate) mod columns;
 mod entries;
 mod form;
 mod heat;
