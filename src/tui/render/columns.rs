@@ -83,9 +83,10 @@ impl EntryColumn {
     ];
 
     /// Resolves `[layout].columns` into the render order. An unknown name
-    /// warns and is skipped; a repeat warns and is kept once; an absent or
-    /// empty list falls back to [`ALL`](Self::ALL). Never errors — this
-    /// codebase's config convention is warn-and-continue.
+    /// warns and is skipped; a repeat warns and is kept once; an absent,
+    /// empty, or all-unknown list falls back to [`ALL`](Self::ALL), with a
+    /// warning in the all-unknown case. Never errors — this codebase's
+    /// config convention is warn-and-continue.
     pub(crate) fn resolve(configured: Option<&[String]>) -> Vec<EntryColumn> {
         let Some(names) = configured.filter(|n| !n.is_empty()) else {
             return EntryColumn::ALL.to_vec();
@@ -103,6 +104,11 @@ impl EntryColumn {
                 continue;
             }
             columns.push(column);
+        }
+
+        if columns.is_empty() {
+            eprintln!("Warning: layout.columns has no recognised column; using the default order.");
+            return EntryColumn::ALL.to_vec();
         }
         columns
     }
@@ -136,6 +142,15 @@ mod tests {
         let configured = vec!["date".to_string(), "duration".to_string()];
         let resolved = EntryColumn::resolve(Some(&configured));
         assert!(!resolved.contains(&EntryColumn::Tags));
+    }
+
+    #[test]
+    fn an_all_unknown_list_falls_back_to_the_default_order() {
+        let configured = vec!["Datum".to_string(), "Dauer".to_string()];
+        assert_eq!(
+            EntryColumn::resolve(Some(&configured)),
+            EntryColumn::ALL.to_vec()
+        );
     }
 
     #[test]

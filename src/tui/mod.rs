@@ -152,15 +152,22 @@ impl App {
     /// `for_interactive_run` instead.
     #[cfg_attr(not(test), allow(dead_code))]
     fn new() -> Result<Self> {
-        Self::from_config(crate::config::load())
+        let config = crate::config::load();
+        let entry_columns = render::columns::EntryColumn::resolve(config.layout.columns.as_deref());
+        Self::from_config(config, entry_columns)
     }
 
     /// The blessed constructor for a real run: any future production entry
     /// point should build its `App` through here, so onboarding isn't
-    /// something each call site has to remember to bolt on.
-    fn for_interactive_run(update_notice: Option<String>) -> Result<Self> {
+    /// something each call site has to remember to bolt on. `entry_columns`
+    /// is resolved by the caller, before the terminal takes the alternate
+    /// screen — see `run_tui` — so an unknown-column warning is visible.
+    fn for_interactive_run(
+        update_notice: Option<String>,
+        entry_columns: Vec<render::columns::EntryColumn>,
+    ) -> Result<Self> {
         let config = crate::config::load();
-        let mut app = Self::from_config(config)?;
+        let mut app = Self::from_config(config, entry_columns)?;
         if crate::config::should_onboard(&config.general) {
             app.input_mode = InputMode::Onboarding;
         }
@@ -170,7 +177,10 @@ impl App {
 
     /// The env-free half of `new`, so callers can load the config once and
     /// reuse it (e.g. for `should_onboard`) instead of reading it twice.
-    fn from_config(config: &crate::config::Config) -> Result<Self> {
+    fn from_config(
+        config: &crate::config::Config,
+        entry_columns: Vec<render::columns::EntryColumn>,
+    ) -> Result<Self> {
         // Stamp before loading — see `App::reload`.
         let store_stamp = crate::storage::store_stamp();
         let layout = &config.layout;
@@ -237,7 +247,7 @@ impl App {
             ],
             request_skill_install: false,
             update_notice: None,
-            entry_columns: render::columns::EntryColumn::resolve(layout.columns.as_deref()),
+            entry_columns,
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
@@ -337,8 +347,12 @@ fn with_suspended_terminal(
 }
 
 pub fn run_tui(update_notice: Option<String>) -> Result<()> {
+    // Resolved ahead of `setup_terminal` so an unknown-column warning
+    // prints to the normal screen, not the alternate one the TUI paints over.
+    let entry_columns =
+        render::columns::EntryColumn::resolve(crate::config::load().layout.columns.as_deref());
     let mut terminal = setup_terminal()?;
-    let mut app = App::for_interactive_run(update_notice)?;
+    let mut app = App::for_interactive_run(update_notice, entry_columns)?;
 
     loop {
         terminal.draw(|f| render::ui(f, &mut app))?;
@@ -1493,6 +1507,26 @@ mod tests {
                 "duration".to_string()
             ])
         );
+    }
+
+    /// `from_config` must use the `entry_columns` its caller resolved rather
+    /// than resolving `[layout].columns` again itself — `run_tui` resolves
+    /// ahead of `setup_terminal` so an unknown-column warning is visible, and
+    /// a second, silent resolution here would defeat that.
+    #[test]
+    fn from_config_stores_the_caller_resolved_columns_rather_than_recomputing() {
+        let _guard = env_guard();
+        let dir = sandbox("columns-caller-resolved");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(dir.join("config.toml"), "[layout]\ncolumns = [\"date\"]\n").unwrap();
+
+        let config = crate::config::load();
+        let given = vec![
+            render::columns::EntryColumn::Duration,
+            render::columns::EntryColumn::Project,
+        ];
+        let app = App::from_config(config, given.clone()).unwrap();
+        assert_eq!(app.entry_columns, given);
     }
 
     #[test]
