@@ -3184,6 +3184,25 @@ mod tests {
     }
 
     #[test]
+    fn a_group_header_shows_the_project_its_members_share() {
+        let _guard = env_guard();
+        sandbox("group-project");
+        let mut app = seed_grouped();
+        app.entry_columns
+            .push(render::columns::EntryColumn::Project);
+
+        let screen = frame_lines(&mut app, 140, 30).join("\n");
+        let header = screen
+            .lines()
+            .find(|l| l.contains("3 entries - tt/174"))
+            .unwrap();
+        assert!(
+            header.ends_with("tt") || header.contains(" tt "),
+            "no shared project:\n{header}"
+        );
+    }
+
+    #[test]
     fn the_entries_table_draws_a_group_as_one_row_until_it_is_expanded() {
         let _guard = env_guard();
         sandbox("group-render");

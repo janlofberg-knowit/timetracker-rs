@@ -208,7 +208,7 @@ fn day_header_row(columns: &[EntryColumn], date: NaiveDate, total: Duration) -> 
 
 /// The group header's cell for one configured column: its span in
 /// Date/Start/End, its label in Description, its tag in Tags and its summed
-/// duration in Duration; `Project` is blank.
+/// duration in Duration and the shared project in Project.
 fn group_header_cell(
     column: EntryColumn,
     header: &GroupHeader,
@@ -228,7 +228,7 @@ fn group_header_cell(
         // The count leads: this column is 19 cells at 80 columns, so whatever
         // comes second is what the clip takes.
         EntryColumn::Description => {
-            Cell::from(label.to_string()).style(Style::default().add_modifier(Modifier::BOLD))
+            Cell::from(label.to_string()).style(Style::default().add_modifier(Modifier::ITALIC))
         }
         // Stored tags carry no `#`; the display prefix comes from `format_tags`.
         EntryColumn::Tags => Cell::from(crate::tracker::format_tags(std::slice::from_ref(
@@ -238,7 +238,11 @@ fn group_header_cell(
         EntryColumn::Duration => {
             Cell::from(total_str.to_string()).style(Style::default().fg(dur_color))
         }
-        EntryColumn::Project => Cell::from(""),
+        EntryColumn::Project => Cell::from(header.project.clone().unwrap_or_default()).style(
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::ITALIC),
+        ),
     }
 }
 
