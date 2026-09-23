@@ -1633,14 +1633,18 @@ mod tests {
         app.toggle_pane(Pane::Projects);
         app.focus = Focus::Table;
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(
+            app.focus,
+            Focus::Pane(Pane::Projects),
+            "wraps to the first pane"
+        );
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.focus, Focus::Table, "the table follows the panes");
     }
 
-    /// The Summary sits last in the ring, below the panes, and only while it is open.
+    /// The Summary sits last in the ring, right after the table, and only while it is open.
     #[test]
     fn tab_reaches_the_summary_only_while_it_is_open() {
         let _guard = env_guard();
@@ -1662,13 +1666,13 @@ mod tests {
         app.toggle_pane(Pane::Tags);
         app.focus = Focus::Table;
         app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary, "the table sits right before it");
+        app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Summary, "after every visible pane");
-        app.cycle_focus();
-        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.focus, Focus::Table, "after every visible pane");
 
         app.toggle_summary();
         app.focus = Focus::Table;

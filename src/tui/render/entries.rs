@@ -5,6 +5,7 @@ use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
 use crate::tui::rows::{GroupHeader, Member, VisibleRow};
 use crate::tui::summary::NO_PROJECT;
+use crate::tui::types::Focus;
 use crate::tui::{App, theme};
 use chrono::{Duration, Local, NaiveDate};
 use ratatui::{
@@ -379,10 +380,22 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
         " Entries ".to_string()
     };
 
+    let focused = app.focus == Focus::Table;
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::border()))
-        .title(Span::styled(title, Style::default().fg(theme::title())));
+        .border_style(Style::default().fg(if focused {
+            theme::accent()
+        } else {
+            theme::border()
+        }))
+        .title(Span::styled(
+            title,
+            Style::default().fg(if focused {
+                theme::highlight()
+            } else {
+                theme::title()
+            }),
+        ));
     if let Some(keys) = content_legend(app, area.width.saturating_sub(2)) {
         block = block.title_bottom(keys.left_aligned());
     }

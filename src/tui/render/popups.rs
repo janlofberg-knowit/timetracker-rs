@@ -42,7 +42,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Shift-P", "Projects pane on / off"),
             ("Shift-T", "Tags pane on / off"),
-            ("Tab", "focus table / panes / summary"),
+            ("Tab", "focus panes / table / summary"),
             ("Shift-Tab", "focus the same ring in reverse"),
             ("Enter", "pane value: include / exclude / off"),
             ("-", "cycle the pane value back"),
