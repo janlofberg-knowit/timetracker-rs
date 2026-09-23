@@ -19,6 +19,7 @@ pub(super) fn content_legend(app: &App, width: u16) -> Option<Line<'static>> {
             ("M", "heatmap", false),
             ("o", "sort order", false),
             ("g", "issue group", false),
+            ("c", "columns", false),
         ],
         width,
     )
@@ -128,6 +129,23 @@ mod tests {
             "a heatmap must offer the list: {}",
             text(&line)
         );
+    }
+
+    /// The list legend advertises `c` at a width wide enough to hold it.
+    #[test]
+    fn the_content_legend_advertises_the_column_picker() {
+        let _guard = crate::storage::env_guard();
+        crate::storage::env_sandbox("content-legend-columns");
+        crate::storage::save_data(&crate::tracker::TimeData {
+            entries: Vec::new(),
+            next_id: 0,
+            schema_version: 1,
+        })
+        .unwrap();
+
+        let app = App::new().unwrap();
+        let line = content_legend(&app, 60).expect("the legend fits 60 cells");
+        assert!(text(&line).contains("c: columns"), "{}", text(&line));
     }
 
     /// The grid offers the keys it really has: no sort order, and `j/k` only

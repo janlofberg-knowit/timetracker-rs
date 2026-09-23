@@ -51,6 +51,8 @@ pub(crate) struct GroupHeader {
     /// any member is still running.
     pub(crate) start: DateTime<Local>,
     pub(crate) end: Option<DateTime<Local>>,
+    /// The members' project when every member agrees; `None` otherwise.
+    pub(crate) project: Option<String>,
 }
 
 impl VisibleRow {
@@ -286,8 +288,16 @@ impl App {
     /// [`RowKey`] has no clock input, so the sums are the renderer's per frame.
     fn summarise(&self, tag: &str, members: &[usize]) -> GroupHeader {
         let entries = || members.iter().filter_map(|i| self.data.entries.get(*i));
+        let mut projects = entries().map(|e| e.project.as_deref().map(str::trim));
+        let first = projects.next().flatten();
+        let project = if projects.all(|p| p == first) {
+            first.map(str::to_string)
+        } else {
+            None
+        };
         GroupHeader {
             tag: tag.to_string(),
+            project,
             members: members.to_vec(),
             expanded: self.expanded_issues.contains(tag),
             start: entries()

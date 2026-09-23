@@ -19,6 +19,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // Which key is a yes depends on the pending action, so the
         // whole answer lives in `answer_confirm`.
         InputMode::Confirm => app.answer_confirm(key.code)?,
+        InputMode::ColumnPicker => column_picker(app, key),
     }
     Ok(())
 }
@@ -105,6 +106,7 @@ fn normal(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('l') | KeyCode::Right => app.next_period(),
         KeyCode::Char('t') => app.go_to_today(),
         KeyCode::Char('o') => app.toggle_sort_order(),
+        KeyCode::Char('c') => app.open_column_picker(),
         KeyCode::Char('?') => {
             app.help_scroll = 0;
             app.input_mode = InputMode::Help;
@@ -195,6 +197,20 @@ fn detail(app: &mut App, key: KeyEvent) {
         // `t` rather than `s`, so a slip outside this modal hits
         // `go_to_today()`. Bound here only.
         KeyCode::Char('t') => app.request_confirm(ConfirmAction::Trim),
+        _ => {}
+    }
+}
+
+fn column_picker(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.column_picker_cancel(),
+        KeyCode::Enter => app.column_picker_apply(),
+        KeyCode::Char('j') | KeyCode::Down => app.column_picker_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.column_picker_move(-1),
+        KeyCode::Char(d @ '1'..='9') => {
+            app.column_picker_set_rank(d.to_digit(10).unwrap() as u8);
+        }
+        KeyCode::Char('0') | KeyCode::Char(' ') | KeyCode::Backspace => app.column_picker_clear(),
         _ => {}
     }
 }
@@ -467,6 +483,78 @@ mod tests {
         app.input_mode = InputMode::Detail;
         press(&mut app, KeyCode::Char('q'));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn c_from_normal_opens_the_column_picker() {
+        let _guard = env_guard();
+        sandbox("keys-column-picker-open");
+        seed(vec![entry(0, "kept")], 1);
+        let mut app = App::new().unwrap();
+
+        press(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.input_mode, InputMode::ColumnPicker);
+    }
+
+    #[test]
+    fn esc_cancels_the_column_picker_without_changing_columns() {
+        let _guard = env_guard();
+        sandbox("keys-column-picker-esc");
+        seed(vec![entry(0, "kept")], 1);
+        let mut app = App::new().unwrap();
+        let original = app.entry_columns.clone();
+
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.entry_columns, original);
+    }
+
+    #[test]
+    fn a_digit_then_enter_applies_the_numbered_column() {
+        let _guard = env_guard();
+        sandbox("keys-column-picker-apply");
+        seed(vec![entry(0, "kept")], 1);
+        let mut app = App::new().unwrap();
+
+        press(&mut app, KeyCode::Char('c'));
+        // Clear every seeded rank, then number the highlighted (first) row.
+        for _ in 0..app.column_ranks.len() {
+            press(&mut app, KeyCode::Char('0'));
+            press(&mut app, KeyCode::Char('j'));
+        }
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.entry_columns,
+            vec![crate::tui::render::columns::EntryColumn::Duration]
+        );
+    }
+
+    #[test]
+    fn enter_with_everything_cleared_stays_in_the_column_picker() {
+        let _guard = env_guard();
+        sandbox("keys-column-picker-empty");
+        seed(vec![entry(0, "kept")], 1);
+        let mut app = App::new().unwrap();
+
+        press(&mut app, KeyCode::Char('c'));
+        // Clear every seeded rank.
+        for _ in 0..app.column_ranks.len() {
+            press(&mut app, KeyCode::Char('0'));
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let original = app.entry_columns.clone();
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.input_mode, InputMode::ColumnPicker);
+        assert_eq!(app.entry_columns, original);
     }
 
     /// An entry `hours_ago`, tagged, so it groups with its siblings.
@@ -760,6 +848,9 @@ mod tests {
             (KeyCode::Char('m'), "summary heat", |a| a.summary_heat),
             (KeyCode::Char('o'), "sort order", |a| {
                 a.sort_order != SortOrder::NewestFirst
+            }),
+            (KeyCode::Char('c'), "column picker", |a| {
+                a.input_mode == InputMode::ColumnPicker
             }),
             (KeyCode::Char('q'), "quit", |a| a.should_quit),
             (KeyCode::Esc, "quit", |a| a.should_quit),

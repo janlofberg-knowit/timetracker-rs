@@ -42,7 +42,7 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Shift-P", "Projects pane on / off"),
             ("Shift-T", "Tags pane on / off"),
-            ("Tab", "focus table / panes / summary"),
+            ("Tab", "focus panes / table / summary"),
             ("Shift-Tab", "focus the same ring in reverse"),
             ("Enter", "pane value: include / exclude / off"),
             ("-", "cycle the pane value back"),
@@ -56,6 +56,14 @@ const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("v", "human / agent split (Summary focused)"),
             ("f", "follow the filters (Summary focused)"),
             ("m", "summary heat strips"),
+        ],
+    ),
+    (
+        "Columns",
+        &[
+            ("c", "open the column picker"),
+            ("1-9", "number the highlighted column"),
+            ("0 / space / Backspace", "clear the highlighted column"),
         ],
     ),
 ];

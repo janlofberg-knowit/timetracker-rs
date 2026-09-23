@@ -1,6 +1,8 @@
 //! The frame's vertical layout and the top-level draw. Where each surface goes
 //! is decided here; how it is drawn lives in the sibling modules.
 
+mod column_picker;
+pub(crate) mod columns;
 mod entries;
 mod form;
 mod heat;
@@ -10,6 +12,7 @@ mod overlay;
 mod popups;
 mod surfaces;
 
+use column_picker::render_column_picker_popup;
 use entries::{render_entries_table, render_weekly_breakdown};
 use form::{render_entry_form, render_search_bar};
 use heat::render_heat_grid;
@@ -277,6 +280,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         InputMode::Detail => render_detail_popup(f, app),
         InputMode::Confirm => render_confirm_popup(f, app),
         InputMode::Onboarding => render_onboarding_popup(f, app),
+        InputMode::ColumnPicker => render_column_picker_popup(f, app),
         _ => {}
     }
 }

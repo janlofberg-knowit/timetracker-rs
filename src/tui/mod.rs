@@ -17,6 +17,7 @@ use std::io::{self, Stdout};
 use text_input::TextInput;
 
 mod cache;
+mod column_picker;
 mod entry_form;
 mod keys;
 mod marks_surface;
@@ -142,6 +143,15 @@ pub(crate) struct App {
     /// A newer version than this build, if `main` found one before the TUI
     /// took the terminal over. Shown as a banner, never blocking.
     pub(crate) update_notice: Option<String>,
+    /// The entries table's columns, in render order. Resolved once from
+    /// `[layout].columns` — see `EntryColumn::resolve`.
+    pub(crate) entry_columns: Vec<render::columns::EntryColumn>,
+    /// The column picker's draft ranks, indexed by
+    /// `EntryColumn::ALL_WITH_PROJECT` position. Session state, reseeded on
+    /// every open — never persisted directly.
+    pub(crate) column_ranks: [Option<u8>; 7],
+    /// The column picker's highlighted row.
+    pub(crate) column_cursor: usize,
 }
 
 impl App {
@@ -149,15 +159,22 @@ impl App {
     /// `for_interactive_run` instead.
     #[cfg_attr(not(test), allow(dead_code))]
     fn new() -> Result<Self> {
-        Self::from_config(crate::config::load())
+        let config = crate::config::load();
+        let entry_columns = render::columns::EntryColumn::resolve(config.layout.columns.as_deref());
+        Self::from_config(config, entry_columns)
     }
 
     /// The blessed constructor for a real run: any future production entry
     /// point should build its `App` through here, so onboarding isn't
-    /// something each call site has to remember to bolt on.
-    fn for_interactive_run(update_notice: Option<String>) -> Result<Self> {
+    /// something each call site has to remember to bolt on. `entry_columns`
+    /// is resolved by the caller, before the terminal takes the alternate
+    /// screen — see `run_tui` — so an unknown-column warning is visible.
+    fn for_interactive_run(
+        update_notice: Option<String>,
+        entry_columns: Vec<render::columns::EntryColumn>,
+    ) -> Result<Self> {
         let config = crate::config::load();
-        let mut app = Self::from_config(config)?;
+        let mut app = Self::from_config(config, entry_columns)?;
         if crate::config::should_onboard(&config.general) {
             app.input_mode = InputMode::Onboarding;
         }
@@ -167,7 +184,10 @@ impl App {
 
     /// The env-free half of `new`, so callers can load the config once and
     /// reuse it (e.g. for `should_onboard`) instead of reading it twice.
-    fn from_config(config: &crate::config::Config) -> Result<Self> {
+    fn from_config(
+        config: &crate::config::Config,
+        entry_columns: Vec<render::columns::EntryColumn>,
+    ) -> Result<Self> {
         // Stamp before loading — see `App::reload`.
         let store_stamp = crate::storage::store_stamp();
         let layout = &config.layout;
@@ -234,6 +254,9 @@ impl App {
             ],
             request_skill_install: false,
             update_notice: None,
+            entry_columns,
+            column_ranks: [None; 7],
+            column_cursor: 0,
         };
         // The first tick is 250 ms away, so read now for a current first frame.
         app.sync_from_marks();
@@ -268,6 +291,12 @@ impl App {
             summary_follows_filters: Some(self.summary_follows_filters),
             heat_view: Some(self.heat_view),
             summary_heat: Some(self.summary_heat),
+            columns: Some(
+                self.entry_columns
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect(),
+            ),
         }
     }
 
@@ -327,8 +356,12 @@ fn with_suspended_terminal(
 }
 
 pub fn run_tui(update_notice: Option<String>) -> Result<()> {
+    // Resolved ahead of `setup_terminal` so an unknown-column warning
+    // prints to the normal screen, not the alternate one the TUI paints over.
+    let entry_columns =
+        render::columns::EntryColumn::resolve(crate::config::load().layout.columns.as_deref());
     let mut terminal = setup_terminal()?;
-    let mut app = App::for_interactive_run(update_notice)?;
+    let mut app = App::for_interactive_run(update_notice, entry_columns)?;
 
     loop {
         terminal.draw(|f| render::ui(f, &mut app))?;
@@ -1464,6 +1497,68 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_column_list_round_trips_through_layout_config() {
+        let _guard = env_guard();
+        let dir = sandbox("columns-round-trip");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"date\", \"project\", \"duration\"]\n",
+        )
+        .unwrap();
+
+        let app = App::new().unwrap();
+        assert_eq!(
+            app.layout_config().columns,
+            Some(vec![
+                "date".to_string(),
+                "project".to_string(),
+                "duration".to_string()
+            ])
+        );
+    }
+
+    /// `from_config` must use the `entry_columns` its caller resolved rather
+    /// than resolving `[layout].columns` again itself — `run_tui` resolves
+    /// ahead of `setup_terminal` so an unknown-column warning is visible, and
+    /// a second, silent resolution here would defeat that.
+    #[test]
+    fn from_config_stores_the_caller_resolved_columns_rather_than_recomputing() {
+        let _guard = env_guard();
+        let dir = sandbox("columns-caller-resolved");
+        seed(vec![entry(0, "first")], 1);
+        std::fs::write(dir.join("config.toml"), "[layout]\ncolumns = [\"date\"]\n").unwrap();
+
+        let config = crate::config::load();
+        let given = vec![
+            render::columns::EntryColumn::Duration,
+            render::columns::EntryColumn::Project,
+        ];
+        let app = App::from_config(config, given.clone()).unwrap();
+        assert_eq!(app.entry_columns, given);
+    }
+
+    #[test]
+    fn an_absent_columns_key_resolves_and_writes_the_default_order() {
+        let _guard = env_guard();
+        sandbox("columns-default-write-back");
+        seed(vec![entry(0, "first")], 1);
+
+        let app = App::new().unwrap();
+        assert_eq!(
+            app.layout_config().columns,
+            Some(vec![
+                "date".to_string(),
+                "start".to_string(),
+                "end".to_string(),
+                "description".to_string(),
+                "tags".to_string(),
+                "duration".to_string(),
+            ])
+        );
+    }
+
+    #[test]
     fn liveness_is_read_at_most_once_per_interval_however_many_events_arrive() {
         let _guard = env_guard();
         sandbox("liveness-throttle");
@@ -1538,14 +1633,18 @@ mod tests {
         app.toggle_pane(Pane::Projects);
         app.focus = Focus::Table;
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Pane(Pane::Projects));
+        assert_eq!(
+            app.focus,
+            Focus::Pane(Pane::Projects),
+            "wraps to the first pane"
+        );
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.focus, Focus::Table, "the table follows the panes");
     }
 
-    /// The Summary sits last in the ring, below the panes, and only while it is open.
+    /// The Summary sits last in the ring, right after the table, and only while it is open.
     #[test]
     fn tab_reaches_the_summary_only_while_it_is_open() {
         let _guard = env_guard();
@@ -1567,13 +1666,13 @@ mod tests {
         app.toggle_pane(Pane::Tags);
         app.focus = Focus::Table;
         app.cycle_focus();
+        assert_eq!(app.focus, Focus::Summary, "the table sits right before it");
+        app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Projects));
         app.cycle_focus();
         assert_eq!(app.focus, Focus::Pane(Pane::Tags));
         app.cycle_focus();
-        assert_eq!(app.focus, Focus::Summary, "after every visible pane");
-        app.cycle_focus();
-        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.focus, Focus::Table, "after every visible pane");
 
         app.toggle_summary();
         app.focus = Focus::Table;
@@ -1985,6 +2084,7 @@ mod tests {
             "Projects & Tags",
             "Agents",
             "Summary",
+            "Columns",
         ]
         .iter()
         .map(|name| heading(name))
@@ -2008,7 +2108,7 @@ mod tests {
         app.input_mode = InputMode::Help;
 
         // The last row of the last section: only ever on the last page.
-        const LAST_ROW: &str = "summary heat strips";
+        const LAST_ROW: &str = "clear the highlighted column";
         let top = frame_lines(&mut app, 100, 20).join("\n");
         assert!(top.contains("▾ more"), "{top}");
         assert!(top.contains("j/k scroll"), "{top}");
@@ -2021,11 +2121,68 @@ mod tests {
         assert!(app.help_scroll < 1000, "render clamps the offset");
 
         app.input_mode = InputMode::Help;
-        let tall = frame_lines(&mut app, 100, 47).join("\n");
+        let tall = frame_lines(&mut app, 100, 52).join("\n");
         assert!(
             !tall.contains("▾ more") && !tall.contains("j/k scroll"),
             "{tall}"
         );
+    }
+
+    #[test]
+    fn the_column_picker_lists_every_column_and_the_order() {
+        let _guard = env_guard();
+        sandbox("column-picker-render");
+        let mut app = seed_panes();
+        app.input_mode = InputMode::ColumnPicker;
+        app.open_column_picker();
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        for label in [
+            "Date",
+            "Start",
+            "End",
+            "Description",
+            "Project",
+            "Tags",
+            "Duration",
+        ] {
+            assert!(screen.contains(label), "no {label} row:\n{screen}");
+        }
+        assert!(
+            screen.contains("Order: Date Start End Description Tags Duration"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn the_column_picker_draws_a_shared_number_red_until_the_tie_is_gone() {
+        let _guard = env_guard();
+        sandbox("column-picker-render-tie");
+        let mut app = seed_panes();
+        app.open_column_picker();
+        // Start and End (canonical rows 1 and 2) both get 8; Date keeps 1.
+        app.column_ranks[1] = Some(8);
+        app.column_ranks[2] = Some(8);
+
+        let red = theme::error();
+        assert_eq!(row_fg(&mut app, " 8 Start"), red);
+        assert_eq!(row_fg(&mut app, " 8 End"), red);
+        assert_ne!(row_fg(&mut app, " 1 Date"), red);
+
+        app.column_ranks[2] = Some(9);
+        assert_ne!(row_fg(&mut app, " 8 Start"), red, "tie resolved");
+    }
+
+    #[test]
+    fn the_column_picker_asks_for_a_number_once_everything_is_cleared() {
+        let _guard = env_guard();
+        sandbox("column-picker-render-empty");
+        let mut app = seed_panes();
+        app.open_column_picker();
+        app.column_ranks = [None; 7];
+
+        let screen = frame_lines(&mut app, 100, 30).join("\n");
+        assert!(screen.contains("Number at least one column"), "{screen}");
     }
 
     #[test]
@@ -2485,6 +2642,24 @@ mod tests {
         buffer[(3, row)].bg
     }
 
+    /// The foreground colour of the first label character of the drawn row
+    /// carrying `needle`.
+    fn row_fg(app: &mut App, needle: &str) -> ratatui::style::Color {
+        let (width, height) = (100u16, 30u16);
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        for y in 0..height {
+            let text: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(byte) = text.find(needle) {
+                let x = text[..byte].chars().count() as u16;
+                return buffer[(x, y)].fg;
+            }
+        }
+        panic!("no drawn row carries {needle}");
+    }
+
     /// One rendered frame plus the cursor it asked for.
     fn frame_cursor(app: &mut App, width: u16, height: u16) -> (u16, u16) {
         let mut terminal =
@@ -2906,6 +3081,128 @@ mod tests {
             line(&after, &weekday).contains("1h 40m"),
             "the day total froze with the row cache:\n{}",
             line(&after, &weekday)
+        );
+    }
+
+    #[test]
+    fn the_default_entries_table_header_is_unchanged_at_80_and_120_columns() {
+        let _guard = env_guard();
+        sandbox("entries-header-default");
+        seed(vec![entry(0, "first")], 1);
+        let mut app = App::new().unwrap();
+
+        for width in [80, 120] {
+            let screen = frame_lines(&mut app, width, 10).join("\n");
+            assert!(
+                screen.contains("Date") && screen.contains("Start") && screen.contains("End"),
+                "default header missing at {width} columns:\n{screen}"
+            );
+            assert!(
+                !screen.contains("Project"),
+                "Project shows without being configured at {width} columns:\n{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_column_list_renders_only_those_headers_in_order() {
+        let _guard = env_guard();
+        let dir = sandbox("entries-header-configured");
+        seed(
+            vec![dated(0, "first", "tt", &[], Local::now().date_naive())],
+            1,
+        );
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"date\", \"project\", \"description\", \"duration\"]\n",
+        )
+        .unwrap();
+        let mut app = App::new().unwrap();
+
+        let screen = frame_lines(&mut app, 120, 10).join("\n");
+        let header = screen
+            .lines()
+            .find(|l| l.contains("Date"))
+            .expect("no header line");
+        let date_at = header.find("Date").unwrap();
+        let project_at = header.find("Project").expect("no Project header");
+        let description_at = header.find("Description").expect("no Description header");
+        let duration_at = header.find("Duration").expect("no Duration header");
+        assert!(date_at < project_at, "Date must lead Project:\n{header}");
+        assert!(
+            project_at < description_at,
+            "Project must lead Description:\n{header}"
+        );
+        assert!(
+            description_at < duration_at,
+            "Description must lead Duration:\n{header}"
+        );
+        assert!(!header.contains("Start"), "Start leaked:\n{header}");
+        assert!(!header.contains("End"), "End leaked:\n{header}");
+        assert!(!header.contains("Tags"), "Tags leaked:\n{header}");
+        assert!(screen.contains("tt"), "project cell missing:\n{screen}");
+        drop(dir);
+    }
+
+    #[test]
+    fn the_day_and_group_headers_follow_a_reordered_column_list() {
+        let _guard = env_guard();
+        let dir = sandbox("headers-reordered");
+        let today = Local::now().date_naive();
+        seed(
+            vec![
+                dated(0, "round one", "tt", &["tt/174", "impl"], today),
+                dated(1, "round two", "tt", &["tt/174", "impl"], today),
+                dated(2, "round three", "tt", &["tt/174", "impl"], today),
+            ],
+            3,
+        );
+        std::fs::write(
+            dir.join("config.toml"),
+            "[layout]\ncolumns = [\"duration\", \"description\", \"date\"]\n",
+        )
+        .unwrap();
+        let mut app = App::new().unwrap();
+        app.selected_date = today;
+        app.table_state.select(Some(0));
+
+        let screen = frame_lines(&mut app, 120, 30).join("\n");
+        let weekday = today.format("%A").to_string();
+        let long_date = today.format("%B %d, %Y").to_string();
+        assert!(screen.contains(&weekday), "weekday missing:\n{screen}");
+        assert!(screen.contains(&long_date), "long date missing:\n{screen}");
+        assert!(screen.contains("3h 0m"), "total missing:\n{screen}");
+
+        let header = screen
+            .lines()
+            .find(|l| l.contains("Duration"))
+            .expect("no header line");
+        let dur_at = header.find("Duration").unwrap();
+        let desc_at = header.find("Description").expect("no Description header");
+        let date_at = header.find("Date").expect("no Date header");
+        assert!(
+            dur_at < desc_at && desc_at < date_at,
+            "header order wrong:\n{header}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn a_group_header_shows_the_project_its_members_share() {
+        let _guard = env_guard();
+        sandbox("group-project");
+        let mut app = seed_grouped();
+        app.entry_columns
+            .push(render::columns::EntryColumn::Project);
+
+        let screen = frame_lines(&mut app, 140, 30).join("\n");
+        let header = screen
+            .lines()
+            .find(|l| l.contains("3 entries - tt/174"))
+            .unwrap();
+        assert!(
+            header.ends_with("tt") || header.contains(" tt "),
+            "no shared project:\n{header}"
         );
     }
 
