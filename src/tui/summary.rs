@@ -662,7 +662,7 @@ pub(crate) fn summary_count(rows: &[ProjectTotal], visible_rows: usize) -> Optio
 
 /// The summary row an entry belongs to: its trimmed project, or [`NO_PROJECT`].
 /// Empty-after-trim counts as absent, as the form and `pane_values` do.
-fn project_key(entry: &TimeEntry) -> &str {
+pub(crate) fn project_key(entry: &TimeEntry) -> &str {
     let project = entry.project.as_deref().map(str::trim).unwrap_or("");
     if project.is_empty() {
         NO_PROJECT
@@ -984,6 +984,16 @@ mod tests {
             Duration::hours(1),
             "a window inside the entry is full"
         );
+    }
+
+    #[test]
+    fn a_whitespace_only_project_keys_as_no_project() {
+        let mut entry = spanning(1, "  ", at(2026, 1, 1, 9, 0), 30);
+        assert_eq!(project_key(&entry), NO_PROJECT);
+        entry.project = None;
+        assert_eq!(project_key(&entry), NO_PROJECT);
+        entry.project = Some(" tt ".to_string());
+        assert_eq!(project_key(&entry), "tt");
     }
 
     fn spanning(id: u64, project: &str, start: NaiveDateTime, minutes: i64) -> TimeEntry {

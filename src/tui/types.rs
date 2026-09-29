@@ -44,6 +44,9 @@ pub enum InputMode {
     Confirm,
     /// First-run popup asking which collapsible surfaces should start open.
     Onboarding,
+    /// The `c` popup: numbers the entry columns to choose which show and
+    /// their order.
+    ColumnPicker,
 }
 
 /// Which destructive action a prompt is standing in front of. Each knows the key

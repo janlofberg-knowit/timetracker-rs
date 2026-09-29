@@ -51,6 +51,8 @@ pub(crate) struct GroupHeader {
     /// any member is still running.
     pub(crate) start: DateTime<Local>,
     pub(crate) end: Option<DateTime<Local>>,
+    /// The members' project when every member agrees; `None` otherwise.
+    pub(crate) project: Option<String>,
 }
 
 impl VisibleRow {
@@ -286,8 +288,16 @@ impl App {
     /// [`RowKey`] has no clock input, so the sums are the renderer's per frame.
     fn summarise(&self, tag: &str, members: &[usize]) -> GroupHeader {
         let entries = || members.iter().filter_map(|i| self.data.entries.get(*i));
+        let mut projects = entries().map(crate::tui::summary::project_key);
+        let first = projects.next();
+        let project = if projects.all(|p| Some(p) == first) {
+            first.map(str::to_string)
+        } else {
+            None
+        };
         GroupHeader {
             tag: tag.to_string(),
+            project,
             members: members.to_vec(),
             expanded: self.expanded_issues.contains(tag),
             start: entries()
@@ -396,6 +406,28 @@ mod tests {
             vec!["entry other issue", "entry only member", "entry loose"]
         );
         assert_eq!(app.rows().len(), app.filtered_entries().len());
+    }
+
+    #[test]
+    fn a_group_of_missing_and_blank_projects_keys_its_header_as_no_project() {
+        let _guard = env_guard();
+        sandbox("rows-no-project-header");
+        let mut none = at(0, "none", &["tt/8"], today(), 9);
+        none.project = None;
+        let mut blank = at(1, "blank", &["tt/8"], today(), 10);
+        blank.project = Some("  ".to_string());
+        seed(vec![none, blank]);
+        let mut app = App::new().unwrap();
+        app.view_mode = ViewMode::Day;
+
+        let header = app.rows().into_iter().find_map(|row| match row {
+            VisibleRow::GroupHeader(header) => Some(header),
+            _ => None,
+        });
+        assert_eq!(
+            header.unwrap().project.as_deref(),
+            Some(crate::tui::summary::NO_PROJECT)
+        );
     }
 
     #[test]
