@@ -4,7 +4,7 @@ use super::overlay::CURSOR_MARKER;
 use crate::tracker::TimeData;
 use crate::tui::panes::Polarity;
 use crate::tui::rows::{GroupHeader, Member, VisibleRow};
-use crate::tui::summary::NO_PROJECT;
+use crate::tui::summary::project_key;
 use crate::tui::types::Focus;
 use crate::tui::{App, theme};
 use chrono::{Duration, Local, NaiveDate};
@@ -92,15 +92,9 @@ fn entry_cell(
             Cell::from(entry.format_end_time()).style(Style::default().fg(theme::inactive()))
         }
         EntryColumn::Description => Cell::from(description.to_string()),
-        EntryColumn::Project => Cell::from(
-            entry
-                .project
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or(NO_PROJECT)
-                .to_string(),
-        )
-        .style(Style::default().fg(theme::accent())),
+        EntryColumn::Project => {
+            Cell::from(project_key(entry).to_string()).style(Style::default().fg(theme::accent()))
+        }
         EntryColumn::Tags => {
             Cell::from(entry.format_tags()).style(Style::default().fg(theme::highlight()))
         }
