@@ -415,9 +415,7 @@ pub(super) fn render_entries_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let [selector_area, table_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
-    render_view_selector(f, app, selector_area);
+    let table_area = render_view_selector(f, app, inner);
     let mut render_state = TableState::default().with_selected(visual_selected);
     f.render_stateful_widget(table, table_area, &mut render_state);
 }

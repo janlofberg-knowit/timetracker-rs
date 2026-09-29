@@ -3571,7 +3571,7 @@ mod tests {
         sandbox("year-view-height");
         let mut app = year_view_2026();
 
-        let (_, short) = heat_block_cells(&mut app, 140, 20);
+        let (_, short) = heat_block_cells(&mut app, 140, 21);
         let (_, tall) = heat_block_cells(&mut app, 140, 40);
         assert!(
             tall.len() > short.len(),

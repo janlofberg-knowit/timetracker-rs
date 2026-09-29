@@ -7,7 +7,17 @@ use crate::tui::{App, theme};
 use chrono::{Datelike, Duration};
 use ratatui::{prelude::*, widgets::Tabs};
 
-pub(super) fn render_view_selector(f: &mut Frame, app: &App, area: Rect) {
+/// Rows the selector takes at the top of a box: its line and a blank one.
+pub(super) const SELECTOR_HEIGHT: u16 = 2;
+
+/// Draws the selector at the top of `inner` and returns the area under it.
+pub(super) fn render_view_selector(f: &mut Frame, app: &App, inner: Rect) -> Rect {
+    let [area, rest] =
+        Layout::vertical([Constraint::Length(SELECTOR_HEIGHT), Constraint::Min(0)]).areas(inner);
+    let area = Rect {
+        height: 1.min(area.height),
+        ..area
+    };
     let selected = match app.view_mode {
         ViewMode::Day => 0,
         ViewMode::Week => 1,
@@ -26,6 +36,7 @@ pub(super) fn render_view_selector(f: &mut Frame, app: &App, area: Rect) {
     .style(Style::default().fg(theme::inactive()))
     .highlight_style(Style::default().fg(theme::accent()).bold());
     f.render_widget(tabs, area);
+    rest
 }
 
 pub(super) fn period_label(app: &App) -> String {

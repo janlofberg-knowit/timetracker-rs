@@ -2,7 +2,7 @@
 //! `Less … More` ramps, and the content pane's own two-dimensional grid.
 
 use super::legend::content_legend;
-use super::view_header::{content_title, render_view_selector};
+use super::view_header::{SELECTOR_HEIGHT, content_title, render_view_selector};
 use crate::tui::summary::{BucketGrid, HeatBand, HeatGrid, axis_tick, strip_cells};
 use crate::tui::types::ViewMode;
 use crate::tui::{App, theme};
@@ -32,8 +32,7 @@ pub(super) fn heat_block_title(total: Duration, active: usize, unit: &str) -> St
 /// the shading does not re-scale as the user pages through periods.
 pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_width = area.width.saturating_sub(2);
-    // Two border rows and the selector row.
-    let inner_height = area.height.saturating_sub(3);
+    let inner_height = area.height.saturating_sub(2 + SELECTOR_HEIGHT);
     let grid = app.view_heat_grid(inner_width, inner_height);
     // The draw owns the clamp: it alone knows the room and the layout. `j`
     // and `k` read the limit back off `App`.
@@ -72,9 +71,7 @@ pub(super) fn render_heat_grid(f: &mut Frame, app: &mut App, area: Rect) {
 
     let frame = block.inner(area);
     f.render_widget(block, area);
-    let [selector_area, grid_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(frame);
-    render_view_selector(f, app, selector_area);
+    let grid_area = render_view_selector(f, app, frame);
 
     let available = (inner_width as usize).saturating_sub(grid.gutter);
     let (drawn, first_row) = scrolled(app, &grid);
@@ -356,7 +353,7 @@ mod tests {
             .draw(|f| render_heat_grid(f, app, f.area()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
-        (2..height.saturating_sub(1))
+        (1 + SELECTOR_HEIGHT..height.saturating_sub(1))
             .map(|y| {
                 let text: String = (1..width - 1).map(|x| buffer[(x, y)].symbol()).collect();
                 let painted: Vec<u16> = (1..width - 1)
@@ -421,7 +418,7 @@ mod tests {
             ],
         );
 
-        let lines = drawn(&mut app, 80, 20);
+        let lines = drawn(&mut app, 80, 21);
         let ticks: Vec<&str> = lines
             .iter()
             .map(|(text, _)| text.as_str())
@@ -537,7 +534,7 @@ mod tests {
         app.heat_scroll = 6;
 
         // Eight inner lines: the axis, then seven of the eight rows.
-        drawn(&mut app, 80, 11);
+        drawn(&mut app, 80, 12);
         assert_eq!(app.heat_scroll_max, 1);
         assert_eq!(app.heat_scroll, 1, "the offset outlived the taller box");
 
@@ -582,8 +579,8 @@ mod tests {
             painted.iter().all(|count| *count == 24 * 2),
             "a cell was clipped or dropped: {painted:?}"
         );
-        // Nine grid lines less the axis: the one row takes the other eight.
-        assert_eq!(painted.len(), 8, "the row did not fill the box");
+        // Eight grid lines less the axis: the one row takes the other seven.
+        assert_eq!(painted.len(), 7, "the row did not fill the box");
     }
 
     /// A cell shades by how full its own span is, not by the busiest cell, so
@@ -607,7 +604,7 @@ mod tests {
             .draw(|f| render_heat_grid(f, &mut app, f.area()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
-        let cells: Vec<Color> = (1..79).map(|x| buffer[(x, 3)].bg).collect();
+        let cells: Vec<Color> = (1..79).map(|x| buffer[(x, 4)].bg).collect();
         let gutter = 12;
         assert_eq!(
             cells[gutter + 9 * 2],
@@ -633,7 +630,7 @@ mod tests {
             vec![entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 60)],
         );
 
-        let lines = drawn(&mut app, 80, 16);
+        let lines = drawn(&mut app, 80, 17);
         assert!(
             lines[0].0.contains("Mon"),
             "no weekday axis: {}",
@@ -663,7 +660,7 @@ mod tests {
             vec![entry(0, day.and_hms_opt(9, 0, 0).unwrap(), 60)],
         );
 
-        let lines = drawn(&mut app, 80, 16);
+        let lines = drawn(&mut app, 80, 17);
         let widest = lines
             .iter()
             .map(|(_, cells)| cells.len())
