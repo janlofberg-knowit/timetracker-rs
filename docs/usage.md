@@ -126,9 +126,11 @@ tt active
 ### `tt tui`
 
 Open the interactive terminal UI for browsing and managing your entries.
+A bare `tt`, with no subcommand, also opens the TUI.
 
 ```sh
 tt tui
+tt
 ```
 
 **Views.** The number keys pick the period the screen reports on, shortest
