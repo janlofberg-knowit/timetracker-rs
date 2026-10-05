@@ -13,7 +13,14 @@ use crate::tracker::IdleInterval;
 #[command(name = "tt", about = "Simple time tracking CLI", version)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    subcommand: Option<Commands>,
+}
+
+impl Cli {
+    /// The command to run. A bare `tt` opens the TUI.
+    pub fn into_command(self) -> Commands {
+        self.subcommand.unwrap_or(Commands::Tui)
+    }
 }
 
 #[derive(Subcommand)]
@@ -567,7 +574,7 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(["tt", "log", "-d", "x", "-t", raw])
                 .unwrap_or_else(|e| panic!("`{raw}` failed to parse: {e}"));
-            match cli.command {
+            match cli.into_command() {
                 Commands::Log { time, .. } => assert_eq!(time, expected, "`{raw}`"),
                 _ => panic!("not a log command"),
             }
@@ -610,7 +617,7 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(&args)
                 .unwrap_or_else(|e| panic!("{args:?} failed to parse: {e}"));
-            let data = match cli.command {
+            let data = match cli.into_command() {
                 Commands::Start { data, .. } | Commands::Log { data, .. } => data,
                 Commands::Agent { command } => match command {
                     AgentCommands::Item { data, .. } | AgentCommands::End { data, .. } => data,
@@ -626,7 +633,7 @@ mod tests {
     #[test]
     fn data_is_none_when_the_flag_is_absent() {
         let cli = Cli::try_parse_from(["tt", "log", "-d", "x", "-t", "5m"]).unwrap();
-        match cli.command {
+        match cli.into_command() {
             Commands::Log { data, .. } => assert_eq!(data, None),
             _ => panic!("not a log command"),
         }
@@ -645,7 +652,7 @@ mod tests {
     fn start_takes_short_forms_for_project_and_start_time() {
         let parsed = Cli::try_parse_from(["tt", "start", "-p", "tt", "-s", "9.30", "writing"])
             .expect("short flags")
-            .command;
+            .into_command();
         match parsed {
             Commands::Start {
                 description,
@@ -679,5 +686,11 @@ mod tests {
         assert!(parse_clock("9:70").is_err(), "no 70th minute");
         assert!(parse_clock("half nine").is_err());
         assert!(parse_clock("").is_err());
+    }
+
+    #[test]
+    fn a_bare_tt_opens_the_tui() {
+        let command = Cli::try_parse_from(["tt"]).expect("bare tt").into_command();
+        assert!(matches!(command, Commands::Tui));
     }
 }
