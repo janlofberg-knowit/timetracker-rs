@@ -345,6 +345,15 @@ pub fn dated_clock(epoch: i64) -> String {
     local(epoch).format("%-d %b, %H:%M").to_string()
 }
 
+/// The start an audit row renders: `since HH:MM` today, else `dated_clock`.
+pub fn audit_start(epoch: i64) -> String {
+    if local(epoch).date_naive() == chrono::Local::now().date_naive() {
+        format!("since {}", clock(epoch))
+    } else {
+        dated_clock(epoch)
+    }
+}
+
 fn local(epoch: i64) -> chrono::DateTime<chrono::Local> {
     chrono::DateTime::from_timestamp(epoch, 0)
         .unwrap()

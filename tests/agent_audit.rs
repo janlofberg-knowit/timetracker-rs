@@ -2,7 +2,7 @@
 //! real binary and a sandboxed store/marks/activity/dismissed directory.
 
 mod common;
-use common::{Case, StoreRow, clock, dated_clock, now};
+use common::{Case, StoreRow, audit_start, dated_clock, now};
 
 const HOUR: i64 = 3600;
 
@@ -749,7 +749,7 @@ fn a_session_with_two_idle_holes_reports_three_active_rows() {
     assert_eq!(rows.len(), 3, "{:?}", run.stdout);
     for (row, (from, to)) in rows.iter().rev().zip(ROWS) {
         assert!(
-            row.contains(&format!("since {}", clock(start + from * 60))),
+            row.contains(&audit_start(start + from * 60)),
             "{row} is not the row starting at {from}m"
         );
         let minutes = to - from;

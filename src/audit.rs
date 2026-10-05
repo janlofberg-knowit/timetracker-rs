@@ -872,15 +872,19 @@ mod tests {
             "{text}"
         );
 
-        let today = Local::now() - chrono::Duration::hours(1);
+        let midnight = Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
         let row = Unaccounted {
-            start: today,
-            end: Local::now(),
+            start: midnight,
+            end: midnight + chrono::Duration::hours(1),
             ..row
         };
         assert!(
-            row.describe()
-                .contains(&format!("since {} (", today.format("%H:%M"))),
+            row.describe().contains("since 00:00 ("),
             "{}",
             row.describe()
         );
