@@ -432,7 +432,9 @@ mod tests {
     fn parse_log(args: &[&str]) -> Commands {
         let mut argv = vec!["tt", "log"];
         argv.extend_from_slice(args);
-        Cli::try_parse_from(argv).expect("log arguments").command
+        Cli::try_parse_from(argv)
+            .expect("log arguments")
+            .into_command()
     }
 
     fn run_log(command: Commands) {

@@ -30,14 +30,13 @@ fn main() -> Result<()> {
     clap_complete::CompleteEnv::with_factory(Cli::command)
         .shells(completions::SHELLS)
         .complete();
-    let cli = Cli::parse();
+    let command = Cli::parse().into_command();
 
     // At most once per day, bounded to a couple of seconds — see
     // `update::maybe_check_and_notify`. Skipped entirely for commands that
     // must stay fast and script-friendly (`Active`, `Agent`) or that are
     // themselves an update check (`Update`).
-    let update_notice = cli
-        .command
+    let update_notice = command
         .wants_update_check()
         .then(|| update::maybe_check_and_notify(env!("CARGO_PKG_VERSION")))
         .flatten();
@@ -45,9 +44,9 @@ fn main() -> Result<()> {
     // The preamble runs before the dispatch table, not inside it, so the
     // commands that must not take the store lock skip it — and with it the
     // notice, which they have never printed.
-    if needs_store_preamble(&cli.command) {
+    if needs_store_preamble(&command) {
         if let Some(version) = &update_notice
-            && !matches!(cli.command, Commands::Tui)
+            && !matches!(command, Commands::Tui)
         {
             eprintln!(
                 "Note: tt {version} is available (you have {}). Run `{}` to upgrade.",
@@ -64,7 +63,7 @@ fn main() -> Result<()> {
         })?;
     }
 
-    match cli.command {
+    match command {
         Commands::Start {
             description,
             project,
@@ -161,7 +160,9 @@ mod tests {
     use clap::Parser;
 
     fn command_of(args: &[&str]) -> Commands {
-        Cli::try_parse_from(args).expect("args parse").command
+        Cli::try_parse_from(args)
+            .expect("args parse")
+            .into_command()
     }
 
     #[test]
